@@ -2,16 +2,23 @@
 
 # 🎼 Maestra
 
-### An LLM conductor for tabular AutoML.
+### Agentic AutoML for tabular data.
 
-*The model decides. The engine computes. The two never blur.*
+*An LLM conductor over AutoGluon — the model decides, the engine computes, the two never blur.*
 
+![Agentic](https://img.shields.io/badge/🤖-agentic%20pipeline-FF4088)
 ![Python](https://img.shields.io/badge/python-3.9–3.12-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Engine](https://img.shields.io/badge/engine-AutoGluon-FF6F00)
 ![LLM](https://img.shields.io/badge/LLM-LiteLLM%20·%20model--agnostic-7E57C2)
 ![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen)
 ![Kaggle](https://img.shields.io/badge/Kaggle%20S6E6-balanced__acc%200.950-20BEFF?logo=kaggle&logoColor=white)
+
+<br>
+
+![Maestra in action](assets/demo.gif)
+
+<sub>The agent reads the data, decides what to drop and impute, and hands the numbers to AutoGluon.</sub>
 
 </div>
 
