@@ -17,11 +17,16 @@ The LLM's plan is drawn from a fixed vocabulary and applied by deterministic pan
 ## Pipeline
 
 ```
-profile  →  LLM cleaning plan  →  apply plan  →  train  →  evaluate on holdout
+split  →  profile(train)  →  LLM cleaning plan  →  fit on train + apply to both  →  train  →  evaluate
 ```
 
 One function per step, orchestrated by a plain Python loop ([`pipeline.py`](src/automl_agent/pipeline.py)).
 No agent framework — the whole flow is readable top to bottom.
+
+The split happens **first**, and the cleaning plan is *fitted on the training rows only*
+(scikit-learn style): imputation values are train statistics applied unchanged to the
+holdout. Computing them over the full dataset would leak test information and inflate the
+reported metrics.
 
 ## Install
 
@@ -105,6 +110,12 @@ pytest          # fast, offline — LLM and AutoGluon are mocked
 | `engine.py` | AutoGluon training + holdout metrics (the only number-crunching) |
 | `pipeline.py` | The conductor loop; returns structured results |
 | `cli.py` | Argument parsing, `.env` loading, output formatting |
+
+## Known limitations
+
+- **Run-to-run reproducibility.** The split is seeded (`--seed`), but AutoGluon's `fit`
+  has no single global seed, so trained models can vary slightly between runs. Fine for
+  a learning experiment; a production setup would pin per-model seeds.
 
 ## License
 

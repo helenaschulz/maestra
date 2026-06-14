@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from automl_agent.cleaning import apply_cleaning_plan, propose_cleaning_plan
+from automl_agent.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from automl_agent.engine import TrainingResult, split, train_and_evaluate
 from automl_agent.profiling import profile_dataframe
 
@@ -59,19 +59,24 @@ def run_pipeline(
 
     n_before = len(df.columns)
 
-    if use_llm:
-        profile = profile_dataframe(df, target)
-        plan = propose_cleaning_plan(model, profile, target)
-        clean, log = apply_cleaning_plan(df, plan, target)
-    else:
-        plan, log, clean = None, [], df
+    # Split first, then fit cleaning on train only — otherwise imputation statistics
+    # would see the holdout and leak test information into the features.
+    train, holdout = split(df, test_size, seed)
 
-    train, holdout = split(clean, test_size, seed)
+    if use_llm:
+        profile = profile_dataframe(train, target)
+        plan = propose_cleaning_plan(model, profile, target)
+        transform = fit_cleaning_plan(train, plan, target)
+        train, holdout = transform.transform(train), transform.transform(holdout)
+        log = transform.log
+    else:
+        plan, log = None, []
+
     training = train_and_evaluate(train, holdout, target, time_limit, model_dir)
 
     return PipelineResult(
         n_cols_before=n_before,
-        n_cols_after=len(clean.columns),
+        n_cols_after=len(train.columns),
         plan=plan,
         cleaning_log=log,
         training=training,

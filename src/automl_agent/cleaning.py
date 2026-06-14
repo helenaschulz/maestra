@@ -5,10 +5,18 @@ The LLM receives the column profile and returns a plan drawn from a *fixed vocab
 LLM-generated code is ever executed — every mutation is auditable and the blast radius
 is bounded by the schema. The applier is defensive: it protects the target, tolerates
 hallucinated columns, and never crashes on a malformed plan.
+
+The plan is applied with a **fit/transform split** (like scikit-learn) to avoid data
+leakage: imputation values are *fitted on the training rows only* and then applied
+unchanged to both train and holdout. Computing a median/mode over the full dataset —
+including the holdout — would leak test information into the features and inflate the
+reported metrics.
 """
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
@@ -86,8 +94,12 @@ def propose_cleaning_plan(model: str, profile: dict, target: str) -> dict:
     )
 
 
-def _impute_value(series: pd.Series, strategy: str, fill_value: str | None):
-    """Compute the fill value for a column under the given strategy."""
+def _fit_fill_value(series: pd.Series, strategy: str, fill_value: str | None) -> Any:
+    """Compute the fill value for a column under the given strategy.
+
+    Raises:
+        TypeError: If the strategy is numeric (median/mean) but the column is not.
+    """
     if strategy == "median":
         return series.median()
     if strategy == "mean":
@@ -98,57 +110,81 @@ def _impute_value(series: pd.Series, strategy: str, fill_value: str | None):
     return fill_value  # "constant"
 
 
-def apply_cleaning_plan(
-    df: pd.DataFrame, plan: dict, target: str
-) -> tuple[pd.DataFrame, list[str]]:
-    """Apply a cleaning plan deterministically and return ``(clean_df, log)``.
+@dataclass
+class CleaningTransform:
+    """A fitted cleaning step: which columns to drop and what to fill missing values with.
 
-    The log mirrors every decision (applied or skipped) so the run stays auditable.
-    The function is total: it never raises on a malformed or hallucinated plan — it
-    skips the offending operation and records why.
+    Fitted on the training data only, then applied to any DataFrame via
+    :meth:`transform`. This is what keeps imputation leakage-free — the fill values are
+    frozen statistics of the train split, not recomputed per DataFrame.
+    """
+
+    drops: list[str]
+    fills: dict[str, Any]  # column -> fill value, fitted on train
+    log: list[str] = field(default_factory=list)
+
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply the fitted drops and fills to ``df`` (returns a copy)."""
+        df = df.drop(columns=[c for c in self.drops if c in df.columns])
+        df = df.copy()
+        for col, value in self.fills.items():
+            if col in df.columns:
+                df[col] = df[col].fillna(value)
+        return df
+
+
+def fit_cleaning_plan(train: pd.DataFrame, plan: dict, target: str) -> CleaningTransform:
+    """Turn an LLM plan into a fitted :class:`CleaningTransform` using train data only.
+
+    The returned log mirrors every decision (applied or skipped) so the run stays
+    auditable. This function is total: it never raises on a malformed or hallucinated
+    plan — it skips the offending operation and records why. Imputation values are
+    computed from ``train`` exclusively, so applying the transform to a holdout set
+    cannot leak test statistics.
 
     Args:
-        df: The dataset to clean (not mutated; a copy is returned).
+        train: The training rows the imputation statistics are fitted on.
         plan: A plan dict matching :data:`PLAN_SCHEMA`.
-        target: Target column, protected from drop and imputation.
+        target: Target column, protected from both drop and imputation.
 
     Returns:
-        The cleaned DataFrame and a human-readable list of applied/skipped operations.
+        A fitted :class:`CleaningTransform`.
     """
-    df = df.copy()
     log: list[str] = []
-
+    drops: list[str] = []
     for item in plan.get("columns_to_drop", []):
         col = item.get("column")
         if col == target:
             log.append(f"SKIP drop '{col}': ist Zielspalte")
-        elif col not in df.columns:
+        elif col not in train.columns:
             log.append(f"SKIP drop '{col}': Spalte existiert nicht")
         else:
-            df = df.drop(columns=[col])
+            drops.append(col)
             log.append(f"DROP '{col}' -- {item.get('reason', '')}")
 
+    fills: dict[str, Any] = {}
     for item in plan.get("imputations", []):
         col = item.get("column")
         strategy = item.get("strategy")
         if col == target:
             log.append(f"SKIP impute '{col}': ist Zielspalte")
             continue
-        if col not in df.columns:
-            log.append(f"SKIP impute '{col}': Spalte existiert nicht (evtl. gedroppt)")
+        if col in drops or col not in train.columns:
+            log.append(f"SKIP impute '{col}': Spalte nicht vorhanden (evtl. gedroppt)")
             continue
         if strategy not in STRATEGIES:
             log.append(f"SKIP impute '{col}': unbekannte Strategie '{strategy}'")
             continue
-        n_missing = int(df[col].isna().sum())
-        if n_missing == 0:
-            log.append(f"SKIP impute '{col}': keine fehlenden Werte")
+        try:
+            fill = _fit_fill_value(train[col], strategy, item.get("fill_value"))
+        except TypeError:
+            log.append(f"SKIP impute '{col}': Strategie '{strategy}' passt nicht zum dtype")
             continue
-        fill = _impute_value(df[col], strategy, item.get("fill_value"))
-        df[col] = df[col].fillna(fill)
+        fills[col] = fill
+        n_missing = int(train[col].isna().sum())
         log.append(
-            f"IMPUTE '{col}' [{strategy}] {n_missing} Werte -> {fill!r} "
+            f"IMPUTE '{col}' [{strategy}] fit auf train (fehlend={n_missing}) -> {fill!r} "
             f"-- {item.get('reason', '')}"
         )
 
-    return df, log
+    return CleaningTransform(drops=drops, fills=fills, log=log)
