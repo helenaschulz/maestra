@@ -78,6 +78,73 @@ def test_oof_metric_computed_on_predictions(tmp_path, monkeypatch):
     assert record["cv_lb_gap"] == pytest.approx(expected - 0.40)  # comparable
 
 
+def test_resolve_metric_probability_metrics_use_proba_mode():
+    assert mr._resolve_metric("roc_auc") == ("roc_auc", "proba")
+    assert mr._resolve_metric("log_loss") == ("log_loss", "proba")
+    assert mr._resolve_metric("accuracy") == ("accuracy", "aligned")
+
+
+def test_read_task_multiclass_proba_submission(tmp_path):
+    """leaf-classification shape: sample-submission has one column per class value; the target
+    is the train column missing from test, verified against those class values."""
+    d = tmp_path / "leaf"
+    d.mkdir()
+    pd.DataFrame({"id": [1, 2, 3], "species": ["A", "B", "C"], "m1": [0.1, 0.2, 0.3]}).to_csv(
+        d / "train.csv", index=False)
+    pd.DataFrame({"id": [4, 5], "m1": [0.4, 0.5]}).to_csv(d / "test.csv", index=False)
+    pd.DataFrame({"id": [4, 5], "A": [0.0, 0.0], "B": [0.0, 0.0], "C": [0.0, 0.0]}).to_csv(
+        d / "sample_submission.csv", index=False)
+
+    task = read_task(str(d))
+    assert task.id_col == "id"
+    assert task.target_col == "species"               # train col absent from test, classes match
+    assert task.submission_columns == ["A", "B", "C"]  # ordered output format
+
+
+class _PositiveOne:
+    positive_class = 1
+
+
+def _proba_result(cv):
+    from maestra.engine import TrainingResult
+    from maestra.pipeline import PipelineResult
+    submission = pd.DataFrame({"id": [5, 6], "label": [0.7, 0.2]})  # positive-class probabilities
+    training = TrainingResult("binary", "roc_auc", pd.DataFrame(), {}, predictor=_PositiveOne())
+    return PipelineResult(n_cols_before=3, n_cols_after=2, plan=None, submission=submission,
+                          cv=cv, training=training)
+
+
+def test_run_mlebench_task_proba_metric_scored_on_oof_probabilities(tmp_path, monkeypatch):
+    """roc_auc is no longer blocked: a probability submission is produced and the CV score is
+    computed on the pooled out-of-fold PROBABILITIES, so the CV↔LB gap is comparable."""
+    from sklearn.metrics import roc_auc_score
+
+    from maestra.validation import CVResult
+
+    _make_task(tmp_path / "toycomp")             # train labels = [0, 1, 0, 1] at index 0..3
+    oof = pd.DataFrame({0: [0.8, 0.4, 0.6, 0.3], 1: [0.2, 0.6, 0.4, 0.7]})
+    cv = CVResult("roc_auc", "binary", [0.5, 0.5], 0.5, 0.0, 2, True, True, oof_proba=oof)
+
+    captured = {}
+
+    def fake_run_pipeline(*a, **k):
+        captured.update(k)
+        return _proba_result(cv)
+
+    monkeypatch.setattr(mr, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(mr, "grade_submission",
+                        lambda *a, **k: mr.GradeReport(score=0.75, gold=None, silver=None, bronze=None, medal=None))
+
+    record = mr.run_mlebench_task(str(tmp_path / "toycomp"), "toycomp", metric="roc_auc",
+                                  out_dir=str(tmp_path / "out"), runs_log=str(tmp_path / "runs.jsonl"))
+
+    assert captured["proba"] is True and captured["proba_columns"] == ["label"]   # proba submission
+    expected = roc_auc_score([0, 1, 0, 1], oof[1])                                 # positive-class proba
+    assert record["metric_mode"] == "proba"
+    assert record["cv_score"] == pytest.approx(expected)                           # on OOF probabilities
+    assert record["cv_lb_gap"] == pytest.approx(expected - 0.75)                   # comparable
+
+
 def test_multitarget_submission_aborts(tmp_path):
     d = tmp_path / "multi"
     d.mkdir()

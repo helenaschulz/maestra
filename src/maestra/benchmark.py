@@ -23,9 +23,11 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     cohen_kappa_score,
     f1_score,
+    log_loss,
     matthews_corrcoef,
     mean_absolute_error,
     mean_squared_error,
+    roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.utils.multiclass import type_of_target
@@ -33,8 +35,7 @@ from sklearn.utils.multiclass import type_of_target
 from maestra.cli import load_dotenv
 from maestra.pipeline import run_pipeline
 
-# Label-based metrics only (our submission carries predicted labels, not probabilities).
-# Probability metrics (roc_auc, log_loss) need predict_proba — a later step.
+# Label-based metrics (the submission carries predicted labels).
 _METRICS = {
     "accuracy": accuracy_score,
     "balanced_accuracy": balanced_accuracy_score,
@@ -47,6 +48,29 @@ _METRICS = {
     "mae": mean_absolute_error,
 }
 _HIGHER_IS_BETTER = {"accuracy", "balanced_accuracy", "f1_macro", "mcc", "quadratic_weighted_kappa"}
+
+
+# Probability metrics — scored on class *probabilities* (one column per class), not labels.
+# Computed on the pooled out-of-fold probabilities so the CV↔LB gap stays comparable.
+# NOTE: log_loss is calibration-sensitive and AutoGluon's raw probabilities are not
+# guaranteed calibrated — a calibration pass (e.g. CalibratedClassifierCV / temperature
+# scaling on the OOF probabilities) is a possible follow-up; not done here.
+def _roc_auc_proba(y_true, proba, positive_class):
+    if proba.shape[1] == 2:  # binary: score the positive-class probability
+        return float(roc_auc_score(y_true, proba[positive_class]))
+    return float(roc_auc_score(y_true, proba, multi_class="ovr", labels=list(proba.columns)))
+
+
+def _log_loss_proba(y_true, proba, positive_class):
+    return float(log_loss(y_true, proba, labels=list(proba.columns)))
+
+
+_PROBA_METRICS = {
+    "roc_auc": _roc_auc_proba,
+    "auc": _roc_auc_proba,
+    "log_loss": _log_loss_proba,
+}
+_PROBA_HIGHER_IS_BETTER = {"roc_auc", "auc"}  # log_loss is lower-is-better
 
 
 def render_table(headers: list[str], rows: list[list]) -> str:

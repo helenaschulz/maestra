@@ -49,6 +49,52 @@ def test_submission_built_from_test_set(df, monkeypatch):
     assert sub["y"].tolist() == ["A", "A", "A"]
 
 
+class _FakeBinaryProbaPredictor:
+    positive_class = 1  # AutoGluon's designated positive class
+
+    def predict_proba(self, X):  # columns are class labels (here ints, as from AutoGluon)
+        return pd.DataFrame({0: [0.3] * len(X), 1: [0.7] * len(X)}, index=X.index)
+
+
+class _FakeMulticlassProbaPredictor:
+    def predict_proba(self, X):
+        n = len(X)
+        return pd.DataFrame({"A": [0.2] * n, "B": [0.3] * n, "C": [0.5] * n}, index=X.index)
+
+
+def _run_proba(df, predictor, proba_columns, monkeypatch):
+    training = TrainingResult("binary", "roc_auc", pd.DataFrame({"model": ["m"]}),
+                              {"roc_auc": 0.9}, predictor=predictor)
+    monkeypatch.setattr(pipeline, "train_and_evaluate", lambda *a, **k: training)
+    test_df = pd.DataFrame({"id": [101, 102, 103], "f": [9.0, 8.0, 7.0]})
+    return run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                        model_dir="x", use_llm=False, test_df=test_df, id_col="id",
+                        proba=True, proba_columns=proba_columns).submission
+
+
+def test_binary_proba_submission_single_column(df, monkeypatch):
+    # One non-id column that is not the class set -> positive-class probability.
+    sub = _run_proba(df, _FakeBinaryProbaPredictor(), ["y"], monkeypatch)
+    assert list(sub.columns) == ["id", "y"]
+    assert sub["id"].tolist() == [101, 102, 103]
+    assert sub["y"].tolist() == [0.7, 0.7, 0.7]   # P(positive class = 1)
+
+
+def test_multiclass_proba_submission_per_class_in_order(df, monkeypatch):
+    # Columns equal the class labels -> one probability per class, in sample-submission order.
+    sub = _run_proba(df, _FakeMulticlassProbaPredictor(), ["C", "A", "B"], monkeypatch)
+    assert list(sub.columns) == ["id", "C", "A", "B"]          # exactly the requested order
+    assert sub["A"].tolist() == [0.2, 0.2, 0.2]
+    row_sums = sub[["C", "A", "B"]].sum(axis=1)
+    assert all(s == pytest.approx(1.0) for s in row_sums)       # probabilities sum to ~1
+
+
+def test_proba_submission_format_mismatch_aborts(df, monkeypatch):
+    # Two columns that are neither the full class set nor a single column -> clear abort.
+    with pytest.raises(pipeline.PipelineError, match="match neither"):
+        _run_proba(df, _FakeMulticlassProbaPredictor(), ["A", "B"], monkeypatch)
+
+
 def test_missing_id_col_raises(df, fake_training, monkeypatch):
     _patch_engine(monkeypatch, fake_training)
     test_df = pd.DataFrame({"row": [1], "f": [9.0]})  # no 'id' column

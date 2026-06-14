@@ -17,7 +17,14 @@ import pandas as pd
 
 from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from maestra.diagnosis import diagnose_failure
-from maestra.engine import TrainingResult, fit_predictor, predict, split, train_and_evaluate
+from maestra.engine import (
+    TrainingResult,
+    fit_predictor,
+    predict,
+    predict_proba,
+    split,
+    train_and_evaluate,
+)
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
 from maestra.profiling import profile_dataframe
@@ -74,13 +81,46 @@ def _do_research(model, df, target, rules_mode):
     return brief_context(rr.brief), summary
 
 
+def _proba_submission(predictor, features, ids, id_col, proba_columns):
+    """Shape AutoGluon's class probabilities to the competition's submission format.
+
+    The format is derived *generically* from the sample submission's columns
+    (``proba_columns``, id excluded), never guessed:
+
+    * columns equal the class labels (as a set)  -> multiclass: one probability per class,
+      in exactly ``proba_columns`` order (rows already sum to 1, AutoGluon guarantees it);
+    * a single column                            -> binary: the positive-class probability;
+    * anything else                              -> abort (like the label shape check).
+    """
+    proba = predict_proba(predictor, features)
+    proba.columns = [str(c) for c in proba.columns]  # column headers come from CSVs as strings
+    classes = set(proba.columns)
+
+    if set(proba_columns) == classes:
+        out = {id_col: ids.to_numpy()}
+        for col in proba_columns:
+            out[col] = proba[col].to_numpy()
+        return pd.DataFrame(out)
+    if len(proba_columns) == 1:
+        positive = str(predictor.positive_class)
+        return pd.DataFrame({id_col: ids.to_numpy(), proba_columns[0]: proba[positive].to_numpy()})
+    raise PipelineError(
+        f"sample submission columns {proba_columns} match neither the class labels "
+        f"{sorted(classes)} (multiclass) nor a single probability column (binary)."
+    )
+
+
 def _build_submission(transforms, predictor, test_df, target, id_col,
-                      generated_features=None, fit_df=None):
-    """Predict on the test set and return a Kaggle-style ``id``/``target`` frame.
+                      generated_features=None, fit_df=None, proba=False, proba_columns=None):
+    """Predict on the test set and return a Kaggle-style submission frame.
 
     The test set is run through the *same* fitted transforms as training (cleaning, then
     feature engineering, then any kept generated features fitted on ``fit_df``), but its
     identifier column is preserved separately even though cleaning drops it from the features.
+
+    By default the frame is ``id`` + predicted *labels*. With ``proba=True`` it carries class
+    *probabilities* shaped to ``proba_columns`` (the sample submission's non-id columns) — see
+    :func:`_proba_submission`.
     """
     if id_col not in test_df.columns:
         raise PipelineError(f"id column {id_col!r} not in test set. Columns: {list(test_df.columns)}")
@@ -90,6 +130,8 @@ def _build_submission(transforms, predictor, test_df, target, id_col,
         features = transform.transform(features)
     if generated_features:
         _, features = apply_generated_features(fit_df, features, target, generated_features)
+    if proba:
+        return _proba_submission(predictor, features, ids, id_col, proba_columns)
     preds = predict(predictor, features)
     return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
@@ -115,7 +157,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
-                 eval_metric=None) -> PipelineResult:
+                 eval_metric=None, proba=False, proba_columns=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -171,7 +213,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         adversarial_auc = adversarial_validation(df, test_df, target, cleaning_plan=cleaning_plan,
                                                   model_dir=f"{model_dir}/adversarial")
         submission = _build_submission(transforms, training.predictor, test_df, target, id_col,
-                                       generated_features=generated_features or None, fit_df=full)
+                                       generated_features=generated_features or None, fit_df=full,
+                                       proba=proba, proba_columns=proba_columns)
 
     return PipelineResult(
         n_cols_before=n_before, n_cols_after=len(full_for_fit.columns), n_cols_clean=n_clean,
@@ -215,6 +258,8 @@ def run_pipeline(
     eval_metric: str | None = None,
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
+    proba: bool = False,
+    proba_columns: list[str] | None = None,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -249,6 +294,11 @@ def run_pipeline(
             one trained on the train split (the holdout is *not* added back) — a maximal
             leaderboard score would refit on all labeled rows.
         id_col: Identifier column carried from ``test_df`` into the submission.
+        proba: If ``True``, the submission carries class *probabilities* instead of labels,
+            shaped to ``proba_columns`` (see :func:`_proba_submission`). Used for AUC /
+            log-loss competitions. Default ``False`` keeps the label path byte-identical.
+        proba_columns: The sample submission's non-id columns (ordered), which define the
+            probability output format. Required when ``proba`` is ``True``.
 
     Raises:
         ValueError: If ``target`` is not a column of ``df``.
@@ -274,7 +324,7 @@ def run_pipeline(
             test_df=test_df, id_col=id_col, n_before=n_before,
             research_context=research_context, research_summary=research_summary,
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
-            eval_metric=eval_metric,
+            eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
@@ -349,7 +399,8 @@ def run_pipeline(
 
             submission = None
             if test_df is not None:
-                submission = _build_submission(transforms, training.predictor, test_df, target, id_col)
+                submission = _build_submission(transforms, training.predictor, test_df, target, id_col,
+                                               proba=proba, proba_columns=proba_columns)
 
             return PipelineResult(
                 n_cols_before=n_before,

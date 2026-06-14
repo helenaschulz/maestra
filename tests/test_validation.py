@@ -40,6 +40,53 @@ def test_cross_validate_aggregates_fold_scores(monkeypatch):
     assert cv.stratified is True  # classification target -> stratified by default
 
 
+class _eval_metric:
+    greater_is_better = True
+
+
+class _FakeProbaPredictor:
+    """Predicts a positive-class probability that ranks rows by their feature value, so the
+    out-of-fold AUC is well-defined (not degenerate)."""
+
+    positive_class = 1
+    eval_metric = _eval_metric
+
+    def predict(self, X):
+        return (X["x"] >= X["x"].median()).astype(int)
+
+    def predict_proba(self, X):
+        lo, hi = X["x"].min(), X["x"].max()
+        p = (X["x"] - lo) / (hi - lo) if hi > lo else X["x"] * 0 + 0.5
+        return pd.DataFrame({0: 1 - p, 1: p}, index=X.index)
+
+
+def test_cross_validate_collects_oof_probabilities(monkeypatch):
+    """AUC/log-loss need out-of-fold PROBABILITIES: every row gets a probability from a model
+    that did not see it, assembled df-indexed — and scoring on them is the comparable CV score."""
+    from maestra import benchmark
+
+    df = pd.DataFrame({"x": [float(i) for i in range(12)], "y": [0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1]})
+
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+        return TrainingResult("binary", "roc_auc", pd.DataFrame(), {"roc_auc": 0.5},
+                              predictor=_FakeProbaPredictor())
+
+    monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None,
+                        model_dir="x", time_limit=1, n_folds=3, seed=0)
+
+    assert cv.oof_proba is not None
+    assert list(cv.oof_proba.columns) == [0, 1]                 # one column per class
+    assert cv.oof_proba.index.equals(df.index)                  # df-indexed
+    assert not cv.oof_proba.isna().any().any()                  # every row covered, once
+    assert cv.oof_proba.sum(axis=1).round(6).eq(1.0).all()      # rows are probabilities
+
+    # The CV score for a probability metric is computed on these pooled OOF probabilities.
+    score = benchmark._roc_auc_proba(df["y"], cv.oof_proba, positive_class=1)
+    from sklearn.metrics import roc_auc_score
+    assert score == pytest.approx(roc_auc_score(df["y"], cv.oof_proba[1]))
+
+
 def test_make_folds_is_deterministic():
     df = pd.DataFrame({"x": range(10), "y": [0, 1] * 5})
     a = validation._make_folds(df, "y", 5, seed=1, stratified=True)

@@ -13,10 +13,13 @@ is either mapped to an AutoGluon ``eval_metric`` so the CV optimises it directly
 AutoGluon equivalent exists — computed on the CV's out-of-fold predictions. The gap between
 that local score and the graded score tells you whether the CV is trustworthy.
 
-LABEL METRICS ONLY (for now): Maestra's submission carries predicted *labels*, not
-probabilities, so AUC / log-loss competitions would be scored meaninglessly. Pick a label
-metric (accuracy, F1, quadratic-weighted-kappa, ...) for the first task. A ``predict_proba``
-submission path is the required follow-up — not built here, flagged as ``needs_proba``.
+LABEL *and* PROBABILITY METRICS: label metrics (accuracy, F1, quadratic-weighted-kappa, ...)
+produce a predicted-label submission; probability metrics (roc_auc, log_loss) produce a
+probability submission whose shape is derived generically from the sample submission (a
+single positive-class column for binary, one column per class for multiclass), with the CV
+scored on the pooled out-of-fold probabilities. log_loss is calibration-sensitive and
+AutoGluon's raw probabilities are not guaranteed calibrated — calibrating the OOF
+probabilities is a possible follow-up (not done here).
 """
 from __future__ import annotations
 
@@ -47,8 +50,9 @@ _METRIC_MAP = {
     "mae": "mean_absolute_error",
     "r2": "r2",
 }
-# Probability metrics: AutoGluon can optimise them, but our LABEL submission makes the graded
-# LB score meaningless — so the CV↔LB gap is not comparable until predict_proba exists.
+# Probability metrics: AutoGluon optimises them and the submission carries probabilities
+# (a per-class or single positive-class column derived from the sample submission). The CV
+# score is computed on the pooled out-of-fold probabilities, so the CV↔LB gap is comparable.
 _PROBABILITY_METRICS = {"roc_auc", "auc", "log_loss"}
 
 
@@ -59,14 +63,14 @@ class MleBenchError(RuntimeError):
 def _resolve_metric(metric: str | None):
     """Map a competition metric to an (autogluon_eval_metric, mode).
 
-    mode: "aligned" (CV optimises the AG metric), "oof" (compute on out-of-fold preds),
-    "needs_proba" (probability metric — label submission, gap not comparable),
-    "mismatch" (no way to compare), "default" (no metric requested).
+    mode: "aligned" (CV optimises the AG metric, label submission), "proba" (probability
+    metric — probability submission, CV scored on out-of-fold probabilities), "oof" (compute
+    on out-of-fold labels), "mismatch" (no way to compare), "default" (no metric requested).
     """
     if metric is None:
         return None, "default"
     if metric in _PROBABILITY_METRICS:
-        return _METRIC_MAP.get(metric), "needs_proba"
+        return _METRIC_MAP.get(metric), "proba"
     if metric in _METRIC_MAP:
         return _METRIC_MAP[metric], "aligned"
     if metric in benchmark._METRICS:
@@ -82,6 +86,8 @@ class MleTask:
     sample_submission_csv: str
     id_col: str
     target_col: str
+    submission_columns: list[str]  # the sample submission's non-id columns, in order —
+    # defines the output format (single column = label/binary; one per class = multiclass proba)
 
 
 @dataclass
@@ -105,23 +111,47 @@ def _find(task_dir: str, names: list[str]) -> str:
 def read_task(task_dir: str) -> MleTask:
     """Read an MLE-bench task directory and derive the id + target columns.
 
-    The sample submission is the source of truth: its column also present in ``test.csv`` is
-    the id, the other is the target (which ``train.csv`` carries). Multi-column / probability
-    submissions are out of scope for now (single-target label prediction)."""
+    The sample submission is the source of truth for the id (its column also present in
+    ``test.csv``) and the output format. Two shapes are supported:
+
+    * **single column** (label or binary-probability) — the one non-id column is the target,
+      a column of ``train.csv`` (e.g. random-acts-of-pizza, tps-may-2022);
+    * **one column per class** (multiclass probability) — the non-id columns are class
+      *values*, so the target is the ``train.csv`` column missing from ``test.csv``, verified
+      against those class values (e.g. leaf-classification's ``species``).
+
+    Anything else aborts."""
     train = _find(task_dir, ["train.csv"])
     test = _find(task_dir, ["test.csv"])
     sample = _find(task_dir, ["sample_submission.csv", "sampleSubmission.csv"])
     sub_cols = pd.read_csv(sample, nrows=1).columns.tolist()
     test_cols = pd.read_csv(test, nrows=1).columns.tolist()
+    train_cols = pd.read_csv(train, nrows=1).columns.tolist()
     id_in_test = [c for c in sub_cols if c in test_cols]
     id_col = id_in_test[0] if id_in_test else sub_cols[0]
-    targets = [c for c in sub_cols if c != id_col]
-    if len(targets) != 1:
-        raise MleBenchError(
-            f"unsupported submission shape: expected one id + one target column, got {sub_cols}. "
-            "Multi-target / multilabel / probability-per-class submissions are not supported yet."
-        )
-    return MleTask(os.path.basename(os.path.normpath(task_dir)), train, test, sample, id_col, targets[0])
+    sub_targets = [c for c in sub_cols if c != id_col]
+
+    def _task(target_col):
+        return MleTask(os.path.basename(os.path.normpath(task_dir)), train, test, sample,
+                       id_col, target_col, sub_targets)
+
+    # Single column: it is itself the target column (label or binary probability).
+    if len(sub_targets) == 1 and sub_targets[0] in train_cols:
+        return _task(sub_targets[0])
+
+    # Multiclass probability: the target is the train column absent from test; the submission
+    # columns are its class values. Verify the match so we never guess.
+    candidates = [c for c in train_cols if c != id_col and c not in test_cols]
+    if len(candidates) == 1:
+        target_col = candidates[0]
+        classes = pd.read_csv(train, usecols=[target_col])[target_col].dropna().unique()
+        if {str(c) for c in classes} == set(sub_targets):
+            return _task(target_col)
+
+    raise MleBenchError(
+        f"unsupported submission shape: columns {sub_cols} match neither a single target "
+        "column (label/binary) nor a train column's class values (multiclass probability)."
+    )
 
 
 def grade_submission(submission_path: str, competition_id: str, *, data_dir: str | None = None) -> GradeReport:
@@ -169,17 +199,19 @@ def run_mlebench_task(
 
     ``metric`` is the *competition* metric: it is mapped to an AutoGluon eval_metric (CV
     optimises it) or computed on the CV's out-of-fold predictions, so the CV↔LB gap is
-    comparable. ``metric_mode`` (aligned/oof/needs_proba/mismatch) records how.
+    comparable. ``metric_mode`` (aligned/oof/proba/mismatch) records how.
     """
     task = read_task(task_dir)
     train_df = pd.read_csv(task.train_csv)
     test_df = pd.read_csv(task.test_csv)
 
     ag_metric, metric_mode = _resolve_metric(metric)
+    want_proba = metric_mode == "proba"
     result = run_pipeline(
         train_df, task.target_col, model=model, test_size=0.2, time_limit=time_limit, seed=42,
         model_dir=f"AutogluonModels/mle_{task.name}", use_llm=not no_llm, cv_folds=cv_folds,
         hybrid=hybrid, research=research, eval_metric=ag_metric, test_df=test_df, id_col=task.id_col,
+        proba=want_proba, proba_columns=task.submission_columns if want_proba else None,
     )
     if result.submission is None:
         raise MleBenchError("pipeline produced no submission (is the test set valid?)")
@@ -198,10 +230,16 @@ def run_mlebench_task(
         oof = cv.oof_pred.dropna()
         cv_score = float(benchmark._METRICS[metric](train_df.loc[oof.index, task.target_col], oof.to_numpy()))
         cv_metric = metric
+    elif metric_mode == "proba" and cv is not None and cv.oof_proba is not None:
+        # Probability metric on the pooled out-of-fold probabilities (binary: positive class).
+        oof = cv.oof_proba.dropna()
+        positive = getattr(result.training.predictor, "positive_class", None) if result.training else None
+        cv_score = benchmark._PROBA_METRICS[metric](train_df.loc[oof.index, task.target_col], oof, positive)
+        cv_metric = metric
     else:
         cv_score = cv.mean if cv else None
 
-    comparable = metric_mode in ("aligned", "oof")
+    comparable = metric_mode in ("aligned", "oof", "proba")
     gap = (cv_score - report.score) if (comparable and cv_score is not None and report.score is not None) else None
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -251,9 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cv", type=int, default=5, help="CV folds (the gate; >= 2).")
     p.add_argument("--time-limit", type=int, default=600, help="AutoGluon budget per fold.")
     p.add_argument("--metric", default=None,
-                   help="Competition metric (e.g. accuracy, f1_macro, quadratic_weighted_kappa). "
-                        "Mapped to AutoGluon or computed on OOF preds so the CV↔LB gap is comparable. "
-                        "Use a LABEL metric for now (submissions carry labels, not probabilities).")
+                   help="Competition metric (e.g. accuracy, f1_macro, quadratic_weighted_kappa, "
+                        "roc_auc, log_loss). Mapped to AutoGluon or computed on OOF preds/probabilities "
+                        "so the CV↔LB gap is comparable. Probability metrics emit a probability submission.")
     p.add_argument("--research", action="store_true")
     p.add_argument("--hybrid", action="store_true")
     p.add_argument("--no-baseline", action="store_true", help="Skip the --no-llm baseline per task.")

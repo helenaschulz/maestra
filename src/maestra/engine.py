@@ -77,6 +77,17 @@ def predict(predictor, X: pd.DataFrame) -> pd.Series:
     return predictor.predict(X)
 
 
+def predict_proba(predictor, X: pd.DataFrame) -> pd.DataFrame:
+    """Predict class probabilities for ``X`` (delegates to AutoGluon).
+
+    Returns a DataFrame with one column per class (columns are the predictor's class
+    labels, in its own order); for binary problems both classes are present. This is the
+    format-neutral primitive — reshaping into a competition's submission format happens in
+    the pipeline, where the sample submission's columns are known.
+    """
+    return predictor.predict_proba(X)
+
+
 def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str,
                   eval_metric: str | None = None) -> TrainingResult:
     """Fit a predictor on ALL labeled rows, with no holdout evaluation.
