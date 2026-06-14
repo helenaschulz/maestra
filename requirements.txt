@@ -1,3 +1,0 @@
-autogluon.tabular[all]
-pandas
-litellm
