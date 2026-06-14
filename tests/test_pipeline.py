@@ -87,7 +87,7 @@ def test_llm_path_applies_plan_before_training(df, fake_training, monkeypatch):
     )
 
     result = run_pipeline(
-        df, "y", model="gpt-4o", test_size=0.25, time_limit=1, seed=0, model_dir="x"
+        df, "y", model="gpt-4o", test_size=0.25, time_limit=1, seed=0, model_dir="x", use_fe=False
     )
     assert result.plan is not None
     assert result.n_cols_before == 3

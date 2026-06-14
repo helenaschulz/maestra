@@ -36,6 +36,7 @@ def append_run(
         "max_attempts": max_attempts,
         "attempts": result.attempts,
         "plan": result.plan,
+        "feature_plan": result.feature_plan,
         "metrics": result.training.metrics if result.training else None,
     }
     with open(path, "a") as fh:

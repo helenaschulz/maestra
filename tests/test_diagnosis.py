@@ -8,7 +8,7 @@ from maestra.diagnosis import diagnose_failure
 from maestra.engine import TrainingResult
 from maestra.pipeline import PipelineError, run_pipeline
 
-PARAMS = dict(model="m", test_size=0.25, time_limit=10, seed=0, model_dir="x")
+PARAMS = dict(model="m", test_size=0.25, time_limit=10, seed=0, model_dir="x", use_fe=False)
 
 
 @pytest.fixture

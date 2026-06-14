@@ -52,6 +52,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42, help="Random seed for the split.")
     p.add_argument("--model-dir", default="AutogluonModels", help="AutoGluon artefact dir.")
     p.add_argument("--no-llm", action="store_true", help="Skip cleaning (baseline run).")
+    p.add_argument("--no-fe", action="store_true", help="Skip LLM feature engineering.")
     p.add_argument(
         "--max-attempts",
         type=int,
@@ -84,7 +85,13 @@ def _print_result(result, model: str) -> None:
         print("\n=== Applied ===")
         for line in result.cleaning_log:
             print(f"  {line}")
-        print(f"Columns after cleaning: {result.n_cols_after} (from {result.n_cols_before})")
+        print(f"Columns after cleaning: {result.n_cols_clean} (from {result.n_cols_before})")
+
+    if result.feature_plan is not None:
+        print(f"\n=== LLM feature engineering ({model}) ===")
+        for line in result.feature_log:
+            print(f"  {line}")
+        print(f"Columns after feature engineering: {result.n_cols_after} (from {result.n_cols_clean})")
 
     t = result.training
     print(f"\nProblem type (inferred by AutoGluon): {t.problem_type}")
@@ -138,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             model_dir=args.model_dir,
             use_llm=not args.no_llm,
+            use_fe=not args.no_fe,
             max_attempts=args.max_attempts,
             test_df=test_df,
             id_col=args.id_col,

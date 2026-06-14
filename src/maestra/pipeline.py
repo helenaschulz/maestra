@@ -18,6 +18,7 @@ import pandas as pd
 from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from maestra.diagnosis import diagnose_failure
 from maestra.engine import TrainingResult, predict, split, train_and_evaluate
+from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.profiling import profile_dataframe
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -33,26 +34,31 @@ class PipelineResult:
     """Everything a run produced, ready for the CLI to render."""
 
     n_cols_before: int
-    n_cols_after: int
+    n_cols_after: int  # final column count (after cleaning + feature engineering)
     plan: dict | None  # None when the cleaning step was skipped
+    n_cols_clean: int = 0  # column count after cleaning, before feature engineering
     cleaning_log: list[str] = field(default_factory=list)
     training: TrainingResult | None = None
     attempts: int = 1
     diagnosis_log: list[dict] = field(default_factory=list)
     submission: pd.DataFrame | None = None  # id + prediction, when a test set was given
+    feature_plan: dict | None = None  # None when feature engineering was skipped
+    feature_log: list[str] = field(default_factory=list)
 
 
-def _build_submission(transform, predictor, test_df, target, id_col):
+def _build_submission(transforms, predictor, test_df, target, id_col):
     """Predict on the test set and return a Kaggle-style ``id``/``target`` frame.
 
-    The test set is cleaned with the *same* fitted transform as training (so drops and
-    train-fitted fills match), but its identifier column is preserved separately for the
+    The test set is run through the *same* fitted transforms as training (cleaning, then
+    feature engineering), but its identifier column is preserved separately for the
     submission even though cleaning drops it from the features.
     """
     if id_col not in test_df.columns:
         raise PipelineError(f"id column {id_col!r} not in test set. Columns: {list(test_df.columns)}")
     ids = test_df[id_col]
-    features = transform.transform(test_df) if transform is not None else test_df
+    features = test_df
+    for transform in transforms:
+        features = transform.transform(features)
     preds = predict(predictor, features)
     return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
@@ -84,6 +90,7 @@ def run_pipeline(
     seed: int,
     model_dir: str,
     use_llm: bool = True,
+    use_fe: bool = True,
     max_attempts: int = 1,
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
@@ -99,6 +106,7 @@ def run_pipeline(
         seed: Random seed for the split.
         model_dir: Directory for AutoGluon's model artefacts.
         use_llm: If ``False``, skip the LLM cleaning step (baseline run).
+        use_fe: If ``False`` (or ``use_llm`` is ``False``), skip LLM feature engineering.
         max_attempts: Upper bound on attempts. ``1`` disables the diagnosis loop; with
             ``> 1`` a failed attempt is diagnosed by the LLM and retried.
         test_df: Optional unlabeled test set. If given, the trained model predicts on it
@@ -127,34 +135,50 @@ def run_pipeline(
 
     current_time_limit = time_limit
     diagnosis_log: list[dict] = []
+    feature_plan: dict | None = None  # proposed once on the cleaned train, then cached
 
     for attempt in range(1, max_attempts + 1):
         try:
-            transform = None
+            transforms = []  # fitted transforms, applied in order to train/holdout/test
             if plan is not None:
-                transform = fit_cleaning_plan(train_raw, plan, target)
-                train = transform.transform(train_raw)
-                holdout = transform.transform(holdout_raw)
-                cleaning_log = transform.log
+                ctransform = fit_cleaning_plan(train_raw, plan, target)
+                train = ctransform.transform(train_raw)
+                holdout = ctransform.transform(holdout_raw)
+                cleaning_log = ctransform.log
+                transforms.append(ctransform)
             else:
                 train, holdout, cleaning_log = train_raw, holdout_raw, []
+
+            n_clean = len(train.columns)
+            feature_log: list[str] = []
+            if use_llm and use_fe:
+                if feature_plan is None:
+                    feature_plan = propose_feature_plan(model, profile_dataframe(train, target), target)
+                ftransform = fit_feature_plan(train, feature_plan, target)
+                train = ftransform.transform(train)
+                holdout = ftransform.transform(holdout)
+                feature_log = ftransform.log
+                transforms.append(ftransform)
 
             _validate_trainable(train, target)
             training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir)
 
             submission = None
             if test_df is not None:
-                submission = _build_submission(transform, training.predictor, test_df, target, id_col)
+                submission = _build_submission(transforms, training.predictor, test_df, target, id_col)
 
             return PipelineResult(
                 n_cols_before=n_before,
                 n_cols_after=len(train.columns),
+                n_cols_clean=n_clean,
                 plan=plan,
                 cleaning_log=cleaning_log,
                 training=training,
                 attempts=attempt,
                 diagnosis_log=diagnosis_log,
                 submission=submission,
+                feature_plan=feature_plan,
+                feature_log=feature_log,
             )
         except Exception as exc:
             if attempt == max_attempts:
