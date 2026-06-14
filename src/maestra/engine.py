@@ -21,6 +21,7 @@ class TrainingResult:
     leaderboard: pd.DataFrame
     metrics: dict[str, float]
     predictor: object | None = None  # the fitted TabularPredictor, for downstream prediction
+    val_score: float | None = None   # AutoGluon's best internal validation score (NOT the holdout)
 
 
 def split(df: pd.DataFrame, test_size: float, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -55,12 +56,17 @@ def train_and_evaluate(
         by AutoGluon from the target column.
     """
     predictor = TabularPredictor(label=target, path=model_dir).fit(train, time_limit=time_limit)
+    leaderboard = predictor.leaderboard(holdout, silent=True)
+    # Best internal validation score (AutoGluon's own train/val split) — used by the
+    # quality gate so the holdout is never consulted for that decision.
+    val_score = float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None
     return TrainingResult(
         problem_type=predictor.problem_type,
         eval_metric=predictor.eval_metric.name,
-        leaderboard=predictor.leaderboard(holdout, silent=True),
+        leaderboard=leaderboard,
         metrics=predictor.evaluate(holdout, silent=True),
         predictor=predictor,
+        val_score=val_score,
     )
 
 

@@ -117,3 +117,65 @@ def test_diagnose_failure_delegates_with_schema(monkeypatch):
     assert captured["tool_name"] == "diagnose_failure"
     assert captured["parameters_schema"] is diagnosis.DIAGNOSIS_SCHEMA
     assert "boom" in captured["user_prompt"]
+
+
+# --- Point 3: quality gate (success-but-weak revision) ------------------------------
+
+def _training(val_score):
+    return TrainingResult("binary", "accuracy", pd.DataFrame({"model": ["m"]}),
+                          {"accuracy": val_score}, val_score=val_score)
+
+
+def _patch_llm_run(monkeypatch, val_score, diag):
+    """use_llm path: cleaning plan is a no-op; engine always returns the given val_score;
+    diagnose_failure returns `diag` and counts its calls."""
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "train_and_evaluate", lambda *a, **k: _training(val_score))
+    calls = {"n": 0}
+
+    def diagnose(*a, **k):
+        calls["n"] += 1
+        return diag
+
+    monkeypatch.setattr(pipeline, "diagnose_failure", diagnose)
+    return calls
+
+
+def test_weak_metric_triggers_exactly_one_revision(df, monkeypatch):
+    calls = _patch_llm_run(monkeypatch, val_score=0.50,
+                           diag={"action": "revise_plan", "diagnosis": "weak",
+                                 "new_plan": {"columns_to_drop": [], "imputations": []}})
+    result = run_pipeline(df, "y", use_llm=True, max_attempts=3, revise_below=0.9,
+                          model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x", use_fe=False)
+    assert calls["n"] == 1                      # revised once, not on every attempt
+    assert result.attempts == 2                 # original + one retrain
+    assert result.diagnosis_log[0]["trigger"] == "weak_metric"
+
+
+def test_weak_metric_needs_attempt_budget(df, monkeypatch):
+    calls = _patch_llm_run(monkeypatch, val_score=0.50,
+                           diag={"action": "revise_plan", "diagnosis": "weak", "new_plan": {}})
+    result = run_pipeline(df, "y", use_llm=True, max_attempts=1, revise_below=0.9,
+                          model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x", use_fe=False)
+    assert calls["n"] == 0                       # no room to revise with max_attempts=1
+    assert result.attempts == 1
+
+
+def test_strong_metric_does_not_trigger(df, monkeypatch):
+    calls = _patch_llm_run(monkeypatch, val_score=0.95,
+                           diag={"action": "revise_plan", "diagnosis": "x", "new_plan": {}})
+    result = run_pipeline(df, "y", use_llm=True, max_attempts=3, revise_below=0.9,
+                          model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x", use_fe=False)
+    assert calls["n"] == 0                       # 0.95 >= 0.9 floor -> no revision
+    assert result.attempts == 1
+
+
+def test_weak_metric_give_up_accepts_run(df, monkeypatch):
+    calls = _patch_llm_run(monkeypatch, val_score=0.50,
+                           diag={"action": "give_up", "diagnosis": "hopeless"})
+    result = run_pipeline(df, "y", use_llm=True, max_attempts=3, revise_below=0.9,
+                          model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x", use_fe=False)
+    assert calls["n"] == 1                       # gate fired once
+    assert result.attempts == 1                  # run accepted, not retrained
+    assert result.training.val_score == 0.50

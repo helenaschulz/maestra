@@ -80,6 +80,17 @@ def _format_error(exc: Exception) -> str:
     return text[-_MAX_ERROR_CHARS:]
 
 
+def _weak_context(val_score: float, floor: float, metric: str) -> str:
+    """Synthetic 'failure' context for the quality gate, reusing the diagnosis tool."""
+    return (
+        f"Das Training lief erfolgreich durch, aber der interne Validierungs-Score "
+        f"({metric}) = {val_score:.4f} liegt unter dem konservativen Floor {floor}. Der "
+        f"Lauf gilt als zu schwach. Falls der Cleaning-Plan nutzbares Signal verwirft, "
+        f"revidiere ihn (revise_plan); wenn mehr Zeit helfen koennte, increase_time_limit; "
+        f"sonst give_up."
+    )
+
+
 def run_pipeline(
     df: pd.DataFrame,
     target: str,
@@ -92,6 +103,7 @@ def run_pipeline(
     use_llm: bool = True,
     use_fe: bool = True,
     max_attempts: int = 1,
+    revise_below: float | None = None,
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
 ) -> PipelineResult:
@@ -109,6 +121,10 @@ def run_pipeline(
         use_fe: If ``False`` (or ``use_llm`` is ``False``), skip LLM feature engineering.
         max_attempts: Upper bound on attempts. ``1`` disables the diagnosis loop; with
             ``> 1`` a failed attempt is diagnosed by the LLM and retried.
+        revise_below: Conservative floor on AutoGluon's internal validation score. If set
+            and a successful run scores below it, the LLM may revise the plan ONCE and
+            retrain (within ``max_attempts``). The gate reads the internal val score, not
+            the holdout, so the holdout estimate stays unbiased. ``None`` disables it.
         test_df: Optional unlabeled test set. If given, the trained model predicts on it
             and the result carries a Kaggle-style ``submission`` frame. The model is the
             one trained on the train split (the holdout is *not* added back) — a maximal
@@ -136,6 +152,7 @@ def run_pipeline(
     current_time_limit = time_limit
     diagnosis_log: list[dict] = []
     feature_plan: dict | None = None  # proposed once on the cleaned train, then cached
+    quality_revised = False  # the success-but-weak gate fires at most once
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -162,6 +179,35 @@ def run_pipeline(
 
             _validate_trainable(train, target)
             training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir)
+
+            # Quality gate (Point 3): if the run is essentially degenerate, let the LLM
+            # revise the plan ONCE and retrain. The decision uses AutoGluon's internal
+            # validation score, never the holdout — so the holdout stays an honest estimate.
+            if (
+                revise_below is not None
+                and use_llm
+                and not quality_revised
+                and attempt < max_attempts
+                and training.val_score is not None
+                and training.val_score < revise_below
+            ):
+                diagnosis = diagnose_failure(
+                    model,
+                    _weak_context(training.val_score, revise_below, training.eval_metric),
+                    profile=profile_dataframe(train_raw, target),
+                    plan=plan,
+                    time_limit=current_time_limit,
+                    target=target,
+                )
+                diagnosis_log.append({**diagnosis, "trigger": "weak_metric", "val_score": training.val_score})
+                action = diagnosis.get("action")
+                if action == "revise_plan" and diagnosis.get("new_plan"):
+                    plan, quality_revised = diagnosis["new_plan"], True
+                    continue
+                if action == "increase_time_limit" and diagnosis.get("new_time_limit"):
+                    current_time_limit, quality_revised = int(diagnosis["new_time_limit"]), True
+                    continue
+                # give_up or no actionable revision -> accept this (weak) run
 
             submission = None
             if test_df is not None:

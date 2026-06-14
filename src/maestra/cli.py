@@ -59,6 +59,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=1,
         help="Attempts before giving up. >1 enables the LLM failure-diagnosis loop.",
     )
+    p.add_argument(
+        "--revise-below",
+        type=float,
+        default=None,
+        help="Floor on AutoGluon's internal val score; below it the LLM revises the plan "
+             "once and retrains (needs --max-attempts > 1). Off by default.",
+    )
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
@@ -73,9 +80,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def _print_result(result, model: str) -> None:
     if result.diagnosis_log:
-        print(f"\n=== Diagnosis loop: succeeded on attempt {result.attempts} ===")
+        print(f"\n=== Diagnosis / revision loop ({result.attempts} attempts) ===")
         for i, d in enumerate(result.diagnosis_log, 1):
-            print(f"  attempt {i} failed -> {d.get('action')}: {d.get('diagnosis')}")
+            why = "weak val score" if d.get("trigger") == "weak_metric" else "failed"
+            print(f"  {why} -> {d.get('action')}: {d.get('diagnosis')}")
 
     if result.plan is None:
         print("\n[--no-llm] Cleaning skipped.")
@@ -147,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             use_llm=not args.no_llm,
             use_fe=not args.no_fe,
             max_attempts=args.max_attempts,
+            revise_below=args.revise_below,
             test_df=test_df,
             id_col=args.id_col,
         )
