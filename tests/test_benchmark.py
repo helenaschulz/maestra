@@ -21,6 +21,22 @@ def test_grade_accuracy_and_balanced_accuracy():
     assert grade(sub, answer, metric="balanced_accuracy", id_col="id", target="y") == 0.75
 
 
+def test_proba_metrics_score_probabilities():
+    """roc_auc / log_loss are computed on class probabilities (one column per class), not
+    labels — binary uses the positive-class column, multiclass the full matrix in column order."""
+    from sklearn.metrics import log_loss, roc_auc_score
+
+    y = [0, 1, 0, 1]
+    binary = pd.DataFrame({0: [0.8, 0.3, 0.6, 0.2], 1: [0.2, 0.7, 0.4, 0.8]})
+    assert benchmark._PROBA_METRICS["roc_auc"](y, binary, positive_class=1) == pytest.approx(
+        roc_auc_score(y, binary[1]))
+
+    ym = ["A", "B", "C", "A"]
+    multi = pd.DataFrame({"A": [0.7, 0.1, 0.2, 0.6], "B": [0.2, 0.8, 0.2, 0.3], "C": [0.1, 0.1, 0.6, 0.1]})
+    assert benchmark._PROBA_METRICS["log_loss"](ym, multi, positive_class=None) == pytest.approx(
+        log_loss(ym, multi, labels=["A", "B", "C"]))
+
+
 def test_grade_unknown_metric_raises():
     answer, sub = _answer_and_submission()
     with pytest.raises(ValueError, match="Unknown metric"):

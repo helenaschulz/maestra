@@ -70,7 +70,6 @@ _PROBA_METRICS = {
     "auc": _roc_auc_proba,
     "log_loss": _log_loss_proba,
 }
-_PROBA_HIGHER_IS_BETTER = {"roc_auc", "auc"}  # log_loss is lower-is-better
 
 
 def render_table(headers: list[str], rows: list[list]) -> str:
