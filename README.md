@@ -28,6 +28,23 @@ The split happens **first**, and the cleaning plan is *fitted on the training ro
 holdout. Computing them over the full dataset would leak test information and inflate the
 reported metrics.
 
+### Failure-diagnosis loop (`--max-attempts`)
+
+With `--max-attempts > 1` the pipeline becomes agentic: if an attempt fails, the LLM
+reads the truncated traceback plus run context and picks a **bounded recovery action**
+from a fixed vocabulary — `revise_plan`, `increase_time_limit`, or `give_up` — and the
+loop retries. The decision is structured JSON (no executed code); the loop is bounded by
+`--max-attempts` so it can't spin.
+
+```
+attempt → fail → LLM diagnoses → {revise_plan | increase_time_limit | give_up} → retry
+```
+
+> **Note.** AutoGluon is robust on clean tabular data, so the happy path rarely triggers
+> this loop. It exists for genuine failures — e.g. a plan that drops every feature
+> column, or a time/resource shortfall. The loop's behaviour is verified deterministically
+> by the test suite (engine fails on attempt 1, LLM diagnoses, attempt 2 succeeds).
+
 ## Install
 
 Requires Python 3.9–3.12. AutoGluon's `[all]` extra is large (pulls in PyTorch); the
@@ -78,6 +95,7 @@ Columns after cleaning: 8 (from 12)
 | `--test-size` | `0.2` | Holdout fraction |
 | `--seed` | `42` | Split seed |
 | `--no-llm` | off | Skip the cleaning step (baseline run) |
+| `--max-attempts` | `1` | Attempts before giving up; `>1` enables the failure-diagnosis loop |
 
 The backbone is **model-agnostic** via [LiteLLM](https://docs.litellm.ai/) — switch
 provider with `--model`; only the matching API key needs to be set.
@@ -106,9 +124,10 @@ pytest          # fast, offline — LLM and AutoGluon are mocked
 |--------|----------------|
 | `profiling.py` | Deterministic column profile (the LLM's input) |
 | `llm.py` | Thin LiteLLM wrapper; structured JSON via function-calling |
-| `cleaning.py` | Plan schema + defensive, deterministic application |
+| `cleaning.py` | Plan schema + defensive, leakage-safe fit/transform |
+| `diagnosis.py` | LLM failure diagnosis; structured recovery actions |
 | `engine.py` | AutoGluon training + holdout metrics (the only number-crunching) |
-| `pipeline.py` | The conductor loop; returns structured results |
+| `pipeline.py` | The conductor loop + bounded diagnosis/retry; returns structured results |
 | `cli.py` | Argument parsing, `.env` loading, output formatting |
 
 ## Known limitations

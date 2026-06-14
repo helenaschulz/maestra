@@ -13,7 +13,7 @@ import sys
 import pandas as pd
 
 from automl_agent.llm import LLMError
-from automl_agent.pipeline import run_pipeline
+from automl_agent.pipeline import PipelineError, run_pipeline
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -50,10 +50,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42, help="Random seed for the split.")
     p.add_argument("--model-dir", default="AutogluonModels", help="AutoGluon artefact dir.")
     p.add_argument("--no-llm", action="store_true", help="Skip cleaning (baseline run).")
+    p.add_argument(
+        "--max-attempts",
+        type=int,
+        default=1,
+        help="Attempts before giving up. >1 enables the LLM failure-diagnosis loop.",
+    )
     return p.parse_args(argv)
 
 
 def _print_result(result, model: str) -> None:
+    if result.diagnosis_log:
+        print(f"\n=== Diagnosis loop: succeeded on attempt {result.attempts} ===")
+        for i, d in enumerate(result.diagnosis_log, 1):
+            print(f"  attempt {i} failed -> {d.get('action')}: {d.get('diagnosis')}")
+
     if result.plan is None:
         print("\n[--no-llm] Cleaning skipped.")
     else:
@@ -100,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             model_dir=args.model_dir,
             use_llm=not args.no_llm,
+            max_attempts=args.max_attempts,
         )
     except ValueError as exc:  # bad target column
         print(f"Error: {exc}", file=sys.stderr)
@@ -108,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"LLM error: {exc}", file=sys.stderr)
         print("Hint: check the model name and that the provider's API key is set.", file=sys.stderr)
         return 2
+    except PipelineError as exc:
+        print(f"Pipeline error: {exc}", file=sys.stderr)
+        return 3
 
     _print_result(result, args.model)
     return 0
