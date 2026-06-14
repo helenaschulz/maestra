@@ -76,6 +76,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--cv-time-limit", type=int, default=None, help="Training budget per CV fold.")
     p.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Generate feature code, sandbox-run it, and keep only what improves the CV "
+             "(requires --cv). Off by default.",
+    )
+    p.add_argument("--hybrid-max-candidates", type=int, default=5, help="Max feature candidates.")
+    p.add_argument(
+        "--hybrid-threshold",
+        type=float,
+        default=1.0,
+        help="Keep a candidate only if it beats the baseline CV mean by this many fold sigmas.",
+    )
+    p.add_argument(
         "--research",
         action="store_true",
         help="Run web strategy research first and feed its brief to the planners as "
@@ -145,6 +158,14 @@ def _print_result(result, model: str) -> None:
         verdict = "no detectable shift" if auc < 0.6 else ("mild shift" if auc < 0.75 else "strong shift")
         print(f"\n=== Adversarial validation ===\n  train-vs-test AUC: {auc:.4f}  ({verdict})")
 
+    if result.hybrid is not None:
+        kept = [r for r in result.hybrid if r.get("kept")]
+        print(f"\n=== Hybrid features (CV-gated): {len(kept)}/{len(result.hybrid)} kept ===")
+        for r in result.hybrid:
+            delta = f"{r['cv_delta']:+.4f}" if r.get("cv_delta") is not None else "  n/a"
+            mark = "KEEP" if r.get("kept") else "drop"
+            print(f"  [{mark}] {r.get('name')}  Δcv={delta}  ({r.get('reason')})  src={r.get('source')}")
+
     if t.metrics:  # holdout path; empty under --cv (CV is the estimate)
         print("\n=== Best-model metrics on holdout ===")
         for name, value in t.metrics.items():
@@ -198,6 +219,9 @@ def main(argv: list[str] | None = None) -> int:
             revise_below=args.revise_below,
             cv_folds=args.cv,
             cv_time_limit=args.cv_time_limit,
+            hybrid=args.hybrid,
+            hybrid_max_candidates=args.hybrid_max_candidates,
+            hybrid_threshold=args.hybrid_threshold,
             research=args.research,
             rules_mode=args.rules_mode,
             test_df=test_df,

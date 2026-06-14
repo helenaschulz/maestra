@@ -36,6 +36,7 @@ class CVResult:
     std: float
     n_folds: int
     stratified: bool
+    greater_is_better: bool = True  # metric direction, for comparing CV means
 
 
 def _is_classification(y: pd.Series) -> bool:
@@ -52,7 +53,7 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
     return list(splitter.split(df))
 
 
-def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan):
+def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan, generated_features=None):
     """Clean + engineer a fold, fitting EVERY parameter on the fold's train part only.
 
     This is the heart of the leakage guarantee: imputation values and bin edges come from
@@ -65,6 +66,10 @@ def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan):
     if feature_plan is not None:
         ft = fit_feature_plan(train, feature_plan, target)
         train, val = ft.transform(train), ft.transform(val)
+    if generated_features:
+        # Lazy import avoids a top-level cycle (hybrid_features imports this module).
+        from maestra.hybrid_features import apply_generated_features
+        train, val = apply_generated_features(train, val, target, generated_features)
     return train, val
 
 
@@ -79,6 +84,7 @@ def cross_validate(
     n_folds: int = 5,
     seed: int = 42,
     stratified: bool | None = None,
+    generated_features: list | None = None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -101,12 +107,15 @@ def cross_validate(
 
     fold_scores: list[float] = []
     eval_metric = problem_type = None
+    greater_is_better = True
     for i, (train_idx, val_idx) in enumerate(folds):
         proc_train, proc_val = _process_fold(
-            df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan
+            df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
         )
         result = train_and_evaluate(proc_train, proc_val, target, time_limit, f"{model_dir}/fold_{i}")
         eval_metric, problem_type = result.eval_metric, result.problem_type
+        if result.predictor is not None:
+            greater_is_better = getattr(result.predictor.eval_metric, "greater_is_better", True)
         score = result.metrics.get(eval_metric)
         if score is None:  # fall back to any reported value
             score = next(iter(result.metrics.values()))
@@ -120,6 +129,7 @@ def cross_validate(
         std=float(np.std(fold_scores)),
         n_folds=n_folds,
         stratified=use_stratified,
+        greater_is_better=bool(greater_is_better),
     )
 
 

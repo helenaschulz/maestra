@@ -141,3 +141,34 @@ def test_no_research_by_default_leaves_path_unchanged(df, fake_training, monkeyp
     result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
                           model_dir="x", use_fe=False)  # research defaults to False
     assert result.research is None
+
+
+# --- hybrid features (gate mocked) -------------------------------------------------
+
+def test_hybrid_requires_cv(df):
+    with pytest.raises(ValueError, match="requires --cv"):
+        run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x", hybrid=True)
+
+
+def test_hybrid_runs_gate_and_logs_provenance(df, fake_training, monkeypatch):
+    from dataclasses import asdict
+
+    from maestra.hybrid_features import CandidateRecord, GeneratedFeature
+    from maestra.validation import CVResult
+
+    cv = CVResult("accuracy", "binary", [0.80, 0.82], 0.81, 0.01, 2, True, True)
+    rec = CandidateRecord("g", "an idea", "profile", 0.05, True, "improved")
+
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "propose_feature_code", lambda *a, **k: [GeneratedFeature("g", "i", "c")])
+    monkeypatch.setattr(pipeline, "select_features",
+                        lambda *a, **k: ([GeneratedFeature("g", "i", "c")], [rec], cv))
+    monkeypatch.setattr(pipeline, "apply_generated_features", lambda train, other, target, feats: (train, other))
+    monkeypatch.setattr(pipeline, "fit_predictor", lambda *a, **k: fake_training)
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                          cv_folds=2, hybrid=True, use_fe=False)
+
+    assert result.cv is cv                          # the gated CV (with kept features) is reported
+    assert result.hybrid == [asdict(rec)]           # provenance logged (kept, delta, reason, source)

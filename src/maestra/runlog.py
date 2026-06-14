@@ -56,6 +56,7 @@ def append_run(
         "cv": _cv_record(result.cv),
         "adversarial_auc": result.adversarial_auc,
         "research": result.research,
+        "hybrid": result.hybrid,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

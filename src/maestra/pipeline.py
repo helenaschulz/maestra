@@ -11,7 +11,7 @@ recovery path, is unit-testable with a mocked LLM/engine.
 from __future__ import annotations
 
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import pandas as pd
 
@@ -19,6 +19,7 @@ from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from maestra.diagnosis import diagnose_failure
 from maestra.engine import TrainingResult, fit_predictor, predict, split, train_and_evaluate
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
+from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
 from maestra.profiling import profile_dataframe
 from maestra.research import brief_context, research_strategy
 from maestra.validation import CVResult, adversarial_validation, cross_validate
@@ -49,6 +50,7 @@ class PipelineResult:
     cv: CVResult | None = None  # cross-validation estimate, when --cv was used
     adversarial_auc: float | None = None  # train/test shift AUC, when a test set was given
     research: dict | None = None  # strategy-research summary, when --research was used
+    hybrid: list | None = None  # generated-feature candidate provenance, when --hybrid was used
 
 
 def _do_research(model, df, target, rules_mode):
@@ -72,12 +74,13 @@ def _do_research(model, df, target, rules_mode):
     return brief_context(rr.brief), summary
 
 
-def _build_submission(transforms, predictor, test_df, target, id_col):
+def _build_submission(transforms, predictor, test_df, target, id_col,
+                      generated_features=None, fit_df=None):
     """Predict on the test set and return a Kaggle-style ``id``/``target`` frame.
 
     The test set is run through the *same* fitted transforms as training (cleaning, then
-    feature engineering), but its identifier column is preserved separately for the
-    submission even though cleaning drops it from the features.
+    feature engineering, then any kept generated features fitted on ``fit_df``), but its
+    identifier column is preserved separately even though cleaning drops it from the features.
     """
     if id_col not in test_df.columns:
         raise PipelineError(f"id column {id_col!r} not in test set. Columns: {list(test_df.columns)}")
@@ -85,6 +88,8 @@ def _build_submission(transforms, predictor, test_df, target, id_col):
     features = test_df
     for transform in transforms:
         features = transform.transform(features)
+    if generated_features:
+        _, features = apply_generated_features(fit_df, features, target, generated_features)
     preds = predict(predictor, features)
     return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
@@ -108,26 +113,21 @@ def _format_error(exc: Exception) -> str:
 
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
-                 research_context=None, research_summary=None) -> PipelineResult:
+                 research_context=None, research_summary=None,
+                 hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
-    The cleaning/FE plan structure is proposed once on the full data (a structural choice);
-    cross_validate then re-fits the plan *parameters* per fold for an honest, leakage-free
-    score. A final model is trained on all data for prediction/submission.
+    The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
+    the plan *parameters* per fold for an honest, leakage-free score. With ``hybrid`` the LLM
+    also generates feature code, gated fold-wise by the CV. A final model is trained on all
+    data (plus any kept generated features) for prediction/submission.
     """
     cleaning_plan = (
         propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
         if use_llm else None
     )
-    feature_plan = None
-    if use_llm and use_fe:
-        cleaned = fit_cleaning_plan(df, cleaning_plan, target).transform(df) if cleaning_plan else df
-        feature_plan = propose_feature_plan(model, profile_dataframe(cleaned, target), target, research_context)
 
-    cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
-                        model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed)
-
-    # Final model on ALL labeled rows, for prediction/submission. CV is the honest estimate.
+    # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
     transforms, cleaning_log, feature_log = [], [], []
     full = df
     if cleaning_plan is not None:
@@ -135,25 +135,47 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         full, cleaning_log = ct.transform(df), ct.log
         transforms.append(ct)
     n_clean = len(full.columns)
-    if feature_plan is not None:
+    feature_plan = None
+    if use_llm and use_fe:
+        feature_plan = propose_feature_plan(model, profile_dataframe(full, target), target, research_context)
         ft = fit_feature_plan(full, feature_plan, target)
         full, feature_log = ft.transform(full), ft.log
         transforms.append(ft)
-    _validate_trainable(full, target)
-    training = fit_predictor(full, target, time_limit, f"{model_dir}/final")
+
+    # Hybrid feature generation (opt-in): generate code, gate fold-wise by CV, keep what helps.
+    generated_features, hybrid_records = [], None
+    if hybrid and use_llm:
+        candidates = propose_feature_code(
+            model, profile_dataframe(full, target), research_context, hybrid_max_candidates)
+        generated_features, records, cv = select_features(
+            df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+            model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
+            sigma_mult=hybrid_threshold)
+        hybrid_records = [asdict(r) for r in records]
+    else:
+        cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+                            model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed)
+
+    # Final model on all data, plus kept generated features (fitted on the full cleaned+FE data).
+    full_for_fit = full
+    if generated_features:
+        full_for_fit, _ = apply_generated_features(full, full, target, generated_features)
+    _validate_trainable(full_for_fit, target)
+    training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final")
 
     adversarial_auc = None
     submission = None
     if test_df is not None:
         adversarial_auc = adversarial_validation(df, test_df, target, cleaning_plan=cleaning_plan,
                                                   model_dir=f"{model_dir}/adversarial")
-        submission = _build_submission(transforms, training.predictor, test_df, target, id_col)
+        submission = _build_submission(transforms, training.predictor, test_df, target, id_col,
+                                       generated_features=generated_features or None, fit_df=full)
 
     return PipelineResult(
-        n_cols_before=n_before, n_cols_after=len(full.columns), n_cols_clean=n_clean,
+        n_cols_before=n_before, n_cols_after=len(full_for_fit.columns), n_cols_clean=n_clean,
         plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
-        cv=cv, adversarial_auc=adversarial_auc, research=research_summary,
+        cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
     )
 
 
@@ -183,6 +205,9 @@ def run_pipeline(
     revise_below: float | None = None,
     cv_folds: int | None = None,
     cv_time_limit: int | None = None,
+    hybrid: bool = False,
+    hybrid_max_candidates: int = 5,
+    hybrid_threshold: float = 1.0,
     research: bool = False,
     rules_mode: str = "offline",
     test_df: pd.DataFrame | None = None,
@@ -228,6 +253,8 @@ def run_pipeline(
     """
     if target not in df.columns:
         raise ValueError(f"Target column {target!r} not in CSV. Columns: {list(df.columns)}")
+    if hybrid and not (cv_folds and cv_folds >= 2):
+        raise ValueError("--hybrid requires --cv (the CV is the gate that keeps/drops features).")
 
     n_before = len(df.columns)
 
@@ -243,6 +270,7 @@ def run_pipeline(
             seed=seed, model_dir=model_dir, use_llm=use_llm, use_fe=use_fe, n_folds=cv_folds,
             test_df=test_df, id_col=id_col, n_before=n_before,
             research_context=research_context, research_summary=research_summary,
+            hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
