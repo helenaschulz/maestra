@@ -1,0 +1,2 @@
+autogluon.tabular[all]
+pandas
