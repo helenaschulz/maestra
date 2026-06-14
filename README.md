@@ -1,4 +1,6 @@
-# automl-agent
+# Maestra
+
+> An LLM conductor for tabular AutoML.
 
 An **LLM conductor** over [AutoGluon](https://auto.gluon.ai/) as the **workhorse** for
 tabular AutoML on CSV data.
@@ -20,7 +22,7 @@ The LLM's plan is drawn from a fixed vocabulary and applied by deterministic pan
 split  →  profile(train)  →  LLM cleaning plan  →  fit on train + apply to both  →  train  →  evaluate
 ```
 
-One function per step, orchestrated by a plain Python loop ([`pipeline.py`](src/automl_agent/pipeline.py)).
+One function per step, orchestrated by a plain Python loop ([`pipeline.py`](src/maestra/pipeline.py)).
 No agent framework — the whole flow is readable top to bottom.
 
 The split happens **first**, and the cleaning plan is *fitted on the training rows only*
@@ -66,7 +68,7 @@ cp .env.example .env
 ## Usage
 
 ```bash
-automl-agent --csv data/titanic.csv --target Survived
+maestra --csv data/titanic.csv --target Survived
 ```
 
 Example output (abridged):
@@ -93,7 +95,7 @@ test set is cleaned with the *same* fitted transform as training, and its id col
 carried through even though cleaning drops it from the features:
 
 ```bash
-automl-agent --csv data/train.csv --target class \
+maestra --csv data/train.csv --target class \
   --test data/test.csv --submission data/submission.csv
 ```
 
@@ -121,7 +123,7 @@ provider with `--model`; only the matching API key needs to be set.
 
 ```python
 import pandas as pd
-from automl_agent import run_pipeline
+from maestra import run_pipeline
 
 df = pd.read_csv("data/titanic.csv")
 result = run_pipeline(df, "Survived", model="gpt-4o",

@@ -15,10 +15,10 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from automl_agent.cleaning import fit_cleaning_plan, propose_cleaning_plan
-from automl_agent.diagnosis import diagnose_failure
-from automl_agent.engine import TrainingResult, predict, split, train_and_evaluate
-from automl_agent.profiling import profile_dataframe
+from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
+from maestra.diagnosis import diagnose_failure
+from maestra.engine import TrainingResult, predict, split, train_and_evaluate
+from maestra.profiling import profile_dataframe
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
 _MAX_ERROR_CHARS = 1500

@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from automl_agent import cleaning
-from automl_agent.cleaning import fit_cleaning_plan, propose_cleaning_plan
+from maestra import cleaning
+from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 
 
 @pytest.fixture

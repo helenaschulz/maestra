@@ -1,6 +1,6 @@
 import pandas as pd
 
-from automl_agent.profiling import profile_dataframe
+from maestra.profiling import profile_dataframe
 
 
 def _df():

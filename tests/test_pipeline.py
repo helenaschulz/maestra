@@ -3,9 +3,9 @@ offline — we assert the conductor calls the right steps and threads data corre
 import pandas as pd
 import pytest
 
-from automl_agent import pipeline
-from automl_agent.engine import TrainingResult
-from automl_agent.pipeline import run_pipeline
+from maestra import pipeline
+from maestra.engine import TrainingResult
+from maestra.pipeline import run_pipeline
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 """Command-line entry point. Parses args, presents results, handles user-facing errors.
 
-Installed as the ``automl-agent`` console script. All real work lives in the library
+Installed as the ``maestra`` console script. All real work lives in the library
 modules; this file only does I/O and formatting.
 """
 from __future__ import annotations
@@ -12,8 +12,8 @@ import sys
 
 import pandas as pd
 
-from automl_agent.llm import LLMError
-from automl_agent.pipeline import PipelineError, run_pipeline
+from maestra.llm import LLMError
+from maestra.pipeline import PipelineError, run_pipeline
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -35,7 +35,7 @@ def load_dotenv(path: str = ".env") -> None:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="automl-agent",
+        prog="maestra",
         description="LLM-conducted cleaning + AutoGluon training for a tabular CSV.",
     )
     p.add_argument("--csv", required=True, help="Path to the input CSV.")

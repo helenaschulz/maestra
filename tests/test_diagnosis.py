@@ -3,10 +3,10 @@ recovery logic is verified deterministically and offline — no real crash is co
 import pandas as pd
 import pytest
 
-from automl_agent import diagnosis, pipeline
-from automl_agent.diagnosis import diagnose_failure
-from automl_agent.engine import TrainingResult
-from automl_agent.pipeline import PipelineError, run_pipeline
+from maestra import diagnosis, pipeline
+from maestra.diagnosis import diagnose_failure
+from maestra.engine import TrainingResult
+from maestra.pipeline import PipelineError, run_pipeline
 
 PARAMS = dict(model="m", test_size=0.25, time_limit=10, seed=0, model_dir="x")
 

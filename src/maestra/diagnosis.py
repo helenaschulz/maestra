@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
-from automl_agent.cleaning import PLAN_SCHEMA
-from automl_agent.llm import call_structured
+from maestra.cleaning import PLAN_SCHEMA
+from maestra.llm import call_structured
 
 #: Recovery actions the LLM may choose. Mirrored in ``DIAGNOSIS_SCHEMA``.
 ACTIONS = ["revise_plan", "increase_time_limit", "give_up"]

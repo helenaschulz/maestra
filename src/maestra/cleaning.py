@@ -20,7 +20,7 @@ from typing import Any
 
 import pandas as pd
 
-from automl_agent.llm import call_structured
+from maestra.llm import call_structured
 
 #: Imputation strategies the LLM may choose from. Mirrored in ``PLAN_SCHEMA``.
 STRATEGIES = ["median", "mean", "most_frequent", "constant"]
@@ -81,7 +81,7 @@ def propose_cleaning_plan(model: str, profile: dict, target: str) -> dict:
 
     Args:
         model: LiteLLM model string.
-        profile: Output of :func:`automl_agent.profiling.profile_dataframe`.
+        profile: Output of :func:`maestra.profiling.profile_dataframe`.
         target: Target column name (passed to the model so it leaves it alone).
 
     Returns:
