@@ -1,5 +1,6 @@
 .venv/
 AutogluonModels/
+AutogluonModels_baseline/
 __pycache__/
 *.pyc
 .DS_Store
@@ -8,3 +9,7 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+
+# Downloaded / competition datasets (keep the small bundled example)
+/data/*
+!/data/titanic.csv
