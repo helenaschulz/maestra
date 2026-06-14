@@ -15,6 +15,7 @@ import pandas as pd
 
 from maestra.llm import LLMError
 from maestra.pipeline import PipelineError, run_pipeline
+from maestra.report import generate_report
 from maestra.runlog import append_run, compare_runs
 
 
@@ -69,6 +70,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
+    p.add_argument("--report", help="Write an LLM-generated Markdown report of the run to this path.")
     p.add_argument("--runs-log", default="runs.jsonl", help="Append-only run log path (default runs.jsonl).")
     p.add_argument(
         "--compare",
@@ -188,6 +190,16 @@ def main(argv: list[str] | None = None) -> int:
         timestamp=datetime.now().isoformat(timespec="seconds"),
     )
     print(f"\nLogged to {args.runs_log}. Compare with: maestra --csv {args.csv} --target {args.target} --compare")
+
+    if args.report:
+        try:
+            report_md = generate_report(args.model, result)
+        except LLMError as exc:
+            print(f"Report skipped (LLM error): {exc}", file=sys.stderr)
+        else:
+            with open(args.report, "w") as fh:
+                fh.write(report_md)
+            print(f"Report written: {args.report}")
 
     return 0
 
