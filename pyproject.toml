@@ -25,6 +25,7 @@ research = ["httpx", "ddgs", "trafilatura"]
 
 [project.scripts]
 maestra = "maestra.cli:main"
+maestra-bench = "maestra.benchmark:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/maestra"]
