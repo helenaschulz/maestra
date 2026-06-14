@@ -114,7 +114,8 @@ def _format_error(exc: Exception) -> str:
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
-                 hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0) -> PipelineResult:
+                 hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
+                 eval_metric=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -150,18 +151,19 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         generated_features, records, cv = select_features(
             df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
-            sigma_mult=hybrid_threshold)
+            sigma_mult=hybrid_threshold, eval_metric=eval_metric)
         hybrid_records = [asdict(r) for r in records]
     else:
         cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
-                            model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed)
+                            model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
+                            eval_metric=eval_metric)
 
     # Final model on all data, plus kept generated features (fitted on the full cleaned+FE data).
     full_for_fit = full
     if generated_features:
         full_for_fit, _ = apply_generated_features(full, full, target, generated_features)
     _validate_trainable(full_for_fit, target)
-    training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final")
+    training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final", eval_metric)
 
     adversarial_auc = None
     submission = None
@@ -210,6 +212,7 @@ def run_pipeline(
     hybrid_threshold: float = 1.0,
     research: bool = False,
     rules_mode: str = "offline",
+    eval_metric: str | None = None,
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
 ) -> PipelineResult:
@@ -271,6 +274,7 @@ def run_pipeline(
             test_df=test_df, id_col=id_col, n_before=n_before,
             research_context=research_context, research_summary=research_summary,
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
+            eval_metric=eval_metric,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
@@ -312,7 +316,7 @@ def run_pipeline(
                 transforms.append(ftransform)
 
             _validate_trainable(train, target)
-            training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir)
+            training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir, eval_metric)
 
             # Quality gate (Point 3): if the run is essentially degenerate, let the LLM
             # revise the plan ONCE and retrain. The decision uses AutoGluon's internal

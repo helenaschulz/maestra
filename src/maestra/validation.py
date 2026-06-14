@@ -85,6 +85,7 @@ def cross_validate(
     seed: int = 42,
     stratified: bool | None = None,
     generated_features: list | None = None,
+    eval_metric: str | None = None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -112,7 +113,7 @@ def cross_validate(
         proc_train, proc_val = _process_fold(
             df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
         )
-        result = train_and_evaluate(proc_train, proc_val, target, time_limit, f"{model_dir}/fold_{i}")
+        result = train_and_evaluate(proc_train, proc_val, target, time_limit, f"{model_dir}/fold_{i}", eval_metric)
         eval_metric, problem_type = result.eval_metric, result.problem_type
         if result.predictor is not None:
             greater_is_better = getattr(result.predictor.eval_metric, "greater_is_better", True)

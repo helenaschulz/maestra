@@ -41,6 +41,7 @@ def train_and_evaluate(
     target: str,
     time_limit: int,
     model_dir: str,
+    eval_metric: str | None = None,
 ) -> TrainingResult:
     """Fit an AutoGluon predictor and evaluate it on the holdout set.
 
@@ -55,7 +56,8 @@ def train_and_evaluate(
         A :class:`TrainingResult`. The problem type and evaluation metric are inferred
         by AutoGluon from the target column.
     """
-    predictor = TabularPredictor(label=target, path=model_dir).fit(train, time_limit=time_limit)
+    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric).fit(
+        train, time_limit=time_limit)
     leaderboard = predictor.leaderboard(holdout, silent=True)
     # Best internal validation score (AutoGluon's own train/val split) — used by the
     # quality gate so the holdout is never consulted for that decision.
@@ -75,14 +77,16 @@ def predict(predictor, X: pd.DataFrame) -> pd.Series:
     return predictor.predict(X)
 
 
-def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str) -> TrainingResult:
+def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str,
+                  eval_metric: str | None = None) -> TrainingResult:
     """Fit a predictor on ALL labeled rows, with no holdout evaluation.
 
     Used by the cross-validation path, where the honest estimate is the CV score and this
     final model exists only for prediction (submission/report). ``metrics`` is therefore
     empty; ``val_score`` is AutoGluon's internal validation score.
     """
-    predictor = TabularPredictor(label=target, path=model_dir).fit(train, time_limit=time_limit)
+    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric).fit(
+        train, time_limit=time_limit)
     leaderboard = predictor.leaderboard(silent=True)
     val_score = float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None
     return TrainingResult(

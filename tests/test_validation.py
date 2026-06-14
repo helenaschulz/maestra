@@ -25,7 +25,7 @@ def test_cross_validate_aggregates_fold_scores(monkeypatch):
     df = pd.DataFrame({"x": list(range(12)), "y": [0, 1] * 6})
     scores = iter([0.7, 0.8, 0.9])
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
         return TrainingResult("binary", "accuracy", pd.DataFrame(), {"accuracy": next(scores)})
 
     monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
