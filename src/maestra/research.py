@@ -288,6 +288,26 @@ def synthesize_brief(
     )
 
 
+_RESEARCH_HYPOTHESES_PREFIX = (
+    "Strategie-Hypothesen aus Web-Recherche (NUR Vorschlaege, NICHT bindend; jede "
+    "Entscheidung wird weiterhin ueber die Validierung geprueft):\n"
+)
+
+
+def brief_context(brief: dict) -> str:
+    """Compact, prompt-ready hypotheses from a strategy brief, for the planning nodes.
+
+    Returns the relevant brief sections as a clearly-labelled, non-binding suggestion block
+    — the planner may use it, but every decision is still checked by validation.
+    """
+    keep = {
+        key: brief[key]
+        for key in ("summary", "preprocessing", "feature_engineering", "pitfalls", "validation_strategy")
+        if brief.get(key)
+    }
+    return _RESEARCH_HYPOTHESES_PREFIX + json.dumps(keep, ensure_ascii=False, indent=2, default=str)
+
+
 @dataclass
 class ResearchResult:
     """The brief plus a small audit trail of what the node actually did."""

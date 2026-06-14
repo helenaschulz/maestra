@@ -76,13 +76,16 @@ _SYSTEM_PROMPT = (
 )
 
 
-def propose_cleaning_plan(model: str, profile: dict, target: str) -> dict:
+def propose_cleaning_plan(
+    model: str, profile: dict, target: str, research_context: str | None = None
+) -> dict:
     """Ask the LLM for a structured cleaning plan for the given column profile.
 
     Args:
         model: LiteLLM model string.
         profile: Output of :func:`maestra.profiling.profile_dataframe`.
         target: Target column name (passed to the model so it leaves it alone).
+        research_context: Optional non-binding strategy hypotheses from the research node.
 
     Returns:
         A plan dict matching :data:`PLAN_SCHEMA`.
@@ -91,6 +94,8 @@ def propose_cleaning_plan(model: str, profile: dict, target: str) -> dict:
         f"Zielspalte: {target}\n"
         f"Spalten-Profil (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
     )
+    if research_context:
+        user_prompt += "\n\n" + research_context
     return call_structured(
         model=model,
         system_prompt=_SYSTEM_PROMPT,

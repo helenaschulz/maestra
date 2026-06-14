@@ -62,12 +62,19 @@ _SYSTEM_PROMPT = (
 )
 
 
-def propose_feature_plan(model: str, profile: dict, target: str) -> dict:
-    """Ask the LLM for a feature-engineering plan for the (cleaned) train profile."""
+def propose_feature_plan(
+    model: str, profile: dict, target: str, research_context: str | None = None
+) -> dict:
+    """Ask the LLM for a feature-engineering plan for the (cleaned) train profile.
+
+    ``research_context`` (optional) carries non-binding strategy hypotheses from the
+    research node."""
     user_prompt = (
         f"Zielspalte: {target}\n"
         f"Spalten-Profil (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
     )
+    if research_context:
+        user_prompt += "\n\n" + research_context
     return call_structured(
         model=model,
         system_prompt=_SYSTEM_PROMPT,

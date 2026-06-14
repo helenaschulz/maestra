@@ -75,6 +75,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Run leakage-free K-fold cross-validation instead of a single holdout (K >= 2).",
     )
     p.add_argument("--cv-time-limit", type=int, default=None, help="Training budget per CV fold.")
+    p.add_argument(
+        "--research",
+        action="store_true",
+        help="Run web strategy research first and feed its brief to the planners as "
+             "non-binding hypotheses (off by default; needs a search provider key).",
+    )
+    p.add_argument(
+        "--rules-mode",
+        choices=["offline", "live"],
+        default="offline",
+        help="Competition rules mode for --research (default offline).",
+    )
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
@@ -89,6 +101,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _print_result(result, model: str) -> None:
+    if result.research is not None:
+        r = result.research
+        print(f"\n=== Strategy research ({model}, rules_mode={r.get('rules_mode')}) ===")
+        print(f"  {len(r.get('references') or [])} references, grounded={r.get('grounded')} "
+              f"-> fed to planning as non-binding hypotheses")
+
     if result.diagnosis_log:
         print(f"\n=== Diagnosis / revision loop ({result.attempts} attempts) ===")
         for i, d in enumerate(result.diagnosis_log, 1):
@@ -180,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             revise_below=args.revise_below,
             cv_folds=args.cv,
             cv_time_limit=args.cv_time_limit,
+            research=args.research,
+            rules_mode=args.rules_mode,
             test_df=test_df,
             id_col=args.id_col,
         )

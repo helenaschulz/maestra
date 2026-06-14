@@ -20,6 +20,7 @@ from maestra.diagnosis import diagnose_failure
 from maestra.engine import TrainingResult, fit_predictor, predict, split, train_and_evaluate
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.profiling import profile_dataframe
+from maestra.research import brief_context, research_strategy
 from maestra.validation import CVResult, adversarial_validation, cross_validate
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -47,6 +48,28 @@ class PipelineResult:
     feature_log: list[str] = field(default_factory=list)
     cv: CVResult | None = None  # cross-validation estimate, when --cv was used
     adversarial_auc: float | None = None  # train/test shift AUC, when a test set was given
+    research: dict | None = None  # strategy-research summary, when --research was used
+
+
+def _do_research(model, df, target, rules_mode):
+    """Run the (opt-in) research node and return ``(context_string, log_summary)``.
+
+    The context is fed to the planning nodes as non-binding hypotheses; the summary
+    (rules_mode, reference URLs, grounded flag) is logged. Nothing here bypasses
+    validation — the brief only shapes what the LLM proposes.
+    """
+    rr = research_strategy(
+        model,
+        f"Tabular machine-learning task: predict the column '{target}'.",
+        profile=profile_dataframe(df, target),
+        rules_mode=rules_mode,
+    )
+    summary = {
+        "rules_mode": rr.rules_mode,
+        "references": [r.get("url") for r in rr.brief.get("references", [])],
+        "grounded": rr.brief.get("grounded"),
+    }
+    return brief_context(rr.brief), summary
 
 
 def _build_submission(transforms, predictor, test_df, target, id_col):
@@ -84,18 +107,22 @@ def _format_error(exc: Exception) -> str:
 
 
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
-                 use_llm, use_fe, n_folds, test_df, id_col, n_before) -> PipelineResult:
+                 use_llm, use_fe, n_folds, test_df, id_col, n_before,
+                 research_context=None, research_summary=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data (a structural choice);
     cross_validate then re-fits the plan *parameters* per fold for an honest, leakage-free
     score. A final model is trained on all data for prediction/submission.
     """
-    cleaning_plan = propose_cleaning_plan(model, profile_dataframe(df, target), target) if use_llm else None
+    cleaning_plan = (
+        propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
+        if use_llm else None
+    )
     feature_plan = None
     if use_llm and use_fe:
         cleaned = fit_cleaning_plan(df, cleaning_plan, target).transform(df) if cleaning_plan else df
-        feature_plan = propose_feature_plan(model, profile_dataframe(cleaned, target), target)
+        feature_plan = propose_feature_plan(model, profile_dataframe(cleaned, target), target, research_context)
 
     cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                         model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed)
@@ -126,7 +153,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         n_cols_before=n_before, n_cols_after=len(full.columns), n_cols_clean=n_clean,
         plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
-        cv=cv, adversarial_auc=adversarial_auc,
+        cv=cv, adversarial_auc=adversarial_auc, research=research_summary,
     )
 
 
@@ -156,6 +183,8 @@ def run_pipeline(
     revise_below: float | None = None,
     cv_folds: int | None = None,
     cv_time_limit: int | None = None,
+    research: bool = False,
+    rules_mode: str = "offline",
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
 ) -> PipelineResult:
@@ -182,6 +211,11 @@ def run_pipeline(
             re-fitted per fold; the final model is trained on all data for prediction. The
             diagnosis/retry and quality-revision loops apply only to the holdout path.
         cv_time_limit: Training budget per CV fold (defaults to ``time_limit``).
+        research: If ``True`` (and ``use_llm``), run the web strategy-research node first and
+            feed its brief to the cleaning/FE planners as *non-binding hypotheses*. Nothing
+            bypasses validation; off by default (no web/LLM research calls).
+        rules_mode: ``"offline"`` (default) or ``"live"`` for the research node — in live
+            mode the brief must not recommend external data or third-party solutions.
         test_df: Optional unlabeled test set. If given, the trained model predicts on it
             and the result carries a Kaggle-style ``submission`` frame. The model is the
             one trained on the train split (the holdout is *not* added back) — a maximal
@@ -197,11 +231,18 @@ def run_pipeline(
 
     n_before = len(df.columns)
 
+    # Opt-in strategy research (before planning). Produces non-binding hypotheses for the
+    # planners + a summary to log. Skipped entirely without --research / use_llm.
+    research_context, research_summary = None, None
+    if research and use_llm:
+        research_context, research_summary = _do_research(model, df, target, rules_mode)
+
     if cv_folds is not None and cv_folds >= 2:
         return _run_with_cv(
             df, target, model=model, time_limit=time_limit, cv_time_limit=cv_time_limit or time_limit,
             seed=seed, model_dir=model_dir, use_llm=use_llm, use_fe=use_fe, n_folds=cv_folds,
             test_df=test_df, id_col=id_col, n_before=n_before,
+            research_context=research_context, research_summary=research_summary,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
@@ -211,7 +252,7 @@ def run_pipeline(
     plan: dict | None = None
     if use_llm:
         profile = profile_dataframe(train_raw, target)
-        plan = propose_cleaning_plan(model, profile, target)
+        plan = propose_cleaning_plan(model, profile, target, research_context)
 
     current_time_limit = time_limit
     diagnosis_log: list[dict] = []
@@ -234,7 +275,8 @@ def run_pipeline(
             feature_log: list[str] = []
             if use_llm and use_fe:
                 if feature_plan is None:
-                    feature_plan = propose_feature_plan(model, profile_dataframe(train, target), target)
+                    feature_plan = propose_feature_plan(
+                        model, profile_dataframe(train, target), target, research_context)
                 ftransform = fit_feature_plan(train, feature_plan, target)
                 train = ftransform.transform(train)
                 holdout = ftransform.transform(holdout)
@@ -289,6 +331,7 @@ def run_pipeline(
                 submission=submission,
                 feature_plan=feature_plan,
                 feature_log=feature_log,
+                research=research_summary,
             )
         except Exception as exc:
             if attempt == max_attempts:

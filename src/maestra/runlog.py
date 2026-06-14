@@ -55,6 +55,7 @@ def append_run(
         "metrics": result.training.metrics if result.training else None,
         "cv": _cv_record(result.cv),
         "adversarial_auc": result.adversarial_auc,
+        "research": result.research,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

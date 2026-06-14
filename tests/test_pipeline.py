@@ -93,3 +93,51 @@ def test_llm_path_applies_plan_before_training(df, fake_training, monkeypatch):
     assert result.n_cols_before == 3
     assert result.n_cols_after == 2  # 'id' dropped
     assert any("DROP 'id'" in line for line in result.cleaning_log)
+
+
+# --- opt-in research wiring --------------------------------------------------------
+
+def test_research_runs_feeds_planning_and_logs(df, fake_training, monkeypatch):
+    from maestra.research import ResearchResult
+
+    _patch_engine(monkeypatch, fake_training)
+    rr = ResearchResult(
+        brief={"summary": "s", "references": [{"url": "https://x/1"}], "grounded": True},
+        rules_mode="live",
+    )
+    rules_seen = []
+
+    def fake_research(model, problem, *, profile, rules_mode):
+        rules_seen.append(rules_mode)
+        return rr
+
+    captured = {}
+
+    def fake_clean(model, profile, target, research_context=None):
+        captured["ctx"] = research_context
+        return {"columns_to_drop": [], "imputations": []}
+
+    monkeypatch.setattr(pipeline, "research_strategy", fake_research)
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan", fake_clean)
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                          model_dir="x", research=True, rules_mode="live", use_fe=False)
+
+    assert rules_seen == ["live"]                 # research ran, in the requested mode
+    assert captured["ctx"] is not None            # brief context reached the cleaning planner
+    assert result.research == {"rules_mode": "live", "references": ["https://x/1"], "grounded": True}
+
+
+def test_no_research_by_default_leaves_path_unchanged(df, fake_training, monkeypatch):
+    _patch_engine(monkeypatch, fake_training)
+
+    def boom(*a, **k):
+        raise AssertionError("research_strategy must not run without research=True")
+
+    monkeypatch.setattr(pipeline, "research_strategy", boom)
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                          model_dir="x", use_fe=False)  # research defaults to False
+    assert result.research is None
