@@ -113,11 +113,12 @@ confirming the leakage-safe pipeline gives honest numbers.
 - 🛠️ **Agentic feature engineering** — date parts, binning, log, ratios from a fixed vocabulary
 - 🔒 **Leakage-safe** — cleaning *and* feature fitting happen on train only (fit/transform)
 - 🔁 **Self-healing** — a bounded loop retries failures *and* revises weak runs (gated on the internal val score, never the holdout)
+- 🎯 **Trustworthy validation** — opt-in leakage-free k-fold CV (`--cv`) + adversarial train/test shift check
 - 📊 **Run log + baseline diff** — every run appended to `runs.jsonl`; `--compare` shows the LLM-vs-baseline delta
 - 📝 **Auto report** — an LLM Markdown write-up grounded in the run's real numbers
 - 🔌 **Model-agnostic** — any [LiteLLM](https://docs.litellm.ai/) backbone via one `--model` string
 - 🏆 **Kaggle-ready** — produces a submission file in one command
-- 🧪 **Fully tested** — 48 fast, offline tests (LLM *and* AutoGluon mocked)
+- 🧪 **Fully tested** — 52 fast, offline tests (LLM *and* AutoGluon mocked)
 
 ## Install
 
@@ -157,6 +158,8 @@ maestra --csv data/train.csv --target class \
 | `--seed` | `42` | Split seed |
 | `--no-llm` | off | Skip cleaning — baseline run (always worth comparing against) |
 | `--no-fe` | off | Skip LLM feature engineering |
+| `--cv` | — | Run leakage-free K-fold cross-validation instead of a single holdout (K ≥ 2) |
+| `--cv-time-limit` | `--time-limit` | Training budget per CV fold |
 | `--max-attempts` | `1` | `>1` enables the failure-diagnosis loop |
 | `--revise-below` | — | Floor on the internal val score; below it the LLM revises the plan once and retrains |
 | `--test` | — | Unlabeled test CSV to predict on (for a submission) |
@@ -204,6 +207,7 @@ verified deterministically by the test suite.
 | [`feature_engineering.py`](src/maestra/feature_engineering.py) | Feature vocabulary + leakage-safe fit/transform |
 | [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure & weak-run diagnosis; structured recovery actions |
 | [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics & prediction — the *only* number-crunching |
+| [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV + adversarial train/test shift check |
 | [`pipeline.py`](src/maestra/pipeline.py) | The conductor loop + bounded diagnosis/retry; returns plain data |
 | [`runlog.py`](src/maestra/runlog.py) | Append-only run log + baseline comparison |
 | [`report.py`](src/maestra/report.py) | LLM Markdown report grounded in the run's facts |
@@ -222,7 +226,7 @@ verified deterministically by the test suite.
 ## Development
 
 ```bash
-pytest      # 48 tests, fast & offline — LLM and AutoGluon are mocked
+pytest      # 52 tests, fast & offline — LLM and AutoGluon are mocked
 ```
 
 ## Known limitations
