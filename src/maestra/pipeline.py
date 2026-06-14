@@ -17,9 +17,10 @@ import pandas as pd
 
 from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from maestra.diagnosis import diagnose_failure
-from maestra.engine import TrainingResult, predict, split, train_and_evaluate
+from maestra.engine import TrainingResult, fit_predictor, predict, split, train_and_evaluate
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.profiling import profile_dataframe
+from maestra.validation import CVResult, adversarial_validation, cross_validate
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
 _MAX_ERROR_CHARS = 1500
@@ -44,6 +45,8 @@ class PipelineResult:
     submission: pd.DataFrame | None = None  # id + prediction, when a test set was given
     feature_plan: dict | None = None  # None when feature engineering was skipped
     feature_log: list[str] = field(default_factory=list)
+    cv: CVResult | None = None  # cross-validation estimate, when --cv was used
+    adversarial_auc: float | None = None  # train/test shift AUC, when a test set was given
 
 
 def _build_submission(transforms, predictor, test_df, target, id_col):
@@ -80,6 +83,53 @@ def _format_error(exc: Exception) -> str:
     return text[-_MAX_ERROR_CHARS:]
 
 
+def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
+                 use_llm, use_fe, n_folds, test_df, id_col, n_before) -> PipelineResult:
+    """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
+
+    The cleaning/FE plan structure is proposed once on the full data (a structural choice);
+    cross_validate then re-fits the plan *parameters* per fold for an honest, leakage-free
+    score. A final model is trained on all data for prediction/submission.
+    """
+    cleaning_plan = propose_cleaning_plan(model, profile_dataframe(df, target), target) if use_llm else None
+    feature_plan = None
+    if use_llm and use_fe:
+        cleaned = fit_cleaning_plan(df, cleaning_plan, target).transform(df) if cleaning_plan else df
+        feature_plan = propose_feature_plan(model, profile_dataframe(cleaned, target), target)
+
+    cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+                        model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed)
+
+    # Final model on ALL labeled rows, for prediction/submission. CV is the honest estimate.
+    transforms, cleaning_log, feature_log = [], [], []
+    full = df
+    if cleaning_plan is not None:
+        ct = fit_cleaning_plan(df, cleaning_plan, target)
+        full, cleaning_log = ct.transform(df), ct.log
+        transforms.append(ct)
+    n_clean = len(full.columns)
+    if feature_plan is not None:
+        ft = fit_feature_plan(full, feature_plan, target)
+        full, feature_log = ft.transform(full), ft.log
+        transforms.append(ft)
+    _validate_trainable(full, target)
+    training = fit_predictor(full, target, time_limit, f"{model_dir}/final")
+
+    adversarial_auc = None
+    submission = None
+    if test_df is not None:
+        adversarial_auc = adversarial_validation(df, test_df, target, cleaning_plan=cleaning_plan,
+                                                  model_dir=f"{model_dir}/adversarial")
+        submission = _build_submission(transforms, training.predictor, test_df, target, id_col)
+
+    return PipelineResult(
+        n_cols_before=n_before, n_cols_after=len(full.columns), n_cols_clean=n_clean,
+        plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
+        feature_plan=feature_plan, feature_log=feature_log, submission=submission,
+        cv=cv, adversarial_auc=adversarial_auc,
+    )
+
+
 def _weak_context(val_score: float, floor: float, metric: str) -> str:
     """Synthetic 'failure' context for the quality gate, reusing the diagnosis tool."""
     return (
@@ -104,6 +154,8 @@ def run_pipeline(
     use_fe: bool = True,
     max_attempts: int = 1,
     revise_below: float | None = None,
+    cv_folds: int | None = None,
+    cv_time_limit: int | None = None,
     test_df: pd.DataFrame | None = None,
     id_col: str = "id",
 ) -> PipelineResult:
@@ -125,6 +177,11 @@ def run_pipeline(
             and a successful run scores below it, the LLM may revise the plan ONCE and
             retrain (within ``max_attempts``). The gate reads the internal val score, not
             the holdout, so the holdout estimate stays unbiased. ``None`` disables it.
+        cv_folds: If set (>= 2), run leakage-free k-fold cross-validation instead of the
+            single holdout — the trustworthy path. The cleaning/FE plan *parameters* are
+            re-fitted per fold; the final model is trained on all data for prediction. The
+            diagnosis/retry and quality-revision loops apply only to the holdout path.
+        cv_time_limit: Training budget per CV fold (defaults to ``time_limit``).
         test_df: Optional unlabeled test set. If given, the trained model predicts on it
             and the result carries a Kaggle-style ``submission`` frame. The model is the
             one trained on the train split (the holdout is *not* added back) — a maximal
@@ -139,6 +196,13 @@ def run_pipeline(
         raise ValueError(f"Target column {target!r} not in CSV. Columns: {list(df.columns)}")
 
     n_before = len(df.columns)
+
+    if cv_folds is not None and cv_folds >= 2:
+        return _run_with_cv(
+            df, target, model=model, time_limit=time_limit, cv_time_limit=cv_time_limit or time_limit,
+            seed=seed, model_dir=model_dir, use_llm=use_llm, use_fe=use_fe, n_folds=cv_folds,
+            test_df=test_df, id_col=id_col, n_before=n_before,
+        )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
     # would see the holdout and leak test information into the features.

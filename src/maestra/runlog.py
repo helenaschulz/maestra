@@ -11,6 +11,20 @@ import json
 from maestra.pipeline import PipelineResult
 
 
+def _cv_record(cv) -> dict | None:
+    """Flatten a CVResult to a JSON-friendly dict (or None when CV wasn't run)."""
+    if cv is None:
+        return None
+    return {
+        "eval_metric": cv.eval_metric,
+        "mean": cv.mean,
+        "std": cv.std,
+        "folds": cv.n_folds,
+        "stratified": cv.stratified,
+        "fold_scores": cv.fold_scores,
+    }
+
+
 def append_run(
     path: str,
     result: PipelineResult,
@@ -39,6 +53,8 @@ def append_run(
         "feature_plan": result.feature_plan,
         "diagnosis_log": result.diagnosis_log,
         "metrics": result.training.metrics if result.training else None,
+        "cv": _cv_record(result.cv),
+        "adversarial_auc": result.adversarial_auc,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

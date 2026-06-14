@@ -35,10 +35,16 @@ def build_report_facts(result) -> dict:
     if t is not None and "score_test" in t.leaderboard.columns:
         cols = [c for c in ("model", "score_test") if c in t.leaderboard.columns]
         leaderboard_top = t.leaderboard.head(5)[cols].to_dict("records")
+    cv = result.cv
     return {
         "problem_type": t.problem_type if t else None,
         "eval_metric": t.eval_metric if t else None,
-        "holdout_metrics": t.metrics if t else None,
+        "holdout_metrics": (t.metrics or None) if t else None,
+        "cross_validation": (
+            {"eval_metric": cv.eval_metric, "mean": cv.mean, "std": cv.std,
+             "folds": cv.n_folds, "fold_scores": cv.fold_scores} if cv else None
+        ),
+        "adversarial_auc": result.adversarial_auc,
         "internal_val_score": t.val_score if t else None,
         "leaderboard_top": leaderboard_top,
         "columns": {

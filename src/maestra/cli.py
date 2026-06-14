@@ -67,6 +67,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Floor on AutoGluon's internal val score; below it the LLM revises the plan "
              "once and retrains (needs --max-attempts > 1). Off by default.",
     )
+    p.add_argument(
+        "--cv",
+        type=int,
+        default=None,
+        metavar="K",
+        help="Run leakage-free K-fold cross-validation instead of a single holdout (K >= 2).",
+    )
+    p.add_argument("--cv-time-limit", type=int, default=None, help="Training budget per CV fold.")
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
@@ -106,11 +114,23 @@ def _print_result(result, model: str) -> None:
     t = result.training
     print(f"\nProblem type (inferred by AutoGluon): {t.problem_type}")
     print(f"Eval metric: {t.eval_metric}")
-    print("\n=== Leaderboard on holdout ===")
-    print(t.leaderboard)
-    print("\n=== Best-model metrics on holdout ===")
-    for name, value in t.metrics.items():
-        print(f"  {name}: {value}")
+
+    if result.cv is not None:
+        cv = result.cv
+        scores = ", ".join(f"{s:.4f}" for s in cv.fold_scores)
+        kind = "stratified " if cv.stratified else ""
+        print(f"\n=== {cv.n_folds}-fold {kind}cross-validation ({cv.eval_metric}) ===")
+        print(f"  mean {cv.mean:.4f} ± {cv.std:.4f}   folds: [{scores}]")
+
+    if result.adversarial_auc is not None:
+        auc = result.adversarial_auc
+        verdict = "no detectable shift" if auc < 0.6 else ("mild shift" if auc < 0.75 else "strong shift")
+        print(f"\n=== Adversarial validation ===\n  train-vs-test AUC: {auc:.4f}  ({verdict})")
+
+    if t.metrics:  # holdout path; empty under --cv (CV is the estimate)
+        print("\n=== Best-model metrics on holdout ===")
+        for name, value in t.metrics.items():
+            print(f"  {name}: {value}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
             use_fe=not args.no_fe,
             max_attempts=args.max_attempts,
             revise_below=args.revise_below,
+            cv_folds=args.cv,
+            cv_time_limit=args.cv_time_limit,
             test_df=test_df,
             id_col=args.id_col,
         )

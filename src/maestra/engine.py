@@ -73,3 +73,23 @@ def train_and_evaluate(
 def predict(predictor, X: pd.DataFrame) -> pd.Series:
     """Predict labels for ``X`` with a fitted predictor (delegates to AutoGluon)."""
     return predictor.predict(X)
+
+
+def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str) -> TrainingResult:
+    """Fit a predictor on ALL labeled rows, with no holdout evaluation.
+
+    Used by the cross-validation path, where the honest estimate is the CV score and this
+    final model exists only for prediction (submission/report). ``metrics`` is therefore
+    empty; ``val_score`` is AutoGluon's internal validation score.
+    """
+    predictor = TabularPredictor(label=target, path=model_dir).fit(train, time_limit=time_limit)
+    leaderboard = predictor.leaderboard(silent=True)
+    val_score = float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None
+    return TrainingResult(
+        problem_type=predictor.problem_type,
+        eval_metric=predictor.eval_metric.name,
+        leaderboard=leaderboard,
+        metrics={},
+        predictor=predictor,
+        val_score=val_score,
+    )
