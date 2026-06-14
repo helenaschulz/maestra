@@ -108,3 +108,53 @@ def test_leaky_feature_rejected_by_real_sandbox(monkeypatch):
 
     assert kept == []
     assert records[0].reason == "sandbox_error"
+
+
+# --- hardening: row-independence + env restriction --------------------------------
+
+def test_row_context_dependent_feature_is_dropped(monkeypatch):
+    """A feature using a batch-global statistic (df['a'].mean()) is rejected by the dry-run."""
+    monkeypatch.setattr(hf, "cross_validate", lambda *a, **k: _cv(0.80))
+    cand = GeneratedFeature("rc", "uses batch mean",
+        "def fit(train_df):\n    return {}\ndef transform(df, params):\n    return df['a'] / df['a'].mean()")
+    df = pd.DataFrame({"a": [1.0, 2, 3, 4, 5, 6, 7, 8], "y": [0, 1] * 4})
+
+    kept, records, _ = select_features(df, "y", [cand], cleaning_plan=None, feature_plan=None,
+                                       model_dir="x", time_limit=1, n_folds=2, seed=0)
+
+    assert kept == []
+    assert records[0].reason == "row_context_dependent"
+
+
+def test_row_independent_feature_passes_dry_run(monkeypatch):
+    results = iter([_cv(0.80), _cv(0.90)])  # base, trial (improves -> kept)
+    monkeypatch.setattr(hf, "cross_validate", lambda *a, **k: next(results))
+    cand = GeneratedFeature("rw", "row-wise double",
+        "def fit(train_df):\n    return {}\ndef transform(df, params):\n    return df['a'] * 2")
+    df = pd.DataFrame({"a": [1.0, 2, 3, 4, 5, 6, 7, 8], "y": [0, 1] * 4})
+
+    kept, records, _ = select_features(df, "y", [cand], cleaning_plan=None, feature_plan=None,
+                                       model_dir="x", time_limit=1, n_folds=2, seed=0)
+
+    assert [f.name for f in kept] == ["rw"]      # row-wise feature is allowed (and here kept)
+    assert records[0].reason == "improved"
+
+
+def test_sandbox_env_excludes_secrets(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    monkeypatch.setenv("TAVILY_API_KEY", "tv-secret")
+    env = hf._sandbox_env()
+    assert "OPENAI_API_KEY" not in env and "TAVILY_API_KEY" not in env
+    assert all("KEY" not in k.upper() and "SECRET" not in k.upper() and "TOKEN" not in k.upper() for k in env)
+
+
+def test_candidate_cannot_read_env_secret(monkeypatch):
+    monkeypatch.setenv("MAESTRA_SECRET_TEST", "leak_me")
+    code = (
+        "def fit(train_df):\n    return {}\n"
+        "def transform(df, params):\n"
+        "    import os\n"  # blocked import -> cannot reach the environment at all
+        "    return df['a'] * 0 + len(os.environ.get('MAESTRA_SECRET_TEST', ''))"
+    )
+    res = run_in_sandbox(code, _TRAIN, _VAL, "y")
+    assert res.status == "error"   # the candidate does not get the secret

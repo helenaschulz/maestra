@@ -42,6 +42,13 @@ _MEM_MB = 1024
 # the maestra package (and AutoGluon) on every spawn, adding seconds per candidate.
 _WORKER = os.path.join(os.path.dirname(__file__), "_sandbox_worker.py")
 
+# Only these (non-secret) environment variables reach the sandbox — no *_API_KEY etc.
+_SAFE_ENV_KEYS = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT")
+
+
+def _sandbox_env() -> dict:
+    return {k: os.environ[k] for k in _SAFE_ENV_KEYS if k in os.environ}
+
 
 @dataclass
 class SandboxResult:
@@ -83,6 +90,8 @@ def run_in_sandbox(
                 [sys.executable, _WORKER, tmp],
                 timeout=timeout,
                 capture_output=True,
+                env=_sandbox_env(),  # no secrets (API keys etc.) reach the candidate
+                cwd=tmp,             # not the repo working directory
             )
         except subprocess.TimeoutExpired:
             return SandboxResult("timeout", error=f"exceeded {timeout}s")
@@ -206,15 +215,38 @@ class CandidateRecord:
     source: str
     cv_delta: float | None
     kept: bool
-    reason: str  # improved | no_improvement | sandbox_error | timeout | invalid_output
+    reason: str  # improved | no_improvement | sandbox_error | timeout | row_context_dependent
+
+
+def _is_row_independent(code, train, val, target, whole_values, *, tol=1e-6) -> bool:
+    """True if ``transform`` is row-wise: ``transform(val)`` equals ``concat`` of the two
+    halves within ``tol``. Re-running ``fit`` on the same train yields the same params
+    (assumes a deterministic fit), so a mismatch means transform used a *batch-global*
+    statistic (e.g. ``df['a'].mean()``) — which would make a row's value depend on the rest
+    of the batch and is rejected."""
+    if len(val) < 2:
+        return True
+    half = len(val) // 2
+    r1 = run_in_sandbox(code, train, val.iloc[:half], target)
+    r2 = run_in_sandbox(code, train, val.iloc[half:], target)
+    if r1.status != "ok" or r2.status != "ok":
+        return True  # could not verify on the split — do not penalise
+    pieced = np.concatenate([r1.val, r2.val])
+    return bool(np.allclose(pieced, whole_values, rtol=0.0, atol=tol, equal_nan=True))
 
 
 def _dry_run(df, target, candidate, cleaning_plan, feature_plan, seed) -> SandboxResult:
-    """Cheap check that a candidate executes + yields valid output (no model trained)."""
+    """Cheap checks that a candidate executes, yields valid output, and is row-independent
+    (no model trained)."""
     folds = _make_folds(df, target, 2, seed, _is_classification(df[target]))
     tr_idx, val_idx = folds[0]
     proc_train, proc_val = _process_fold(df.iloc[tr_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan)
-    return run_in_sandbox(candidate.code, proc_train, proc_val, target)
+    res = run_in_sandbox(candidate.code, proc_train, proc_val, target)
+    if res.status != "ok":
+        return res
+    if not _is_row_independent(candidate.code, proc_train, proc_val, target, res.val):
+        return SandboxResult("row_context_dependent", error="transform depends on the row batch")
+    return res
 
 
 def select_features(
@@ -244,7 +276,8 @@ def select_features(
     for i, cand in enumerate(candidates):
         dry = _dry_run(df, target, cand, cleaning_plan, feature_plan, seed)
         if dry.status != "ok":
-            reason = "timeout" if dry.status == "timeout" else "sandbox_error"
+            reason = {"timeout": "timeout", "row_context_dependent": "row_context_dependent"}.get(
+                dry.status, "sandbox_error")
             records.append(CandidateRecord(cand.name, cand.idea, cand.source, None, False, reason))
             continue
         trial = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
