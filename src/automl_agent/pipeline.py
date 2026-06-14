@@ -17,7 +17,7 @@ import pandas as pd
 
 from automl_agent.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from automl_agent.diagnosis import diagnose_failure
-from automl_agent.engine import TrainingResult, split, train_and_evaluate
+from automl_agent.engine import TrainingResult, predict, split, train_and_evaluate
 from automl_agent.profiling import profile_dataframe
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -39,6 +39,22 @@ class PipelineResult:
     training: TrainingResult | None = None
     attempts: int = 1
     diagnosis_log: list[dict] = field(default_factory=list)
+    submission: pd.DataFrame | None = None  # id + prediction, when a test set was given
+
+
+def _build_submission(transform, predictor, test_df, target, id_col):
+    """Predict on the test set and return a Kaggle-style ``id``/``target`` frame.
+
+    The test set is cleaned with the *same* fitted transform as training (so drops and
+    train-fitted fills match), but its identifier column is preserved separately for the
+    submission even though cleaning drops it from the features.
+    """
+    if id_col not in test_df.columns:
+        raise PipelineError(f"id column {id_col!r} not in test set. Columns: {list(test_df.columns)}")
+    ids = test_df[id_col]
+    features = transform.transform(test_df) if transform is not None else test_df
+    preds = predict(predictor, features)
+    return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
 
 def _validate_trainable(train: pd.DataFrame, target: str) -> None:
@@ -69,6 +85,8 @@ def run_pipeline(
     model_dir: str,
     use_llm: bool = True,
     max_attempts: int = 1,
+    test_df: pd.DataFrame | None = None,
+    id_col: str = "id",
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -83,10 +101,15 @@ def run_pipeline(
         use_llm: If ``False``, skip the LLM cleaning step (baseline run).
         max_attempts: Upper bound on attempts. ``1`` disables the diagnosis loop; with
             ``> 1`` a failed attempt is diagnosed by the LLM and retried.
+        test_df: Optional unlabeled test set. If given, the trained model predicts on it
+            and the result carries a Kaggle-style ``submission`` frame. The model is the
+            one trained on the train split (the holdout is *not* added back) — a maximal
+            leaderboard score would refit on all labeled rows.
+        id_col: Identifier column carried from ``test_df`` into the submission.
 
     Raises:
         ValueError: If ``target`` is not a column of ``df``.
-        PipelineError: If the LLM gives up, or no recovery succeeds within the budget.
+        PipelineError: If the LLM gives up, no recovery succeeds, or ``id_col`` is missing.
     """
     if target not in df.columns:
         raise ValueError(f"Target column {target!r} not in CSV. Columns: {list(df.columns)}")
@@ -107,6 +130,7 @@ def run_pipeline(
 
     for attempt in range(1, max_attempts + 1):
         try:
+            transform = None
             if plan is not None:
                 transform = fit_cleaning_plan(train_raw, plan, target)
                 train = transform.transform(train_raw)
@@ -118,6 +142,10 @@ def run_pipeline(
             _validate_trainable(train, target)
             training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir)
 
+            submission = None
+            if test_df is not None:
+                submission = _build_submission(transform, training.predictor, test_df, target, id_col)
+
             return PipelineResult(
                 n_cols_before=n_before,
                 n_cols_after=len(train.columns),
@@ -126,6 +154,7 @@ def run_pipeline(
                 training=training,
                 attempts=attempt,
                 diagnosis_log=diagnosis_log,
+                submission=submission,
             )
         except Exception as exc:
             if attempt == max_attempts:

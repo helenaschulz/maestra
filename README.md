@@ -86,6 +86,20 @@ Columns after cleaning: 8 (from 12)
   roc_auc:  0.884
 ```
 
+### Kaggle submission
+
+Pass an unlabeled test set and an output path to also produce a submission file. The
+test set is cleaned with the *same* fitted transform as training, and its id column is
+carried through even though cleaning drops it from the features:
+
+```bash
+automl-agent --csv data/train.csv --target class \
+  --test data/test.csv --submission data/submission.csv
+```
+
+This writes `id,<target>` rows (Kaggle format). The model used is the one trained on the
+train split — for a maximal leaderboard score you'd refit on all labeled rows.
+
 ### Options
 
 | Flag | Default | Meaning |
@@ -96,6 +110,9 @@ Columns after cleaning: 8 (from 12)
 | `--seed` | `42` | Split seed |
 | `--no-llm` | off | Skip the cleaning step (baseline run) |
 | `--max-attempts` | `1` | Attempts before giving up; `>1` enables the failure-diagnosis loop |
+| `--test` | — | Unlabeled test CSV to predict on (for a submission) |
+| `--submission` | — | Output path for the submission CSV (requires `--test`) |
+| `--id-col` | `id` | Identifier column carried into the submission |
 
 The backbone is **model-agnostic** via [LiteLLM](https://docs.litellm.ai/) — switch
 provider with `--model`; only the matching API key needs to be set.
@@ -126,7 +143,7 @@ pytest          # fast, offline — LLM and AutoGluon are mocked
 | `llm.py` | Thin LiteLLM wrapper; structured JSON via function-calling |
 | `cleaning.py` | Plan schema + defensive, leakage-safe fit/transform |
 | `diagnosis.py` | LLM failure diagnosis; structured recovery actions |
-| `engine.py` | AutoGluon training + holdout metrics (the only number-crunching) |
+| `engine.py` | AutoGluon training, holdout metrics + prediction (the only number-crunching) |
 | `pipeline.py` | The conductor loop + bounded diagnosis/retry; returns structured results |
 | `cli.py` | Argument parsing, `.env` loading, output formatting |
 

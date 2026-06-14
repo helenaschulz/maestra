@@ -20,6 +20,7 @@ class TrainingResult:
     eval_metric: str
     leaderboard: pd.DataFrame
     metrics: dict[str, float]
+    predictor: object | None = None  # the fitted TabularPredictor, for downstream prediction
 
 
 def split(df: pd.DataFrame, test_size: float, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -59,4 +60,10 @@ def train_and_evaluate(
         eval_metric=predictor.eval_metric.name,
         leaderboard=predictor.leaderboard(holdout, silent=True),
         metrics=predictor.evaluate(holdout, silent=True),
+        predictor=predictor,
     )
+
+
+def predict(predictor, X: pd.DataFrame) -> pd.Series:
+    """Predict labels for ``X`` with a fitted predictor (delegates to AutoGluon)."""
+    return predictor.predict(X)

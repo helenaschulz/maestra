@@ -56,6 +56,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=1,
         help="Attempts before giving up. >1 enables the LLM failure-diagnosis loop.",
     )
+    p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
+    p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
+    p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
     return p.parse_args(argv)
 
 
@@ -101,6 +104,18 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Loaded {args.csv}: rows={len(df)}, columns={len(df.columns)}")
 
+    if args.submission and not args.test:
+        print("Error: --submission requires --test.", file=sys.stderr)
+        return 1
+    test_df = None
+    if args.test:
+        try:
+            test_df = pd.read_csv(args.test)
+        except FileNotFoundError:
+            print(f"Error: test CSV not found: {args.test}", file=sys.stderr)
+            return 1
+        print(f"Loaded test {args.test}: rows={len(test_df)}")
+
     try:
         result = run_pipeline(
             df,
@@ -112,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
             model_dir=args.model_dir,
             use_llm=not args.no_llm,
             max_attempts=args.max_attempts,
+            test_df=test_df,
+            id_col=args.id_col,
         )
     except ValueError as exc:  # bad target column
         print(f"Error: {exc}", file=sys.stderr)
@@ -125,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     _print_result(result, args.model)
+
+    if result.submission is not None and args.submission:
+        result.submission.to_csv(args.submission, index=False)
+        print(f"\nSubmission written: {args.submission} ({len(result.submission)} rows)")
+        print(result.submission.head().to_string(index=False))
+
     return 0
 
 

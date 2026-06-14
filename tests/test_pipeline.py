@@ -29,6 +29,34 @@ def _patch_engine(monkeypatch, fake_training):
     )
 
 
+class _FakePredictor:
+    def predict(self, X):
+        return pd.Series(["A"] * len(X), index=X.index)
+
+
+def test_submission_built_from_test_set(df, monkeypatch):
+    training = TrainingResult("binary", "accuracy", pd.DataFrame({"model": ["m"]}),
+                              {"accuracy": 0.9}, predictor=_FakePredictor())
+    monkeypatch.setattr(pipeline, "train_and_evaluate", lambda *a, **k: training)
+
+    test_df = pd.DataFrame({"id": [101, 102, 103], "f": [9.0, 8.0, 7.0]})
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                          model_dir="x", use_llm=False, test_df=test_df, id_col="id")
+
+    sub = result.submission
+    assert list(sub.columns) == ["id", "y"]
+    assert sub["id"].tolist() == [101, 102, 103]   # ids preserved, in test order
+    assert sub["y"].tolist() == ["A", "A", "A"]
+
+
+def test_missing_id_col_raises(df, fake_training, monkeypatch):
+    _patch_engine(monkeypatch, fake_training)
+    test_df = pd.DataFrame({"row": [1], "f": [9.0]})  # no 'id' column
+    with pytest.raises(pipeline.PipelineError, match="id column"):
+        run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                     model_dir="x", use_llm=False, test_df=test_df, id_col="id")
+
+
 def test_unknown_target_raises(df):
     with pytest.raises(ValueError, match="not in CSV"):
         run_pipeline(df, "missing", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x")
