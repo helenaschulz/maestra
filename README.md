@@ -229,12 +229,31 @@ verified deterministically by the test suite.
 pytest      # 52 tests, fast & offline — LLM and AutoGluon are mocked
 ```
 
+## Benchmarking against MLE-bench
+
+`maestra-mlebench` runs Maestra (and a `--no-llm` baseline) on a prepared MLE-bench task,
+writes a submission, and grades it against the competition's real medal thresholds — logging
+the **CV↔LB gap** so you can see whether the cross-validation is trustworthy.
+
+```bash
+pip install 'maestra[mlebench]'   # heavy: pulls mle-bench from git, needs Docker + data
+maestra-mlebench --task /path/to/prepared/<comp>/public:<competition_id> \
+                 --metric quadratic_weighted_kappa --cv 5
+```
+
+> **Label metrics only, for now.** Maestra's submission carries predicted *labels*, not
+> probabilities, so AUC / log-loss competitions are graded meaninglessly (flagged
+> `metric_mode=needs_proba`). Pick a label metric (accuracy, F1, quadratic-weighted-kappa)
+> for the first task. A `predict_proba` submission path is the required follow-up.
+
 ## Known limitations
 
 - **Reproducibility.** The split is seeded, but AutoGluon's `fit` has no single global
   seed, so trained models vary slightly run to run. Fine for experiments.
 - **Submission model.** A submission uses the model trained on the train split; a maximal
   leaderboard score would refit on all labeled rows.
+- **Probability submissions.** Submissions are labels; AUC / log-loss tasks need a
+  `predict_proba` path (not yet built — see `maestra-mlebench`).
 
 ## License
 

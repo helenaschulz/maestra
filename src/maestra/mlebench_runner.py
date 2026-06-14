@@ -8,9 +8,15 @@ answer key (with gold/silver/bronze thresholds) is done by the ``mlebench`` pack
 :func:`grade_submission` and is mocked in tests.
 
 The adapter reuses the existing run -> submission flow (``run_pipeline``); it does not
-re-implement it. The value it adds is the **CV↔LB gap**: with ``--metric`` aligning the CV to
-the competition metric, the gap between Maestra's local cross-validation and the graded
-score tells you whether the CV is trustworthy.
+re-implement it. The value it adds is the **CV↔LB gap**: ``--metric`` (the competition metric)
+is either mapped to an AutoGluon ``eval_metric`` so the CV optimises it directly, or — when no
+AutoGluon equivalent exists — computed on the CV's out-of-fold predictions. The gap between
+that local score and the graded score tells you whether the CV is trustworthy.
+
+LABEL METRICS ONLY (for now): Maestra's submission carries predicted *labels*, not
+probabilities, so AUC / log-loss competitions would be scored meaninglessly. Pick a label
+metric (accuracy, F1, quadratic-weighted-kappa, ...) for the first task. A ``predict_proba``
+submission path is the required follow-up — not built here, flagged as ``needs_proba``.
 """
 from __future__ import annotations
 
@@ -23,12 +29,49 @@ from pathlib import Path
 
 import pandas as pd
 
+from maestra import benchmark
 from maestra.cli import load_dotenv
 from maestra.pipeline import run_pipeline
+
+# Competition metric -> AutoGluon eval_metric. When a metric is here, the CV optimises it.
+_METRIC_MAP = {
+    "accuracy": "accuracy",
+    "balanced_accuracy": "balanced_accuracy",
+    "f1": "f1",
+    "f1_macro": "f1_macro",
+    "mcc": "mcc",
+    "roc_auc": "roc_auc",
+    "auc": "roc_auc",
+    "log_loss": "log_loss",
+    "rmse": "root_mean_squared_error",
+    "mae": "mean_absolute_error",
+    "r2": "r2",
+}
+# Probability metrics: AutoGluon can optimise them, but our LABEL submission makes the graded
+# LB score meaningless — so the CV↔LB gap is not comparable until predict_proba exists.
+_PROBABILITY_METRICS = {"roc_auc", "auc", "log_loss"}
 
 
 class MleBenchError(RuntimeError):
     """Raised for task-reading or grading failures (incl. the optional dep being absent)."""
+
+
+def _resolve_metric(metric: str | None):
+    """Map a competition metric to an (autogluon_eval_metric, mode).
+
+    mode: "aligned" (CV optimises the AG metric), "oof" (compute on out-of-fold preds),
+    "needs_proba" (probability metric — label submission, gap not comparable),
+    "mismatch" (no way to compare), "default" (no metric requested).
+    """
+    if metric is None:
+        return None, "default"
+    if metric in _PROBABILITY_METRICS:
+        return _METRIC_MAP.get(metric), "needs_proba"
+    if metric in _METRIC_MAP:
+        return _METRIC_MAP[metric], "aligned"
+    if metric in benchmark._METRICS:
+        return None, "oof"
+    return None, "mismatch"
 
 
 @dataclass
@@ -73,8 +116,11 @@ def read_task(task_dir: str) -> MleTask:
     id_in_test = [c for c in sub_cols if c in test_cols]
     id_col = id_in_test[0] if id_in_test else sub_cols[0]
     targets = [c for c in sub_cols if c != id_col]
-    if not targets:
-        raise MleBenchError(f"could not derive a target from sample_submission columns {sub_cols}")
+    if len(targets) != 1:
+        raise MleBenchError(
+            f"unsupported submission shape: expected one id + one target column, got {sub_cols}. "
+            "Multi-target / multilabel / probability-per-class submissions are not supported yet."
+        )
     return MleTask(os.path.basename(os.path.normpath(task_dir)), train, test, sample, id_col, targets[0])
 
 
@@ -114,25 +160,26 @@ def run_mlebench_task(
     research: bool = False,
     hybrid: bool = False,
     no_llm: bool = False,
-    eval_metric: str | None = None,
+    metric: str | None = None,
     data_dir: str | None = None,
     out_dir: str = "mlebench_out",
     runs_log: str = "runs.jsonl",
 ) -> dict:
     """Run Maestra (with --cv) on one task, write a submission, grade it, log a record.
 
-    Returns the logged record. ``eval_metric`` (the AutoGluon name of the competition metric)
-    aligns the CV with the LB so the CV↔LB gap is comparable; without it the record is flagged
-    ``metric_aligned=False``.
+    ``metric`` is the *competition* metric: it is mapped to an AutoGluon eval_metric (CV
+    optimises it) or computed on the CV's out-of-fold predictions, so the CV↔LB gap is
+    comparable. ``metric_mode`` (aligned/oof/needs_proba/mismatch) records how.
     """
     task = read_task(task_dir)
     train_df = pd.read_csv(task.train_csv)
     test_df = pd.read_csv(task.test_csv)
 
+    ag_metric, metric_mode = _resolve_metric(metric)
     result = run_pipeline(
         train_df, task.target_col, model=model, test_size=0.2, time_limit=time_limit, seed=42,
         model_dir=f"AutogluonModels/mle_{task.name}", use_llm=not no_llm, cv_folds=cv_folds,
-        hybrid=hybrid, research=research, eval_metric=eval_metric, test_df=test_df, id_col=task.id_col,
+        hybrid=hybrid, research=research, eval_metric=ag_metric, test_df=test_df, id_col=task.id_col,
     )
     if result.submission is None:
         raise MleBenchError("pipeline produced no submission (is the test set valid?)")
@@ -144,8 +191,18 @@ def run_mlebench_task(
 
     report = grade_submission(submission_path, competition_id, data_dir=data_dir)
 
-    cv_score = result.cv.mean if result.cv else None
-    gap = (cv_score - report.score) if (cv_score is not None and report.score is not None) else None
+    # Local CV score in the COMPETITION metric, so the gap is comparable.
+    cv = result.cv
+    cv_metric = cv.eval_metric if cv else None
+    if metric_mode == "oof" and cv is not None and cv.oof_pred is not None:
+        oof = cv.oof_pred.dropna()
+        cv_score = float(benchmark._METRICS[metric](train_df.loc[oof.index, task.target_col], oof.to_numpy()))
+        cv_metric = metric
+    else:
+        cv_score = cv.mean if cv else None
+
+    comparable = metric_mode in ("aligned", "oof")
+    gap = (cv_score - report.score) if (comparable and cv_score is not None and report.score is not None) else None
     record = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "kind": "mlebench",
@@ -153,12 +210,13 @@ def run_mlebench_task(
         "competition_id": competition_id,
         "mode": mode,
         "cv_score": cv_score,
-        "cv_metric": result.cv.eval_metric if result.cv else None,
+        "cv_metric": cv_metric,
         "mle_score": report.score,
+        "mle_metric": metric,
         "medal": report.medal,
         "thresholds": {"gold": report.gold, "silver": report.silver, "bronze": report.bronze},
         "cv_lb_gap": gap,
-        "metric_aligned": eval_metric is not None,
+        "metric_mode": metric_mode,
         "submission": submission_path,
     }
     with open(runs_log, "a") as fh:
@@ -166,23 +224,22 @@ def run_mlebench_task(
     return record
 
 
-def _fmt(value, width=9) -> str:
-    return f"{value:>{width}.4f}" if isinstance(value, (int, float)) else f"{'—':>{width}}"
+def _num(value) -> str:
+    return f"{value:.4f}" if isinstance(value, (int, float)) else "—"
 
 
 def _format_table(rows: list[tuple[dict, dict | None]]) -> str:
-    head = f"{'task':<18}{'metric':<12}{'baseline':>10}{'maestra':>10}{'gold':>9}{'silver':>9}{'bronze':>9}  medal     cv↔lb"
-    out = [head]
+    headers = ["task", "metric", "baseline", "maestra", "gold", "silver", "bronze", "medal", "cv↔lb"]
+    table = []
     for maestra, baseline in rows:
         thr = maestra["thresholds"]
-        out.append(
-            f"{maestra['task']:<18}{(maestra['cv_metric'] or '?'):<12}"
-            f"{_fmt(baseline.get('mle_score') if baseline else None, 10)}"
-            f"{_fmt(maestra.get('mle_score'), 10)}"
-            f"{_fmt(thr.get('gold'))}{_fmt(thr.get('silver'))}{_fmt(thr.get('bronze'))}"
-            f"  {str(maestra.get('medal') or '-'):<8}  {_fmt(maestra.get('cv_lb_gap'), 7)}"
-        )
-    return "\n".join(out)
+        table.append([
+            maestra["task"], maestra.get("mle_metric") or "?",
+            _num(baseline.get("mle_score")) if baseline else "—", _num(maestra.get("mle_score")),
+            _num(thr.get("gold")), _num(thr.get("silver")), _num(thr.get("bronze")),
+            maestra.get("medal") or "-", _num(maestra.get("cv_lb_gap")),
+        ])
+    return benchmark.render_table(headers, table)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -194,10 +251,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cv", type=int, default=5, help="CV folds (the gate; >= 2).")
     p.add_argument("--time-limit", type=int, default=600, help="AutoGluon budget per fold.")
     p.add_argument("--metric", default=None,
-                   help="AutoGluon eval_metric to align the CV with the competition metric.")
+                   help="Competition metric (e.g. accuracy, f1_macro, quadratic_weighted_kappa). "
+                        "Mapped to AutoGluon or computed on OOF preds so the CV↔LB gap is comparable. "
+                        "Use a LABEL metric for now (submissions carry labels, not probabilities).")
     p.add_argument("--research", action="store_true")
     p.add_argument("--hybrid", action="store_true")
-    p.add_argument("--baseline", action="store_true", help="Also run the --no-llm baseline per task.")
+    p.add_argument("--no-baseline", action="store_true", help="Skip the --no-llm baseline per task.")
     p.add_argument("--data-dir", default=None, help="MLE-bench data dir (for grading).")
     p.add_argument("--out-dir", default="mlebench_out")
     p.add_argument("--runs-log", default="runs.jsonl")
@@ -209,14 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     common = dict(model=args.model, cv_folds=args.cv, time_limit=args.time_limit,
-                  eval_metric=args.metric, data_dir=args.data_dir, out_dir=args.out_dir,
+                  metric=args.metric, data_dir=args.data_dir, out_dir=args.out_dir,
                   runs_log=args.runs_log)
     rows = []
     for spec in args.task:
         task_dir, competition_id = spec.rsplit(":", 1)
         maestra = run_mlebench_task(task_dir, competition_id, research=args.research,
                                     hybrid=args.hybrid, **common)
-        baseline = run_mlebench_task(task_dir, competition_id, no_llm=True, **common) if args.baseline else None
+        baseline = None if args.no_baseline else run_mlebench_task(task_dir, competition_id, no_llm=True, **common)
         rows.append((maestra, baseline))
 
     print("\n" + _format_table(rows))

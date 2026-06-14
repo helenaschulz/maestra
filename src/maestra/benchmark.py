@@ -21,6 +21,7 @@ import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    cohen_kappa_score,
     f1_score,
     matthews_corrcoef,
     mean_absolute_error,
@@ -39,10 +40,23 @@ _METRICS = {
     "balanced_accuracy": balanced_accuracy_score,
     "f1_macro": lambda y, p: f1_score(y, p, average="macro"),
     "mcc": matthews_corrcoef,
+    # quadratic weighted kappa — a common Kaggle label metric AutoGluon has no eval_metric for,
+    # so it is computed on out-of-fold predictions (see mlebench_runner).
+    "quadratic_weighted_kappa": lambda y, p: cohen_kappa_score(y, p, weights="quadratic"),
     "rmse": lambda y, p: mean_squared_error(y, p) ** 0.5,
     "mae": mean_absolute_error,
 }
-_HIGHER_IS_BETTER = {"accuracy", "balanced_accuracy", "f1_macro", "mcc"}
+_HIGHER_IS_BETTER = {"accuracy", "balanced_accuracy", "f1_macro", "mcc", "quadratic_weighted_kappa"}
+
+
+def render_table(headers: list[str], rows: list[list]) -> str:
+    """Render a simple fixed-width text table (shared by maestra-bench and maestra-mlebench)."""
+    cols = list(zip(headers, *rows)) if rows else [(h,) for h in headers]
+    widths = [max(len(str(c)) for c in col) for col in cols]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    lines = [fmt.format(*headers)]
+    lines += [fmt.format(*[str(c) for c in row]) for row in rows]
+    return "\n".join(lines)
 
 
 @dataclass

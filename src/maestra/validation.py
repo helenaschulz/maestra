@@ -19,7 +19,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.utils.multiclass import type_of_target
 
 from maestra.cleaning import fit_cleaning_plan
-from maestra.engine import train_and_evaluate
+from maestra.engine import predict, train_and_evaluate
 from maestra.feature_engineering import fit_feature_plan
 
 _ADV_LABEL = "__is_test__"
@@ -37,6 +37,7 @@ class CVResult:
     n_folds: int
     stratified: bool
     greater_is_better: bool = True  # metric direction, for comparing CV means
+    oof_pred: "pd.Series | None" = None  # out-of-fold predictions (df-indexed), for custom metrics
 
 
 def _is_classification(y: pd.Series) -> bool:
@@ -109,6 +110,7 @@ def cross_validate(
     fold_scores: list[float] = []
     eval_metric = problem_type = None
     greater_is_better = True
+    oof_pred = pd.Series([None] * len(df), index=df.index, dtype=object)
     for i, (train_idx, val_idx) in enumerate(folds):
         proc_train, proc_val = _process_fold(
             df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
@@ -117,6 +119,9 @@ def cross_validate(
         eval_metric, problem_type = result.eval_metric, result.problem_type
         if result.predictor is not None:
             greater_is_better = getattr(result.predictor.eval_metric, "greater_is_better", True)
+            # Out-of-fold predictions: each row predicted by a model that did not see it.
+            oof_pred.loc[proc_val.index] = predict(
+                result.predictor, proc_val.drop(columns=[target], errors="ignore")).to_numpy()
         score = result.metrics.get(eval_metric)
         if score is None:  # fall back to any reported value
             score = next(iter(result.metrics.values()))
@@ -131,6 +136,7 @@ def cross_validate(
         n_folds=n_folds,
         stratified=use_stratified,
         greater_is_better=bool(greater_is_better),
+        oof_pred=oof_pred,
     )
 
 
