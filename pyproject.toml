@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Web research (maestra.websearch / maestra.research). Kept as a separate optional group
+# so the core install stays lean and these network deps don't collide with other changes.
+research = ["httpx", "ddgs", "trafilatura"]
 
 [project.scripts]
 maestra = "maestra.cli:main"
