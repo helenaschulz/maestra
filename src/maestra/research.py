@@ -19,8 +19,10 @@ intentionally deferred until the CV branch lands, so this module touches nothing
 """
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass, field
+import os
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Optional
 
 from maestra.llm import call_structured
@@ -38,6 +40,10 @@ _MAX_PAGES = 3
 # Per-page text handed to the synthesis LLM is truncated; snippets stay short too.
 _MAX_CONTENT_CHARS = 6000
 _MAX_SNIPPET_CHARS = 500
+
+# Research results are cached per problem so re-runs skip all web/LLM calls (see
+# research_strategy). Git-ignored; override per call via cache_dir.
+_DEFAULT_CACHE_DIR = ".maestra_cache"
 
 # Progress callback: ``on_event(name, payload)``. Defaults to a no-op.
 EventHook = Callable[[str, dict], None]
@@ -135,6 +141,17 @@ STRATEGY_BRIEF_SCHEMA: dict = {
             required=["url"],
             description="Sources the brief draws on. Cite only URLs you were given.",
         ),
+        "rules_mode": {
+            "type": "string",
+            "description": "Active rules mode: 'offline' or 'live' (set by the caller).",
+        },
+        "rules_note": {
+            "type": "string",
+            "description": (
+                "In live mode: how the brief respects competition rules — no external data, "
+                "no third-party solutions. Empty in offline mode."
+            ),
+        },
     },
     "required": ["summary", "recommended_models", "validation_strategy"],
 }
@@ -162,6 +179,14 @@ _SYNTH_SYSTEM_PROMPT = (
     "unter references nur URLs, die in der Evidenz vorkommen. Sei konkret und entscheidbar: "
     "der Brief speist spaeter die Planung und das Validierungs-Gate. Wenn die Evidenz duenn "
     "ist, sag das im summary, statt zu spekulieren."
+)
+
+_LIVE_RULES_INSTRUCTION = (
+    "WETTBEWERBS-MODUS (live): Die Wettbewerbsregeln koennen die Nutzung EXTERNER DATEN und "
+    "das Uebernehmen FREMDER LOESUNGEN verbieten. Empfiehl daher KEINE externen Datensaetze "
+    "und keine fertigen Loesungen Dritter; beschraenke dich auf Techniken, die nur die "
+    "bereitgestellten Wettbewerbsdaten nutzen. Vermerke diese Einschraenkung explizit im "
+    "Feld rules_note."
 )
 
 
@@ -239,17 +264,24 @@ def synthesize_brief(
     problem_description: str,
     profile: Optional[dict],
     results: list[SearchResult],
+    rules_mode: str = "offline",
 ) -> dict:
-    """Ask the LLM to write the structured strategy brief from the gathered evidence."""
+    """Ask the LLM to write the structured strategy brief from the gathered evidence.
+
+    In ``rules_mode="live"`` the prompt forbids recommending external data or third-party
+    solutions, since competition rules may disallow them."""
+    user_prompt = (
+        "ML-Problem (JSON):\n"
+        f"{_problem_block(problem_description, profile)}\n\n"
+        "Recherche-Evidenz (JSON):\n"
+        f"{json.dumps(_evidence(results), ensure_ascii=False, indent=2)}"
+    )
+    if rules_mode == "live":
+        user_prompt += "\n\n" + _LIVE_RULES_INSTRUCTION
     return call_structured(
         model=model,
         system_prompt=_SYNTH_SYSTEM_PROMPT,
-        user_prompt=(
-            "ML-Problem (JSON):\n"
-            f"{_problem_block(problem_description, profile)}\n\n"
-            "Recherche-Evidenz (JSON):\n"
-            f"{json.dumps(_evidence(results), ensure_ascii=False, indent=2)}"
-        ),
+        user_prompt=user_prompt,
         tool_name="write_strategy_brief",
         tool_description="Schreibe einen strukturierten Strategie-Brief aus Recherche-Evidenz.",
         parameters_schema=STRATEGY_BRIEF_SCHEMA,
@@ -264,6 +296,46 @@ class ResearchResult:
     queries: list[str] = field(default_factory=list)
     sources_read: list[str] = field(default_factory=list)
     n_results: int = 0
+    rules_mode: str = "offline"
+    dropped_references: list = field(default_factory=list)
+
+
+def _cache_key(problem_description, profile, model, provider, rules_mode, bounds) -> str:
+    """Stable hash of everything that determines a research result (the cache key)."""
+    material = json.dumps(
+        {"problem": problem_description, "profile": profile, "model": model,
+         "provider": provider, "rules_mode": rules_mode, "bounds": list(bounds)},
+        sort_keys=True, ensure_ascii=False, default=str,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_path(cache_dir: str, key: str) -> str:
+    return os.path.join(cache_dir, "research", f"{key}.json")
+
+
+def _load_cache(path: str) -> "ResearchResult":
+    with open(path, encoding="utf-8") as fh:
+        return ResearchResult(**json.load(fh))
+
+
+def _write_cache(path: str, result: "ResearchResult") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(asdict(result), fh, ensure_ascii=False, default=str)
+
+
+def _enforce_grounding(brief: dict, valid_urls: set) -> list:
+    """Drop references whose URL is not in the gathered evidence (deterministic grounding).
+
+    Mutates ``brief`` (filters ``references``, sets ``grounded``) and returns the dropped
+    references. ``grounded`` is False when no supported reference remains."""
+    references = brief.get("references", [])
+    kept = [ref for ref in references if ref.get("url") in valid_urls]
+    dropped = [ref for ref in references if ref.get("url") not in valid_urls]
+    brief["references"] = kept
+    brief["grounded"] = bool(kept)
+    return dropped
 
 
 def research_strategy(
@@ -275,6 +347,9 @@ def research_strategy(
     max_queries: int = _MAX_QUERIES,
     max_results_per_query: int = _MAX_RESULTS_PER_QUERY,
     max_pages: int = _MAX_PAGES,
+    rules_mode: str = "offline",
+    force_refresh: bool = False,
+    cache_dir: Optional[str] = None,
     on_event: Optional[EventHook] = None,
 ) -> ResearchResult:
     """Run full web research on an ML problem and return a structured strategy brief.
@@ -285,6 +360,12 @@ def research_strategy(
         profile: Optional column profile (:func:`maestra.profiling.profile_dataframe`).
         provider: Web-search backend name (see :mod:`maestra.websearch`).
         max_queries / max_results_per_query / max_pages: bounds on the research loop.
+        rules_mode: ``"offline"`` (default) or ``"live"``. In live mode the brief must not
+            recommend external data or third-party solutions (competition rules may forbid
+            them); the mode is recorded in the brief and the audit trail.
+        force_refresh: Ignore any cached result and recompute (then overwrite the cache).
+        cache_dir: Cache root (default :data:`_DEFAULT_CACHE_DIR`). A cache hit on the same
+            problem skips all web and LLM calls.
         on_event: Optional ``(name, payload)`` progress callback.
 
     Returns:
@@ -294,6 +375,16 @@ def research_strategy(
         WebSearchError: if the provider is misconfigured or no query returned any result.
     """
     emit = on_event or (lambda name, payload: None)
+
+    cache_dir = cache_dir or _DEFAULT_CACHE_DIR
+    key = _cache_key(problem_description, profile, model, provider, rules_mode,
+                     (max_queries, max_results_per_query, max_pages))
+    path = _cache_path(cache_dir, key)
+    if not force_refresh and os.path.exists(path):
+        emit("cache_hit", {"key": key})
+        return _load_cache(path)
+    emit("cache_miss", {"key": key})
+
     backend = get_provider(provider)  # fail fast on a bad provider / missing key
 
     plan = plan_queries(model, problem_description, profile, max_queries)
@@ -333,11 +424,21 @@ def research_strategy(
         sources_read.append(url)
         emit("fetched", {"url": url, "chars": len(result.content)})
 
-    brief = synthesize_brief(model, problem_description, profile, results)
-    emit("brief_ready", {"references": len(brief.get("references", []))})
-    return ResearchResult(
+    brief = synthesize_brief(model, problem_description, profile, results, rules_mode=rules_mode)
+    brief["rules_mode"] = rules_mode  # deterministic — never trust the LLM for the mode
+    dropped = _enforce_grounding(brief, set(by_url))
+    if dropped:
+        emit("references_filtered", {"dropped": len(dropped)})
+    emit("brief_ready", {"references": len(brief.get("references", [])),
+                         "grounded": brief.get("grounded")})
+
+    result = ResearchResult(
         brief=brief,
         queries=queries,
         sources_read=sources_read,
         n_results=len(results),
+        rules_mode=rules_mode,
+        dropped_references=dropped,
     )
+    _write_cache(path, result)
+    return result

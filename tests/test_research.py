@@ -51,8 +51,10 @@ class _FakeBackend:
         }
         self._fetch_raises = fetch_raises
         self.fetched = []
+        self.searched = []
 
     def search(self, query, max_results):
+        self.searched.append(query)
         return self._hits.get(query, [])
 
     def fetch(self, url):
@@ -65,6 +67,13 @@ class _FakeBackend:
 def _patch(monkeypatch, llm, backend):
     monkeypatch.setattr(research, "call_structured", llm)
     monkeypatch.setattr(research, "get_provider", lambda name: backend)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cache(tmp_path, monkeypatch):
+    """Every test gets its own empty research cache — no cross-test cache hits, and nothing
+    is written to the real .maestra_cache dir."""
+    monkeypatch.setattr(research, "_DEFAULT_CACHE_DIR", str(tmp_path / "cache"))
 
 
 # --- happy path --------------------------------------------------------------------
@@ -174,3 +183,69 @@ def test_node_functions_delegate_with_their_schemas(monkeypatch):
     assert captured["select_sources"]["parameters_schema"] is SOURCE_SELECTION_SCHEMA
     assert captured["write_strategy_brief"]["parameters_schema"] is STRATEGY_BRIEF_SCHEMA
     assert "predict churn" in captured["plan_research_queries"]["user_prompt"]
+
+
+# --- guardrails: rules_mode, caching, grounding ------------------------------------
+
+def test_live_rules_mode_recorded_and_passed_to_synthesis(monkeypatch):
+    llm, backend = _fake_llm(), _FakeBackend()
+    _patch(monkeypatch, llm, backend)
+
+    out = research_strategy("m", "p", rules_mode="live")
+
+    assert out.rules_mode == "live"                 # audit trail
+    assert out.brief["rules_mode"] == "live"        # brief flags the mode (deterministic)
+    synth = next(c for c in llm.calls if c["tool_name"] == "write_strategy_brief")
+    assert "live" in synth["user_prompt"].lower()   # constraint reached the synthesis prompt
+    assert "externer daten" in synth["user_prompt"].lower()
+
+
+def test_second_call_hits_cache_and_skips_all_work(monkeypatch):
+    llm, backend = _fake_llm(), _FakeBackend()
+    _patch(monkeypatch, llm, backend)
+
+    events1 = []
+    out1 = research_strategy("m", "p", on_event=lambda n, _p: events1.append(n))
+    llm_calls_after_first = len(llm.calls)
+    searches_after_first = len(backend.searched)
+    assert "cache_miss" in events1
+
+    events2 = []
+    out2 = research_strategy("m", "p", on_event=lambda n, _p: events2.append(n))
+    assert "cache_hit" in events2
+    assert len(llm.calls) == llm_calls_after_first      # no new LLM calls
+    assert len(backend.searched) == searches_after_first  # no new searches
+    assert out2.brief == out1.brief
+
+    research_strategy("m", "p", force_refresh=True)     # force_refresh bypasses the cache
+    assert len(llm.calls) > llm_calls_after_first
+
+
+def test_invented_reference_is_dropped_and_audited(monkeypatch):
+    brief = {
+        "summary": "s", "recommended_models": [{"name": "x"}],
+        "validation_strategy": {"approach": "k-fold"},
+        "references": [{"url": "https://a/1"}, {"url": "https://made-up/9"}],
+    }
+    # evidence URLs from _FakeBackend defaults: https://a/1, https://b/2
+    _patch(monkeypatch, _fake_llm(write_strategy_brief=brief), _FakeBackend())
+
+    out = research_strategy("m", "p")
+
+    assert [r["url"] for r in out.brief["references"]] == ["https://a/1"]  # invented one removed
+    assert {"url": "https://made-up/9"} in out.dropped_references
+    assert out.brief["grounded"] is True
+
+
+def test_all_references_invented_marks_brief_ungrounded(monkeypatch):
+    brief = {
+        "summary": "s", "recommended_models": [{"name": "x"}],
+        "validation_strategy": {"approach": "k-fold"},
+        "references": [{"url": "https://made-up/9"}],
+    }
+    _patch(monkeypatch, _fake_llm(write_strategy_brief=brief), _FakeBackend())
+
+    out = research_strategy("m", "p")
+
+    assert out.brief["references"] == []
+    assert out.brief["grounded"] is False

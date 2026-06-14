@@ -16,3 +16,4 @@ dist/
 runs.jsonl
 report.md
 benchmark.jsonl
+.maestra_cache/
