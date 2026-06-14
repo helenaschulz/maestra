@@ -12,6 +12,18 @@ import pandas as pd
 _MAX_EXAMPLES = 5
 _MAX_EXAMPLE_LEN = 40
 
+# A column is flagged id_like (a strong drop hint) when nearly every value is distinct
+# AND it is not a continuous numeric column. High cardinality is normal for floats
+# (measurements, coordinates) — only integer/text columns that are unique per row look
+# like identifiers. This keeps the LLM from dropping real continuous features.
+_ID_LIKE_UNIQUE_FRAC = 0.99
+
+
+def _is_id_like(series: pd.Series, n_unique: int, n_rows: int) -> bool:
+    if not n_rows or series.dtype.kind == "f":  # float == continuous measurement, never an id
+        return False
+    return n_unique / n_rows >= _ID_LIKE_UNIQUE_FRAC
+
 
 def _examples(series: pd.Series) -> list[str]:
     """Up to ``_MAX_EXAMPLES`` distinct non-null values, stringified and truncated.
@@ -54,6 +66,7 @@ def profile_dataframe(df: pd.DataFrame, target: str) -> dict:
                 "missing_frac": round(n_missing / n, 3) if n else 0.0,
                 "n_unique": n_unique,
                 "unique_frac": round(n_unique / n, 3) if n else 0.0,
+                "id_like": _is_id_like(s, n_unique, n),
                 "examples": _examples(s),
             }
         )
