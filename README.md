@@ -62,8 +62,8 @@ Columns after cleaning: 8 (from 12)
         │           split · train · tune · score · predict                 │
         └─────────────────────────────────────────────────────────────────┘
 
-  CSV ─▶ split ─▶ profile(train) ─▶ LLM plan ─▶ fit + apply ─▶ train ─▶ metrics ─▶ submission
-                                   └─ decides ─┘           └──────── computes ───────┘
+  CSV ─▶ split ─▶ clean (LLM) ─▶ engineer features (LLM) ─▶ train ─▶ metrics ─▶ report + submission
+                  └────────── LLM decides ──────────┘      └──── engine computes ────┘
 ```
 
 One function per step, orchestrated by a plain Python loop — **no agent framework**, the
@@ -110,11 +110,14 @@ confirming the leakage-safe pipeline gives honest numbers.
 ## Features
 
 - 🧠 **Agentic cleaning** — LLM proposes a drop/impute plan as constrained JSON
-- 🔒 **Leakage-safe** — cleaning is *fitted on train only* (scikit-learn-style fit/transform)
-- 🔁 **Self-healing** — a bounded diagnosis loop retries failures with structured recovery actions
+- 🛠️ **Agentic feature engineering** — date parts, binning, log, ratios from a fixed vocabulary
+- 🔒 **Leakage-safe** — cleaning *and* feature fitting happen on train only (fit/transform)
+- 🔁 **Self-healing** — a bounded loop retries failures *and* revises weak runs (gated on the internal val score, never the holdout)
+- 📊 **Run log + baseline diff** — every run appended to `runs.jsonl`; `--compare` shows the LLM-vs-baseline delta
+- 📝 **Auto report** — an LLM Markdown write-up grounded in the run's real numbers
 - 🔌 **Model-agnostic** — any [LiteLLM](https://docs.litellm.ai/) backbone via one `--model` string
 - 🏆 **Kaggle-ready** — produces a submission file in one command
-- 🧪 **Fully tested** — 26 fast, offline tests (LLM *and* AutoGluon mocked)
+- 🧪 **Fully tested** — 48 fast, offline tests (LLM *and* AutoGluon mocked)
 
 ## Install
 
@@ -153,10 +156,15 @@ maestra --csv data/train.csv --target class \
 | `--test-size` | `0.2` | Holdout fraction |
 | `--seed` | `42` | Split seed |
 | `--no-llm` | off | Skip cleaning — baseline run (always worth comparing against) |
+| `--no-fe` | off | Skip LLM feature engineering |
 | `--max-attempts` | `1` | `>1` enables the failure-diagnosis loop |
+| `--revise-below` | — | Floor on the internal val score; below it the LLM revises the plan once and retrains |
 | `--test` | — | Unlabeled test CSV to predict on (for a submission) |
 | `--submission` | — | Output path for the submission CSV (requires `--test`) |
 | `--id-col` | `id` | Identifier column carried into the submission |
+| `--report` | — | Write an LLM-generated Markdown report of the run to this path |
+| `--runs-log` | `runs.jsonl` | Append-only JSONL run log (every run is appended) |
+| `--compare` | off | Print the latest `--no-llm` vs LLM metric diff for this csv/target, then exit |
 
 ### As a library
 
@@ -193,9 +201,12 @@ verified deterministically by the test suite.
 | [`profiling.py`](src/maestra/profiling.py) | Deterministic column profile — the LLM's only view of the data |
 | [`llm.py`](src/maestra/llm.py) | Thin LiteLLM wrapper; structured JSON via function-calling |
 | [`cleaning.py`](src/maestra/cleaning.py) | Plan schema + defensive, leakage-safe fit/transform |
-| [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure diagnosis; structured recovery actions |
+| [`feature_engineering.py`](src/maestra/feature_engineering.py) | Feature vocabulary + leakage-safe fit/transform |
+| [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure & weak-run diagnosis; structured recovery actions |
 | [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics & prediction — the *only* number-crunching |
 | [`pipeline.py`](src/maestra/pipeline.py) | The conductor loop + bounded diagnosis/retry; returns plain data |
+| [`runlog.py`](src/maestra/runlog.py) | Append-only run log + baseline comparison |
+| [`report.py`](src/maestra/report.py) | LLM Markdown report grounded in the run's facts |
 | [`cli.py`](src/maestra/cli.py) | Argument parsing, `.env` loading, output formatting |
 
 ## Design decisions
@@ -211,7 +222,7 @@ verified deterministically by the test suite.
 ## Development
 
 ```bash
-pytest      # 26 tests, fast & offline — LLM and AutoGluon are mocked
+pytest      # 48 tests, fast & offline — LLM and AutoGluon are mocked
 ```
 
 ## Known limitations
