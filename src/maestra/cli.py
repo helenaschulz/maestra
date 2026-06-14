@@ -9,11 +9,13 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 
 import pandas as pd
 
 from maestra.llm import LLMError
 from maestra.pipeline import PipelineError, run_pipeline
+from maestra.runlog import append_run, compare_runs
 
 
 def load_dotenv(path: str = ".env") -> None:
@@ -59,6 +61,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
+    p.add_argument("--runs-log", default="runs.jsonl", help="Append-only run log path (default runs.jsonl).")
+    p.add_argument(
+        "--compare",
+        action="store_true",
+        help="Print the latest --no-llm vs LLM diff for this csv/target from the run log, then exit.",
+    )
     return p.parse_args(argv)
 
 
@@ -92,6 +100,10 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     args = _parse_args(argv)
     load_dotenv()
+
+    if args.compare:
+        print(compare_runs(args.runs_log, args.csv, args.target))
+        return 0
 
     try:
         df = pd.read_csv(args.csv)
@@ -147,6 +159,18 @@ def main(argv: list[str] | None = None) -> int:
         result.submission.to_csv(args.submission, index=False)
         print(f"\nSubmission written: {args.submission} ({len(result.submission)} rows)")
         print(result.submission.head().to_string(index=False))
+
+    append_run(
+        args.runs_log,
+        result,
+        csv=args.csv,
+        target=args.target,
+        model=args.model,
+        no_llm=args.no_llm,
+        max_attempts=args.max_attempts,
+        timestamp=datetime.now().isoformat(timespec="seconds"),
+    )
+    print(f"\nLogged to {args.runs_log}. Compare with: maestra --csv {args.csv} --target {args.target} --compare")
 
     return 0
 

@@ -13,3 +13,4 @@ dist/
 # Downloaded / competition datasets (keep the small bundled example)
 /data/*
 !/data/titanic.csv
+runs.jsonl
