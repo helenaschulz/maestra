@@ -1,6 +1,5 @@
 """Tests for hybrid feature generation. The sandbox is exercised with REAL subprocesses
 (it is the safety mechanism), the LLM and AutoGluon are mocked elsewhere."""
-import numpy as np
 import pandas as pd
 
 from maestra import hybrid_features as hf
@@ -177,3 +176,16 @@ def test_candidate_cannot_read_env_secret(monkeypatch):
     )
     res = run_in_sandbox(code, _TRAIN, _VAL, "y")
     assert res.status == "error"   # the candidate does not get the secret
+
+
+def test_getattr_is_not_available_in_the_sandbox():
+    """getattr enables the classic __subclasses__ escape chain; no legitimate candidate needs it."""
+    code = (
+        "def fit(train_df):\n    return {}\n"
+        "def transform(df, params):\n"
+        "    getattr(df, 'shape')\n"
+        "    return df['a']"
+    )
+    res = run_in_sandbox(code, _TRAIN, _VAL, "y")
+    assert res.status == "error"
+    assert "getattr" in (res.error or "")

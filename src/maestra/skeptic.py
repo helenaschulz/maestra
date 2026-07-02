@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass
 
 from maestra.llm import call_structured
-from maestra.validation import cross_validate
+from maestra.validation import cross_validate, improves_beyond_noise
 
 _MIN_ABS_DELTA = 1e-4
 
@@ -93,7 +93,7 @@ def _plan_without_drop(plan: dict, column: str) -> dict:
 
 
 def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, model_dir, time_limit,
-                       n_folds, seed, eval_metric=None, sigma_mult=1.0,
+                       n_folds, seed, eval_metric=None, sigma_mult=2.0,
                        group_column=None, time_column=None):
     """Put each high-risk drop to the arbiter and veto it if keeping the column helps.
 
@@ -115,8 +115,8 @@ def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, mode
         col = r["column"]
         trial = cross_validate(df, target, cleaning_plan=_plan_without_drop(revised, col),
                                model_dir=f"{model_dir}/keep_{i}", **cv_kwargs)
-        delta = (trial.mean - base.mean) if base.greater_is_better else (base.mean - trial.mean)
-        vetoed = delta > max(_MIN_ABS_DELTA, sigma_mult * base.std)
+        vetoed, delta = improves_beyond_noise(trial=trial, base=base, sigma_mult=sigma_mult,
+                                              min_abs=_MIN_ABS_DELTA)
         records.append(SkepticRecord(col, "high", r.get("reason", ""), float(delta), vetoed))
         if vetoed:  # keeping the column helped -> overturn the drop and raise the bar
             revised, base = _plan_without_drop(revised, col), trial

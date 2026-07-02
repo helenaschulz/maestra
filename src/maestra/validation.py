@@ -15,7 +15,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from autogluon.tabular import TabularPredictor
-from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
+from sklearn.model_selection import (
+    GroupKFold,
+    KFold,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    TimeSeriesSplit,
+)
 from sklearn.utils.multiclass import type_of_target
 
 from maestra.cleaning import fit_cleaning_plan
@@ -40,6 +46,32 @@ class CVResult:
     oof_pred: "pd.Series | None" = None  # out-of-fold predictions (df-indexed), for custom metrics
     oof_proba: "pd.DataFrame | None" = None  # out-of-fold class probabilities (df-indexed,
     # one column per class), for probability metrics (roc_auc / log_loss)
+
+
+def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: float = 2.0,
+                          min_abs: float = 1e-4) -> tuple[bool, float]:
+    """Does ``trial`` beat ``base`` beyond fold noise? Returns ``(passes, mean_delta)``.
+
+    This is the arbiter's accept rule, shared by every gate (hybrid features, Skeptic vetoes).
+    Both CVs run on IDENTICAL folds, so when per-fold scores are available the comparison is
+    **paired**: the trial must (a) improve the mean paired delta beyond ``sigma_mult`` standard
+    errors of the paired deltas and (b) improve in a strict majority of folds. Pairing removes
+    the shared fold-difficulty variance that made the old rule (mean vs. ``sigma_mult * std`` of
+    3 correlated fold scores, ~1-in-6 false pass per candidate under the null, no correction for
+    greedy multiple testing) far too permissive. Without per-fold scores (older records, mocks)
+    it falls back to the mean-vs-std rule with the same ``sigma_mult``.
+    """
+    delta = (trial.mean - base.mean) if base.greater_is_better else (base.mean - trial.mean)
+    paired_ok = (base.fold_scores and trial.fold_scores
+                 and len(base.fold_scores) == len(trial.fold_scores) >= 2)
+    if paired_ok:
+        sign = 1.0 if base.greater_is_better else -1.0
+        d = [sign * (t - b) for b, t in zip(base.fold_scores, trial.fold_scores)]
+        n = len(d)
+        sem = float(np.std(d, ddof=1)) / (n ** 0.5)
+        majority = sum(1 for x in d if x > 0) > n / 2
+        return (delta > max(min_abs, sigma_mult * sem)) and majority, float(delta)
+    return delta > max(min_abs, sigma_mult * base.std), float(delta)
 
 
 def _is_classification(y: pd.Series) -> bool:
@@ -67,13 +99,21 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
     training (TimeSeriesSplit over the time-sorted order). Both override stratification —
     they exist precisely because a random/stratified split would lie."""
     if group_column is not None:
-        splitter = GroupKFold(n_splits=n_folds)
+        # Keep stratification when the target is a class label: StratifiedGroupKFold balances the
+        # class mix across folds while still never splitting an entity.
+        if stratified:
+            splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        else:
+            splitter = GroupKFold(n_splits=n_folds)
         return list(splitter.split(df, df[target], groups=df[group_column]))
     if time_column is not None:
         values = df[time_column]
         if values.dtype.kind not in "iufM":
             values = pd.to_datetime(values, errors="coerce", format="mixed")
         order = np.argsort(values.to_numpy(), kind="stable")  # positional, past -> future
+        # Note: expanding windows train on growing prefixes, so the fold scores are not
+        # identically distributed and their mean is a biased (typically pessimistic) estimate.
+        # That is inherent to honest temporal validation, not a defect to fix here.
         splitter = TimeSeriesSplit(n_splits=n_folds)
         return [(order[tr], order[va]) for tr, va in splitter.split(order)]
     if stratified:

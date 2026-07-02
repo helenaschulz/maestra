@@ -11,14 +11,17 @@ requires-python = ">=3.9,<3.13"
 license = "MIT"
 authors = [{ name = "Helena Schulz" }]
 keywords = ["automl", "autogluon", "llm", "litellm", "agentic", "tabular"]
+# Lower bounds only (not hard pins): this is a library-style project, and these are the oldest
+# versions the code is known to work with. A fresh install stays reproducible without freezing
+# users onto a lockfile.
 dependencies = [
-    "autogluon.tabular[all]",
-    "pandas",
-    "litellm",
+    "autogluon.tabular[all]>=1.0",
+    "pandas>=2.0",
+    "litellm>=1.40",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest>=8", "ruff>=0.4"]
 # Web research (maestra.websearch / maestra.research). Kept as a separate optional group
 # so the core install stays lean and these network deps don't collide with other changes.
 research = ["httpx", "ddgs", "trafilatura"]

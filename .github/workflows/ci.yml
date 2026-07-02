@@ -23,5 +23,8 @@ jobs:
       - name: Install
         run: pip install -e ".[dev,research]"
 
+      - name: Lint
+        run: python -m ruff check src/ tests/ scripts/
+
       - name: Test
         run: python -m pytest -q

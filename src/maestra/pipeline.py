@@ -177,7 +177,7 @@ def _fit_ordinal(df, model, target, context):
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
-                 hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
+                 hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
@@ -208,6 +208,10 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         if ordinal_transform is not None:
             df = ordinal_transform.transform(df)
 
+    # The plan STRUCTURE is proposed once on the full-data profile; only marginal per-column
+    # statistics (dtypes, missingness, cardinality) cross the fold boundary this way — no target
+    # relationship — so the leak is negligible. The plan PARAMETERS (imputation values, bin
+    # edges) are re-fitted per fold inside cross_validate; that is where leakage would matter.
     cleaning_plan = (
         propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
         if use_llm else None
@@ -309,7 +313,7 @@ def run_pipeline(
     cv_time_limit: int | None = None,
     hybrid: bool = False,
     hybrid_max_candidates: int = 5,
-    hybrid_threshold: float = 1.0,
+    hybrid_threshold: float = 2.0,
     research: bool = False,
     rules_mode: str = "offline",
     eval_metric: str | None = None,

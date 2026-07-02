@@ -103,6 +103,6 @@ def compare_runs(path: str, csv: str, target: str) -> str:
     shared = sorted(set(base_m) & set(llm_m))
     lines = [f"Baseline (--no-llm)  vs  LLM cleaning   ({csv} / {target})"]
     for key in shared:
-        b, l = base_m[key], llm_m[key]
-        lines.append(f"  {key:<18} {b:.4f} -> {l:.4f}  ({l - b:+.4f})")
+        base_v, llm_v = base_m[key], llm_m[key]
+        lines.append(f"  {key:<18} {base_v:.4f} -> {llm_v:.4f}  ({llm_v - base_v:+.4f})")
     return "\n".join(lines)

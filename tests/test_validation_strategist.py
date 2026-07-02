@@ -150,3 +150,15 @@ def test_fold_advisor_requires_cv():
     with pytest.raises(ValueError, match="requires --cv"):
         run_pipeline(df, "y", model="m", test_size=0.2, time_limit=1, seed=0,
                      model_dir="x", fold_advisor=True)
+
+
+def test_group_folds_stay_stratified_for_classification():
+    """With a class target, group folds must balance the class mix (StratifiedGroupKFold)
+    while still never splitting an entity."""
+    df = _grouped_df(n_groups=12, rows_per_group=5)
+    folds = validation._make_folds(df, "y", 3, seed=0, stratified=True, group_column="customer_id")
+    for train_idx, val_idx in folds:
+        assert not (set(df["customer_id"].iloc[train_idx]) & set(df["customer_id"].iloc[val_idx]))
+        # labels are entity-bound here, so perfect balance is impossible — but every fold must
+        # contain BOTH classes (an unstratified group split can produce single-class folds)
+        assert 0.0 < df["y"].iloc[val_idx].mean() < 1.0

@@ -87,8 +87,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument(
         "--hybrid-threshold",
         type=float,
-        default=1.0,
-        help="Keep a candidate only if it beats the baseline CV mean by this many fold sigmas.",
+        default=2.0,
+        help="Keep a candidate only if its paired per-fold improvement exceeds this many standard "
+             "errors (and it improves in a majority of folds).",
     )
     p.add_argument(
         "--research",

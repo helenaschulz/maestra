@@ -7,7 +7,7 @@ import pytest
 
 from maestra import validation
 from maestra.engine import TrainingResult
-from maestra.validation import _process_fold, cross_validate
+from maestra.validation import CVResult, _process_fold, cross_validate
 
 
 def test_process_fold_imputes_with_fold_train_only():
@@ -152,3 +152,35 @@ def test_build_adversarial_data_drops_id_and_labels_rows():
     assert validation._ADV_LABEL in data.columns
     assert sorted(data[validation._ADV_LABEL].unique().tolist()) == [0, 1]
     assert len(data) == 4
+
+
+def test_improves_beyond_noise_paired_rule():
+    """The arbiter's accept rule: paired per-fold deltas, majority of folds, 2-SEM threshold —
+    the fix for the old too-permissive rule (1 sigma of 3 correlated fold scores)."""
+    from maestra.validation import improves_beyond_noise
+
+    def cv(mean, folds, gib=True):
+        return CVResult("m", "binary", folds, mean, float(np.std(folds)), len(folds), True, gib)
+
+    base = cv(0.80, [0.80, 0.80, 0.80])
+    # consistent, clearly-above-noise improvement -> keep
+    ok, delta = improves_beyond_noise(base, cv(0.85, [0.85, 0.84, 0.86]))
+    assert ok and delta == pytest.approx(0.05)
+    # tiny, noisy improvement (would have passed the old 1-sigma-of-means rule with std~0) -> reject
+    ok, _ = improves_beyond_noise(base, cv(0.8033, [0.81, 0.81, 0.79]))
+    assert not ok
+    # lower-is-better metrics compare in the right direction
+    base_ll = cv(0.50, [0.50, 0.50, 0.50], gib=False)
+    ok, delta = improves_beyond_noise(base_ll, cv(0.41, [0.40, 0.42, 0.41], gib=False))
+    assert ok and delta == pytest.approx(0.09)
+
+
+def test_improves_beyond_noise_falls_back_without_fold_scores():
+    from maestra.validation import improves_beyond_noise
+
+    base = CVResult("m", "binary", [], 0.80, 0.02, 3, True, True)
+    trial = CVResult("m", "binary", [], 0.85, 0.02, 3, True, True)
+    ok, delta = improves_beyond_noise(base, trial, sigma_mult=2.0)
+    assert ok and delta == pytest.approx(0.05)          # 0.05 > 2*0.02
+    ok, _ = improves_beyond_noise(base, CVResult("m", "binary", [], 0.83, 0.02, 3, True, True))
+    assert not ok                                        # 0.03 < 0.04

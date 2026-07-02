@@ -9,8 +9,11 @@ The candidate's ``transform`` is only ever given the data WITHOUT the target col
 feature cannot read the label it is being scored against (the leakage guarantee).
 
 Hardening here is *bounded execution*, not a security boundary against adversarial code:
-RLIMIT_CPU/RLIMIT_AS, blocked sockets, an import whitelist and restricted builtins. The real
-safety against a useless or sneaky feature is the CV gate in the parent, not this worker.
+RLIMIT_CPU/RLIMIT_AS, blocked sockets, an import whitelist and restricted builtins. Precisely:
+**network is blocked** (socket-level) and **secrets are stripped from the environment** (the part
+that matters), but **file READS are possible** — pandas ships its own I/O (``pd.read_csv`` works
+without ``open``). Against LLM-generated, non-adversarial code the real defenses are the CV gate
+in the parent and the secret-free environment, not this worker.
 """
 from __future__ import annotations
 
@@ -30,8 +33,10 @@ _ALLOWED_MODULES = {"pandas", "numpy", "math", "statistics", "re", "itertools", 
 # Builtins exposed to candidate code. Notably absent: open, eval, exec, compile, input,
 # __import__ (replaced by a guarded one), globals, vars, breakpoint.
 _SAFE_BUILTINS = (
+    # no getattr: dynamic attribute access reopens the classic __subclasses__ escape chain, and
+    # no legitimate fit/transform candidate needs it (hasattr stays — it only returns a bool).
     "abs all any bool bytes callable chr complex dict divmod enumerate filter float frozenset "
-    "getattr hasattr hash hex int isinstance issubclass iter len list map max min next ord pow "
+    "hasattr hash hex int isinstance issubclass iter len list map max min next ord pow "
     "range repr reversed round set slice sorted str sum tuple type zip print format "
     # common exception types — feature code legitimately raises/catches these
     "Exception ValueError TypeError KeyError IndexError AttributeError RuntimeError NameError "

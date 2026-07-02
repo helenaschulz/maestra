@@ -68,14 +68,16 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | Titanic | poor | balanced_acc | **0.793** | 0.732 | LLM hurts |
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
-| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | 26 453 / 25 745 | **25 828 / 24 343** | **LLM wins on both seeds** |
+| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | 26 453 / 25 745 | **25 828 / 24 343** | LLM ahead on both seeds (n = 2, within the noise band) |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
 Four findings that shape the design:
 
 1. **The LLM pays off where column *semantics* exist, and nowhere else.** On anonymous numeric
    data an LLM is structurally blind; on House Prices (`Neighborhood`, `KitchenQual`,
-   `YearBuilt`, …) its cleaning/encoding judgment beat the baseline on both seeds. This
+   `YearBuilt`, …) its cleaning/encoding judgment came out ahead of the baseline on both seeds —
+   a directional result: n = 2, and the margin sits inside the run-to-run noise band (~960
+   rmse), so treat it as suggestive, not settled. This
    independently reproduces what [CAAFE](https://arxiv.org/abs/2305.03403) and
    [LATTEArena](https://arxiv.org/pdf/2606.09004) report.
 2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal.** The
@@ -164,9 +166,10 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
   ratings, sizes) to a worst→best rank the trees cannot infer from unordered labels; verified
   and applied leakage-free (the map is the LLM's knowledge, not a data statistic)
 - **Agentic cleaning & feature engineering** — constrained JSON plans from fixed vocabularies
-- **Hybrid feature generation** (`--hybrid`) — LLM-written feature code in a locked-down
-  sandbox (no network, CPU/memory caps, target stripped), kept only if it beats CV fold noise;
-  full provenance (kept/rejected/why) in the run log
+- **Hybrid feature generation** (`--hybrid`) — LLM-written feature code in a resource-bounded
+  sandbox (network blocked, secrets stripped from the environment, CPU/memory caps, target
+  stripped; file *reads* are not blocked — it bounds execution, it is not a security boundary),
+  kept only if it beats a paired per-fold CV test; full provenance (kept/rejected/why) in the run log
 - **Leakage-safe by construction** — fit on train only, replayed per fold
 - **Trustworthy validation** — leakage-free k-fold CV (`--cv`), out-of-fold predictions *and*
   probabilities, adversarial train/test shift check
@@ -180,11 +183,14 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
 - **Benchmark harnesses** — `maestra-bench` (local answer-key carving) and `maestra-mlebench`
   (real MLE-bench grading with medal thresholds and the CV↔LB gap)
 - **Model-agnostic** — any [LiteLLM](https://docs.litellm.ai/) backbone via one `--model` string
-- **Fully tested** — fast, offline test suite (LLM *and* AutoGluon mocked)
+- **Extensively tested** — the decision logic, gates and wiring are covered by a fast,
+  fully offline suite (LLM *and* AutoGluon mocked); `engine.py`/`cli.py` are thin wrappers
+  exercised mainly through integration runs
 
 ## Install
 
-Requires Python 3.9–3.12. AutoGluon's install is large (pulls in PyTorch).
+Requires Python 3.9–3.12 (CI tests 3.12; 3.11 exercised locally for the MLE-bench extra).
+AutoGluon's install is large (pulls in PyTorch).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate

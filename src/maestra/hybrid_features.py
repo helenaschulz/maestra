@@ -26,11 +26,21 @@ import numpy as np
 import pandas as pd
 
 from maestra.llm import call_structured
-from maestra.validation import _is_classification, _make_folds, _process_fold, cross_validate
+from maestra.validation import (
+    _is_classification,
+    _make_folds,
+    _process_fold,
+    cross_validate,
+    improves_beyond_noise,
+)
 
 # A candidate is kept only if it beats the baseline CV mean by more than this many fold
 # standard deviations (plus a tiny absolute floor). Conservative: noise must be cleared.
-_DEFAULT_SIGMA_MULT = 1.0
+# Default keep threshold in noise units. 2.0 (not 1.0): with paired fold deltas this approximates
+# a one-sided t-test; combined with the majority-of-folds rule it keeps the greedy multi-candidate
+# false-pass rate low (the old 1-sigma-of-correlated-fold-scores rule passed a lucky candidate
+# roughly 1 in 6 times, ~60% over five candidates).
+_DEFAULT_SIGMA_MULT = 2.0
 _MIN_ABS_DELTA = 1e-4
 
 # Sandbox limits. The wall-clock timeout is the reliable hard stop; the CPU/mem rlimits are
@@ -150,9 +160,11 @@ _CODEGEN_SYSTEM_PROMPT = (
     "  def fit(train_df): -> params      # may use the target column (train ONLY)\n"
     "  def transform(df, params): -> pandas.Series of length len(df)\n"
     "RULES: transform receives df WITHOUT the target column and must NOT access it. Use only "
-    "pandas (as pd) and numpy (as np); NO imports except pandas/numpy/math. No file/network "
-    "access. The output of transform must be NUMERIC. Keep the code short and robust (e.g. "
-    "guard against division by zero). Propose only features that plausibly carry signal."
+    "pandas (as pd) and numpy (as np); NO imports except pandas/numpy/math. Do not read or "
+    "write files and do not attempt network access (the sandbox blocks the network and strips "
+    "all secrets from the environment). The output of transform must be NUMERIC. Keep the code "
+    "short and robust (e.g. guard against division by zero). Propose only features that "
+    "plausibly carry signal."
 )
 
 
@@ -293,8 +305,9 @@ def select_features(
                                generated_features=kept + [cand], model_dir=f"{model_dir}/cand_{i}",
                                time_limit=time_limit, n_folds=n_folds, seed=seed, eval_metric=eval_metric,
                                **folds)
-        delta = (trial.mean - base.mean) if base.greater_is_better else (base.mean - trial.mean)
-        if delta > max(_MIN_ABS_DELTA, sigma_mult * base.std):
+        passes, delta = improves_beyond_noise(trial=trial, base=base, sigma_mult=sigma_mult,
+                                              min_abs=_MIN_ABS_DELTA)
+        if passes:
             kept.append(cand)
             base = trial  # raise the bar for the next candidate
             records.append(CandidateRecord(cand.name, cand.idea, cand.source, float(delta), True, "improved"))
