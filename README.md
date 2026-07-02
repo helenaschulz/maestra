@@ -141,6 +141,10 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
 
 ## Features
 
+- **`maestra-audit`** — a standalone data-risk report to run *before* building a model: the
+  recommended validation strategy, LLM-flagged leakage, deterministic structural traps (id-like,
+  constant, high-missing, free-text columns), and an optional train/test shift check. Trains no
+  model — one LLM call plus a profile.
 - **Validation Strategist** (`--fold-advisor`) — the LLM decides how CV folds must be built
   (random / group / time) from the column semantics, the one validation decision AutoML cannot
   make; every proposal is verified deterministically and falls back to random on any defect
@@ -200,6 +204,9 @@ maestra-bench --csv data/titanic.csv --target Survived \
 # run + grade a prepared MLE-bench task (medals, CV↔LB gap)
 maestra-mlebench --task /path/to/prepared/public:leaf-classification \
                  --data-dir ~/.cache/mle-bench/data --metric log_loss --cv 3
+
+# audit a dataset BEFORE modelling — validation strategy, leakage, structural traps
+maestra-audit --csv data/train.csv --target churn --test data/test.csv --out audit.md
 ```
 
 <details>
@@ -263,6 +270,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
 | [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |
+| [`audit.py`](src/maestra/audit.py) | `maestra-audit`: standalone data-risk report (validation / leakage / structural / shift) |
 | [`calibration.py`](src/maestra/calibration.py) | Temperature scaling on OOF probabilities |
 | [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics, predict / predict_proba |
 | [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure diagnosis → bounded recovery actions |
