@@ -29,6 +29,7 @@ from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
 from maestra.encoding import fit_ordinal_encodings, propose_ordinal_encodings
 from maestra.profiling import description_context, profile_dataframe
+from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
 from maestra.validation import CVResult, adversarial_validation, cross_validate
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
@@ -63,6 +64,8 @@ class PipelineResult:
     fold_strategy: dict | None = None  # Validation Strategist verdict (strategy/columns/rationale/
     # leakage_warnings/log), when --fold-advisor was used
     ordinal: dict | None = None  # ordinal-encoding provenance ({log, encodings}), when --ordinal used
+    skeptic: list | None = None  # Skeptic review provenance (column/risk/reason/cv_delta/vetoed),
+    # when --skeptic was used
 
 
 def _do_research(model, df, target, rules_mode):
@@ -176,7 +179,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  research_context=None, research_summary=None,
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
                  eval_metric=None, proba=False, proba_columns=None,
-                 fold_advisor=False, ordinal=False) -> PipelineResult:
+                 fold_advisor=False, ordinal=False, skeptic=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -208,6 +211,17 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
         if use_llm else None
     )
+
+    # Skeptic (opt-in): a second LLM attacks the drops; each high-risk drop is put to the CV
+    # arbiter (keep vs drop) and vetoed only if keeping the column measurably helps.
+    skeptic_records = None
+    if skeptic and cleaning_plan is not None:
+        reviews = review_cleaning_plan(model, cleaning_plan, profile_dataframe(df, target))
+        cleaning_plan, recs = apply_skeptic_gate(
+            df, target, cleaning_plan=cleaning_plan, feature_plan=None, reviews=reviews,
+            model_dir=f"{model_dir}/skeptic", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
+            eval_metric=eval_metric, group_column=group_column, time_column=time_column)
+        skeptic_records = [asdict(r) for r in recs]
 
     # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
     transforms = [ordinal_transform] if ordinal_transform is not None else []
@@ -263,7 +277,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
-        fold_strategy=fold_strategy, ordinal=ordinal_summary,
+        fold_strategy=fold_strategy, ordinal=ordinal_summary, skeptic=skeptic_records,
     )
 
 
@@ -305,6 +319,7 @@ def run_pipeline(
     dataset_description: str | None = None,
     fold_advisor: bool = False,
     ordinal: bool = False,
+    skeptic: bool = False,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -358,6 +373,8 @@ def run_pipeline(
         raise ValueError("--hybrid requires --cv (the CV is the gate that keeps/drops features).")
     if fold_advisor and not (cv_folds and cv_folds >= 2):
         raise ValueError("--fold-advisor requires --cv (it decides how the CV folds are built).")
+    if skeptic and not (cv_folds and cv_folds >= 2):
+        raise ValueError("--skeptic requires --cv (the CV is the arbiter that vetoes a drop).")
 
     n_before = len(df.columns)
 
@@ -381,7 +398,7 @@ def run_pipeline(
             research_context=research_context, research_summary=research_summary,
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
-            fold_advisor=fold_advisor, ordinal=ordinal,
+            fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

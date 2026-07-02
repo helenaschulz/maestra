@@ -72,6 +72,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "worst->best rank the trees cannot infer from unordered labels.",
     )
     p.add_argument(
+        "--skeptic",
+        action="store_true",
+        help="Skeptic: a second LLM attacks the cleaning plan's drops; each high-risk drop is "
+             "put to the CV arbiter and vetoed only if keeping the column helps (needs --cv).",
+    )
+    p.add_argument(
         "--hybrid",
         action="store_true",
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
@@ -131,6 +137,14 @@ def _print_result(result, model: str) -> None:
         print(f"\n=== Ordinal encoding ({model}) ===")
         for line in result.ordinal.get("log", []):
             print(f"  {line}")
+
+    if result.skeptic is not None:
+        print(f"\n=== Skeptic review of cleaning drops ({model}) ===")
+        for r in result.skeptic:
+            if r.get("vetoed"):
+                print(f"  VETO keep '{r['column']}' (Δcv={r['cv_delta']:+.4f}) -- {r['reason']}")
+            elif r.get("risk") == "high":
+                print(f"  drop '{r['column']}' upheld (Δcv={r.get('cv_delta')})  -- flagged: {r['reason']}")
 
     if result.diagnosis_log:
         print(f"\n=== Diagnosis / revision loop ({result.attempts} attempts) ===")
@@ -243,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             cv_time_limit=args.cv_time_limit,
             fold_advisor=args.fold_advisor,
             ordinal=args.ordinal,
+            skeptic=args.skeptic,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,

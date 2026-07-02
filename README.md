@@ -145,6 +145,10 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
   recommended validation strategy, LLM-flagged leakage, deterministic structural traps (id-like,
   constant, high-missing, free-text columns), and an optional train/test shift check. Trains no
   model — one LLM call plus a profile.
+- **Skeptic** (`--skeptic`) — a second LLM in an adversarial role attacks the cleaning plan's
+  drops; each high-risk drop is put to the CV arbiter (keep vs drop) and vetoed **only if keeping
+  the column measurably helps** — a safety net against dropping real signal, ruled by measurement,
+  never by one model overriding another
 - **Validation Strategist** (`--fold-advisor`) — the LLM decides how CV folds must be built
   (random / group / time) from the column semantics, the one validation decision AutoML cannot
   make; every proposal is verified deterministically and falls back to random on any defect
@@ -224,6 +228,7 @@ maestra-audit --csv data/train.csv --target churn --test data/test.csv --out aud
 | `--cv-time-limit` | `--time-limit` | Budget per CV fold |
 | `--fold-advisor` | off | Validation Strategist: LLM-chosen fold strategy, verified deterministically (needs `--cv`) |
 | `--ordinal` | off | Ordinal encoding: LLM-chosen worst→best rank for ordinal categoricals |
+| `--skeptic` | off | Skeptic reviews cleaning drops; the CV arbiter vetoes a drop only if keeping helps (needs `--cv`) |
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
@@ -266,6 +271,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`cleaning.py`](src/maestra/cleaning.py) | Cleaning plan schema + leakage-safe fit/transform |
 | [`feature_engineering.py`](src/maestra/feature_engineering.py) | Fixed feature vocabulary + fit/transform |
 | [`encoding.py`](src/maestra/encoding.py) | Ordinal-encoding agent: LLM worst→best order + deterministic, leakage-free apply |
+| [`skeptic.py`](src/maestra/skeptic.py) | Skeptic agent: adversarial review of cleaning drops, each veto ruled by a CV measurement |
 | [`hybrid_features.py`](src/maestra/hybrid_features.py) | LLM-written feature code: sandbox, row-independence check, greedy CV gate |
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
