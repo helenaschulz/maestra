@@ -19,11 +19,10 @@ benchmark.jsonl
 .maestra_cache/
 mlebench_out/
 
-# Local working docs (kept out of the repo for now)
+# Local working docs (kept out of the repo for now; RESULTS.md is committed)
 docs/STRATEGY.md
 docs/RELATED_WORK.md
 docs/CHANGELOG.md
-docs/RESULTS.md
 
 # Second venv (Python 3.11, mlebench runs) + tool caches
 .venv311/

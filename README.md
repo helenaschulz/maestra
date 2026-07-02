@@ -93,10 +93,13 @@ Four findings that shape the design:
    models. The Validation Strategist (`--fold-advisor`) read the column semantics, detected the
    entity column, switched to group folds, and reported **0.488 vs 0.493 truth** (gap −0.006).
    Cleaning/FE judgment moves scores by ~0.005; fixing the validation design moved it by ~0.5.
-   **Replicated on real data:** on Grunfeld (10 firms) the random-fold CV was **5.7× too
-   optimistic** (rmse 41.5 vs 236.1 truth); the Strategist detected `firm` unaided and cut the
-   lie in half (group-CV 143.0) — likewise on MathAchieve (160 schools). Reproduce:
-   `python scripts/group_leakage_experiment.py` and `scripts/real_group_leakage_experiment.py`.
+   **Replicated on real data, for both blind spots:** on Grunfeld (10 firms) the random-fold CV
+   was **5.7× too optimistic** (rmse 41.5 vs 236.1 truth); the Strategist detected `firm` unaided
+   and cut the lie in half (group-CV 143.0) — likewise on MathAchieve (160 schools). On the
+   `economics` time series it was **15.3× too optimistic** (rmse 282 vs 4 304 future truth); the
+   Strategist detected `date`, switched to time-ordered folds, and cut it to 2.4×. Reproduce:
+   `scripts/group_leakage_experiment.py`, `scripts/real_group_leakage_experiment.py`,
+   `scripts/time_leakage_experiment.py`.
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.
