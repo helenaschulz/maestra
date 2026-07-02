@@ -71,7 +71,11 @@ class OrdinalEncoding:
         out = df.copy()
         for col, mapping in self.maps.items():
             if col in out.columns:
-                out[col] = out[col].astype("object").map(mapping)
+                # float, never int: an unseen/absent value must stay NaN so AutoGluon treats it as
+                # missing (median-imputed), not as the lowest rank. As ints, a fully-covered train
+                # column becomes int-without-nulls and AutoGluon imputes inference nulls to 0 (the
+                # WORST level — e.g. "no pool" would read as "worst pool"), a systematic bias.
+                out[col] = out[col].astype("object").map(mapping).astype("float")
         return out
 
 

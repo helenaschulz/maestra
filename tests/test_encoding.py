@@ -32,6 +32,15 @@ def test_unseen_value_becomes_nan_not_an_error():
     assert out["size"].tolist()[:2] == [0, 1] and pd.isna(out["size"].iloc[2])
 
 
+def test_encoded_column_is_float_so_nulls_survive_as_missing():
+    # Even a fully-covered column must be float, not int: otherwise AutoGluon sees an
+    # int-without-nulls at fit and imputes inference nulls to 0 (the worst rank) — a bias.
+    enc = fit_ordinal_encodings(_df(), [
+        {"column": "qual", "order": ["Po", "Fa", "TA", "Gd", "Ex"], "reason": "r"}], target="price")
+    out = enc.transform(_df())
+    assert out["qual"].dtype.kind == "f"
+
+
 def test_hallucinated_order_is_skipped():
     # order matches none of the observed values -> the LLM invented categories
     enc = fit_ordinal_encodings(_df(), [
