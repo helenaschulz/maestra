@@ -191,9 +191,10 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
     (random/group/time) from the column semantics — the one validation decision the engine
     cannot make. Its proposal is deterministically verified; any defect falls back to random.
     """
-    # Validation Strategist (opt-in): decide the fold strategy before anything is fitted.
+    # Validation Strategist (opt-in): decide the fold strategy before anything is fitted. Independent
+    # of use_llm — it makes its own call and is useful even for a --no-llm baseline (smart validation).
     fold_strategy, group_column, time_column = None, None, None
-    if fold_advisor and use_llm:
+    if fold_advisor:
         proposal = propose_fold_strategy(model, profile_dataframe(df, target), target, research_context)
         verified, strategy_log = validate_fold_strategy(proposal, df, target)
         group_column, time_column = verified["group_column"], verified["time_column"]

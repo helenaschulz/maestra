@@ -102,12 +102,15 @@ def main():
             if result.fold_strategy:
                 for line in result.fold_strategy["log"]:
                     print(f"  [strategist] {line}")
-            gap = result.cv.mean - truth
-            summary.append((spec["name"], arm, strategy, result.cv.mean, truth, gap))
-            print(f"  {arm:13s} folds={strategy:6s} CV={result.cv.mean:8.2f}  truth={truth:8.2f}  "
+            # AutoGluon reports regression scores higher-is-better (rmse stored as negative);
+            # express the CV as a positive rmse so it is comparable to the graded truth.
+            cv_rmse = abs(result.cv.mean)
+            gap = cv_rmse - truth
+            summary.append((spec["name"], arm, strategy, cv_rmse, truth, gap))
+            print(f"  {arm:13s} folds={strategy:6s} CV rmse={cv_rmse:8.2f}  truth={truth:8.2f}  "
                   f"CV-truth gap={gap:+8.2f}\n")
 
-    print("\ndataset      arm           folds   CV        truth     CV-truth gap")
+    print("\ndataset      arm           folds   CV rmse   truth     CV-truth gap")
     for name, arm, strategy, cv, truth, gap in summary:
         print(f"{name:12s} {arm:13s} {strategy:6s} {cv:8.2f}  {truth:8.2f}  {gap:+8.2f}")
     print("\nReading: with random folds the CV overstates real accuracy (rows of the same entity "

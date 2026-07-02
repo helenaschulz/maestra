@@ -117,6 +117,31 @@ def test_pipeline_threads_group_column_into_cv(monkeypatch):
     assert any("FOLDS group" in line for line in result.fold_strategy["log"])
 
 
+def test_fold_advisor_runs_without_llm_cleaning(monkeypatch):
+    """The Strategist is independent of use_llm — a --no-llm baseline can still get smart folds
+    (regression: it was wrongly gated on use_llm, so the real-data experiment silently used random)."""
+    from maestra import pipeline
+    from maestra.engine import TrainingResult
+    from maestra.validation import CVResult
+
+    df = _grouped_df()
+    captured = {}
+    monkeypatch.setattr(pipeline, "propose_fold_strategy",
+                        lambda *a, **k: {"strategy": "group", "group_column": "customer_id",
+                                         "rationale": "entities repeat"})
+    monkeypatch.setattr(pipeline, "cross_validate",
+                        lambda df_, target, **k: captured.update(k) or
+                        CVResult("accuracy", "binary", [0.8], 0.8, 0.0, 2, False, True))
+    monkeypatch.setattr(pipeline, "fit_predictor",
+                        lambda *a, **k: TrainingResult("binary", "accuracy", pd.DataFrame(), {}))
+
+    result = pipeline.run_pipeline(df, "y", model="m", test_size=0.2, time_limit=1, seed=0,
+                                   model_dir="x", cv_folds=2, fold_advisor=True, use_llm=False)
+
+    assert captured["group_column"] == "customer_id"      # advisor ran despite use_llm=False
+    assert result.fold_strategy["strategy"] == "group"
+
+
 def test_fold_advisor_requires_cv():
     import pytest
 
