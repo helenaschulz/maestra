@@ -11,7 +11,7 @@ and every "smart" decision has to beat doing nothing.*
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Engine](https://img.shields.io/badge/engine-AutoGluon-FF6F00)
 ![LLM](https://img.shields.io/badge/LLM-LiteLLM%20·%20model--agnostic-7E57C2)
-![CI](https://github.com/YOURUSER/maestra/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/helenaschulz/maestra/actions/workflows/ci.yml/badge.svg)
 
 </div>
 
