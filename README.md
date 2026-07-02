@@ -143,6 +143,9 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
   make; every proposal is verified deterministically and falls back to random on any defect
 - **Dataset-description context** (`--description`) — feed the provider's data description to
   every judgment node, so the LLM knows what columns *mean* (units, ordinal orders, entities)
+- **Ordinal encoding** (`--ordinal`) — the LLM maps ordinal categoricals (quality/condition
+  ratings, sizes) to a worst→best rank the trees cannot infer from unordered labels; verified
+  and applied leakage-free (the map is the LLM's knowledge, not a data statistic)
 - **Agentic cleaning & feature engineering** — constrained JSON plans from fixed vocabularies
 - **Hybrid feature generation** (`--hybrid`) — LLM-written feature code in a locked-down
   sandbox (no network, CPU/memory caps, target stripped), kept only if it beats CV fold noise;
@@ -210,6 +213,7 @@ maestra-mlebench --task /path/to/prepared/public:leaf-classification \
 | `--cv` | — | Leakage-free K-fold CV instead of a single holdout (K ≥ 2) |
 | `--cv-time-limit` | `--time-limit` | Budget per CV fold |
 | `--fold-advisor` | off | Validation Strategist: LLM-chosen fold strategy, verified deterministically (needs `--cv`) |
+| `--ordinal` | off | Ordinal encoding: LLM-chosen worst→best rank for ordinal categoricals |
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
@@ -251,6 +255,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`llm.py`](src/maestra/llm.py) | Thin LiteLLM wrapper; structured JSON via function-calling |
 | [`cleaning.py`](src/maestra/cleaning.py) | Cleaning plan schema + leakage-safe fit/transform |
 | [`feature_engineering.py`](src/maestra/feature_engineering.py) | Fixed feature vocabulary + fit/transform |
+| [`encoding.py`](src/maestra/encoding.py) | Ordinal-encoding agent: LLM worst→best order + deterministic, leakage-free apply |
 | [`hybrid_features.py`](src/maestra/hybrid_features.py) | LLM-written feature code: sandbox, row-independence check, greedy CV gate |
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |

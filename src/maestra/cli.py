@@ -66,6 +66,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "from the column semantics; its proposal is verified deterministically (needs --cv).",
     )
     p.add_argument(
+        "--ordinal",
+        action="store_true",
+        help="Ordinal encoding: the LLM maps ordinal categoricals (e.g. quality ratings) to a "
+             "worst->best rank the trees cannot infer from unordered labels.",
+    )
+    p.add_argument(
         "--hybrid",
         action="store_true",
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
@@ -119,6 +125,11 @@ def _print_result(result, model: str) -> None:
         fs = result.fold_strategy
         print(f"\n=== Validation Strategist ({model}) ===")
         for line in fs.get("log", []):
+            print(f"  {line}")
+
+    if result.ordinal is not None:
+        print(f"\n=== Ordinal encoding ({model}) ===")
+        for line in result.ordinal.get("log", []):
             print(f"  {line}")
 
     if result.diagnosis_log:
@@ -231,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             cv_folds=args.cv,
             cv_time_limit=args.cv_time_limit,
             fold_advisor=args.fold_advisor,
+            ordinal=args.ordinal,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,

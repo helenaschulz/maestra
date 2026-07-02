@@ -27,6 +27,7 @@ from maestra.engine import (
 )
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
+from maestra.encoding import fit_ordinal_encodings, propose_ordinal_encodings
 from maestra.profiling import description_context, profile_dataframe
 from maestra.research import brief_context, research_strategy
 from maestra.validation import CVResult, adversarial_validation, cross_validate
@@ -61,6 +62,7 @@ class PipelineResult:
     hybrid: list | None = None  # generated-feature candidate provenance, when --hybrid was used
     fold_strategy: dict | None = None  # Validation Strategist verdict (strategy/columns/rationale/
     # leakage_warnings/log), when --fold-advisor was used
+    ordinal: dict | None = None  # ordinal-encoding provenance ({log, encodings}), when --ordinal used
 
 
 def _do_research(model, df, target, rules_mode):
@@ -156,12 +158,25 @@ def _format_error(exc: Exception) -> str:
     return text[-_MAX_ERROR_CHARS:]
 
 
+def _fit_ordinal(df, model, target, context):
+    """Propose + verify ordinal encodings on ``df``. Returns ``(OrdinalEncoding|None, summary)``.
+
+    Data-independent (the map comes from the LLM's order, not from ``df``), so fitting it on the
+    full data and replaying the same transform on every fold/holdout/test is leakage-free.
+    """
+    proposal = propose_ordinal_encodings(model, profile_dataframe(df, target), target, context)
+    enc = fit_ordinal_encodings(df, proposal.get("encodings", []), target)
+    if not enc.maps:
+        return None, {"log": enc.log, "encodings": []}
+    return enc, {"log": enc.log, "encodings": enc.records}
+
+
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
                  eval_metric=None, proba=False, proba_columns=None,
-                 fold_advisor=False) -> PipelineResult:
+                 fold_advisor=False, ordinal=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -181,13 +196,22 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         group_column, time_column = verified["group_column"], verified["time_column"]
         fold_strategy = {**verified, "log": strategy_log}
 
+    # Ordinal encoding (opt-in): data-independent, so encode the full data up front — every fold,
+    # holdout and the test set then see the same ranks (the transform is prepended to `transforms`).
+    ordinal_transform, ordinal_summary = None, None
+    if ordinal:
+        ordinal_transform, ordinal_summary = _fit_ordinal(df, model, target, research_context)
+        if ordinal_transform is not None:
+            df = ordinal_transform.transform(df)
+
     cleaning_plan = (
         propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
         if use_llm else None
     )
 
     # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
-    transforms, cleaning_log, feature_log = [], [], []
+    transforms = [ordinal_transform] if ordinal_transform is not None else []
+    cleaning_log, feature_log = [], []
     full = df
     if cleaning_plan is not None:
         ct = fit_cleaning_plan(df, cleaning_plan, target)
@@ -239,7 +263,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
-        fold_strategy=fold_strategy,
+        fold_strategy=fold_strategy, ordinal=ordinal_summary,
     )
 
 
@@ -280,6 +304,7 @@ def run_pipeline(
     proba_columns: list[str] | None = None,
     dataset_description: str | None = None,
     fold_advisor: bool = False,
+    ordinal: bool = False,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -356,12 +381,17 @@ def run_pipeline(
             research_context=research_context, research_summary=research_summary,
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
-            fold_advisor=fold_advisor,
+            fold_advisor=fold_advisor, ordinal=ordinal,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
     # would see the holdout and leak test information into the features.
     train_raw, holdout_raw = split(df, test_size, seed)
+
+    # Ordinal encoding (opt-in, data-independent) — fitted once, replayed on holdout/test.
+    ordinal_transform, ordinal_summary = None, None
+    if ordinal:
+        ordinal_transform, ordinal_summary = _fit_ordinal(train_raw, model, target, research_context)
 
     plan: dict | None = None
     if use_llm:
@@ -376,14 +406,18 @@ def run_pipeline(
     for attempt in range(1, max_attempts + 1):
         try:
             transforms = []  # fitted transforms, applied in order to train/holdout/test
+            tr_in, ho_in = train_raw, holdout_raw
+            if ordinal_transform is not None:  # ordinal ranks first, before cleaning
+                tr_in, ho_in = ordinal_transform.transform(tr_in), ordinal_transform.transform(ho_in)
+                transforms.append(ordinal_transform)
             if plan is not None:
-                ctransform = fit_cleaning_plan(train_raw, plan, target)
-                train = ctransform.transform(train_raw)
-                holdout = ctransform.transform(holdout_raw)
+                ctransform = fit_cleaning_plan(tr_in, plan, target)
+                train = ctransform.transform(tr_in)
+                holdout = ctransform.transform(ho_in)
                 cleaning_log = ctransform.log
                 transforms.append(ctransform)
             else:
-                train, holdout, cleaning_log = train_raw, holdout_raw, []
+                train, holdout, cleaning_log = tr_in, ho_in, []
 
             n_clean = len(train.columns)
             feature_log: list[str] = []
@@ -447,6 +481,7 @@ def run_pipeline(
                 feature_plan=feature_plan,
                 feature_log=feature_log,
                 research=research_summary,
+                ordinal=ordinal_summary,
             )
         except Exception as exc:
             if attempt == max_attempts:
