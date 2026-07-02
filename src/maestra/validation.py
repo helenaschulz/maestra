@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from autogluon.tabular import TabularPredictor
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
 from sklearn.utils.multiclass import type_of_target
 
 from maestra.cleaning import fit_cleaning_plan
@@ -59,9 +59,23 @@ def _is_classification(y: pd.Series) -> bool:
     return True
 
 
-def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratified: bool):
-    """Yield ``(train_idx, val_idx)`` pairs. The single place fold strategy is chosen —
-    group-/time-based splitters slot in here without touching the rest of the pipeline."""
+def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratified: bool,
+                group_column: str | None = None, time_column: str | None = None):
+    """Yield ``(train_idx, val_idx)`` pairs (positional). The single place fold strategy is
+    chosen. ``group_column`` keeps every entity's rows in ONE fold (GroupKFold);
+    ``time_column`` yields expanding-window splits where validation is strictly later than
+    training (TimeSeriesSplit over the time-sorted order). Both override stratification —
+    they exist precisely because a random/stratified split would lie."""
+    if group_column is not None:
+        splitter = GroupKFold(n_splits=n_folds)
+        return list(splitter.split(df, df[target], groups=df[group_column]))
+    if time_column is not None:
+        values = df[time_column]
+        if values.dtype.kind not in "iufM":
+            values = pd.to_datetime(values, errors="coerce", format="mixed")
+        order = np.argsort(values.to_numpy(), kind="stable")  # positional, past -> future
+        splitter = TimeSeriesSplit(n_splits=n_folds)
+        return [(order[tr], order[va]) for tr, va in splitter.split(order)]
     if stratified:
         splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
         return list(splitter.split(df, df[target]))
@@ -102,6 +116,8 @@ def cross_validate(
     stratified: bool | None = None,
     generated_features: list | None = None,
     eval_metric: str | None = None,
+    group_column: str | None = None,
+    time_column: str | None = None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -120,7 +136,8 @@ def cross_validate(
     """
     classification = _is_classification(df[target])
     use_stratified = classification if stratified is None else (stratified and classification)
-    folds = _make_folds(df, target, n_folds, seed, use_stratified)
+    folds = _make_folds(df, target, n_folds, seed, use_stratified,
+                        group_column=group_column, time_column=time_column)
 
     fold_scores: list[float] = []
     eval_metric = problem_type = None

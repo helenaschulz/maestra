@@ -53,3 +53,15 @@ def test_examples_exclude_nan_and_truncate():
     x = next(c for c in prof["columns"] if c["name"] == "x")
     assert len(x["examples"]) == 1  # NaN dropped
     assert len(x["examples"][0]) == 40 and x["examples"][0].endswith("...")
+
+
+def test_description_context_wraps_and_truncates():
+    from maestra.profiling import description_context
+
+    assert description_context(None) is None
+    assert description_context("   ") is None
+    out = description_context("KitchenQual: Ex > Gd > TA")
+    assert "KitchenQual: Ex > Gd > TA" in out
+    assert "Dataset description" in out          # prompt-ready header
+    long = description_context("x" * 10_000, max_chars=100)
+    assert "[... truncated]" in long and len(long) < 400

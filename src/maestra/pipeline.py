@@ -27,9 +27,10 @@ from maestra.engine import (
 )
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
-from maestra.profiling import profile_dataframe
+from maestra.profiling import description_context, profile_dataframe
 from maestra.research import brief_context, research_strategy
 from maestra.validation import CVResult, adversarial_validation, cross_validate
+from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
 _MAX_ERROR_CHARS = 1500
@@ -58,6 +59,8 @@ class PipelineResult:
     adversarial_auc: float | None = None  # train/test shift AUC, when a test set was given
     research: dict | None = None  # strategy-research summary, when --research was used
     hybrid: list | None = None  # generated-feature candidate provenance, when --hybrid was used
+    fold_strategy: dict | None = None  # Validation Strategist verdict (strategy/columns/rationale/
+    # leakage_warnings/log), when --fold-advisor was used
 
 
 def _do_research(model, df, target, rules_mode):
@@ -157,14 +160,27 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=1.0,
-                 eval_metric=None, proba=False, proba_columns=None) -> PipelineResult:
+                 eval_metric=None, proba=False, proba_columns=None,
+                 fold_advisor=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
     the plan *parameters* per fold for an honest, leakage-free score. With ``hybrid`` the LLM
     also generates feature code, gated fold-wise by the CV. A final model is trained on all
     data (plus any kept generated features) for prediction/submission.
+
+    With ``fold_advisor`` the Validation Strategist decides HOW folds are built
+    (random/group/time) from the column semantics — the one validation decision the engine
+    cannot make. Its proposal is deterministically verified; any defect falls back to random.
     """
+    # Validation Strategist (opt-in): decide the fold strategy before anything is fitted.
+    fold_strategy, group_column, time_column = None, None, None
+    if fold_advisor and use_llm:
+        proposal = propose_fold_strategy(model, profile_dataframe(df, target), target, research_context)
+        verified, strategy_log = validate_fold_strategy(proposal, df, target)
+        group_column, time_column = verified["group_column"], verified["time_column"]
+        fold_strategy = {**verified, "log": strategy_log}
+
     cleaning_plan = (
         propose_cleaning_plan(model, profile_dataframe(df, target), target, research_context)
         if use_llm else None
@@ -193,12 +209,14 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         generated_features, records, cv = select_features(
             df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
-            sigma_mult=hybrid_threshold, eval_metric=eval_metric)
+            sigma_mult=hybrid_threshold, eval_metric=eval_metric,
+            group_column=group_column, time_column=time_column)
         hybrid_records = [asdict(r) for r in records]
     else:
         cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                             model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
-                            eval_metric=eval_metric)
+                            eval_metric=eval_metric,
+                            group_column=group_column, time_column=time_column)
 
     # Final model on all data, plus kept generated features (fitted on the full cleaned+FE data).
     full_for_fit = full
@@ -221,6 +239,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         plan=cleaning_plan, cleaning_log=cleaning_log, training=training,
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
+        fold_strategy=fold_strategy,
     )
 
 
@@ -259,6 +278,8 @@ def run_pipeline(
     id_col: str = "id",
     proba: bool = False,
     proba_columns: list[str] | None = None,
+    dataset_description: str | None = None,
+    fold_advisor: bool = False,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -298,6 +319,9 @@ def run_pipeline(
             log-loss competitions. Default ``False`` keeps the label path byte-identical.
         proba_columns: The sample submission's non-id columns (ordered), which define the
             probability output format. Required when ``proba`` is ``True``.
+        dataset_description: Provider-written description of the dataset (e.g. Kaggle's
+            ``data_description.txt``), fed verbatim (capped) to every judgment node — it
+            carries the column semantics the statistical profile cannot.
 
     Raises:
         ValueError: If ``target`` is not a column of ``df``.
@@ -307,6 +331,8 @@ def run_pipeline(
         raise ValueError(f"Target column {target!r} not in CSV. Columns: {list(df.columns)}")
     if hybrid and not (cv_folds and cv_folds >= 2):
         raise ValueError("--hybrid requires --cv (the CV is the gate that keeps/drops features).")
+    if fold_advisor and not (cv_folds and cv_folds >= 2):
+        raise ValueError("--fold-advisor requires --cv (it decides how the CV folds are built).")
 
     n_before = len(df.columns)
 
@@ -316,6 +342,12 @@ def run_pipeline(
     if research and use_llm:
         research_context, research_summary = _do_research(model, df, target, rules_mode)
 
+    # The planners' shared context: the provider-written dataset description (column semantics
+    # the profile's statistics cannot carry) plus any research hypotheses. One channel, so every
+    # judgment node sees the same picture.
+    parts = [description_context(dataset_description), research_context]
+    research_context = "\n\n".join(p for p in parts if p) or None
+
     if cv_folds is not None and cv_folds >= 2:
         return _run_with_cv(
             df, target, model=model, time_limit=time_limit, cv_time_limit=cv_time_limit or time_limit,
@@ -324,6 +356,7 @@ def run_pipeline(
             research_context=research_context, research_summary=research_summary,
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
+            fold_advisor=fold_advisor,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

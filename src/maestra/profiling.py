@@ -71,3 +71,23 @@ def profile_dataframe(df: pd.DataFrame, target: str) -> dict:
             }
         )
     return {"n_rows": n, "target": target, "columns": columns}
+
+
+# Dataset descriptions (e.g. Kaggle's data_description.txt) carry the column SEMANTICS the
+# profile's statistics cannot: what a column means, its units, ordinal orders. Feeding them to
+# the judgment nodes is the single cheapest quality lever on semantic-rich data (CAAFE's key
+# mechanism). Capped so a book-length description cannot blow up the prompt.
+_MAX_DESCRIPTION_CHARS = 4000
+
+
+def description_context(text: str | None, max_chars: int = _MAX_DESCRIPTION_CHARS) -> str | None:
+    """Prompt-ready block for a provider-written dataset description (None if there is none)."""
+    if not text or not text.strip():
+        return None
+    body = text.strip()
+    if len(body) > max_chars:
+        body = body[:max_chars] + "\n[... truncated]"
+    return (
+        "Dataset description (verbatim, from the data provider — use it to understand what "
+        "columns MEAN, e.g. units, ordinal orders, identifiers):\n" + body
+    )

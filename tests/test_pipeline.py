@@ -141,6 +141,24 @@ def test_llm_path_applies_plan_before_training(df, fake_training, monkeypatch):
     assert any("DROP 'id'" in line for line in result.cleaning_log)
 
 
+def test_dataset_description_reaches_the_planner(df, fake_training, monkeypatch):
+    """M0: a provider-written description flows into the planners' shared context channel."""
+    _patch_engine(monkeypatch, fake_training)
+    captured = {}
+
+    def fake_clean(model, profile, target, research_context=None):
+        captured["ctx"] = research_context
+        return {"columns_to_drop": [], "imputations": []}
+
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan", fake_clean)
+
+    run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                 use_fe=False, dataset_description="f: the fare in USD; id: row number")
+
+    assert "the fare in USD" in captured["ctx"]          # description text arrived
+    assert "Dataset description" in captured["ctx"]      # wrapped in the prompt-ready block
+
+
 # --- opt-in research wiring --------------------------------------------------------
 
 def test_research_runs_feeds_planning_and_logs(df, fake_training, monkeypatch):

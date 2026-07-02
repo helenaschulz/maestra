@@ -139,6 +139,7 @@ def run_task(
     cv_folds: int | None = None,
     hybrid: bool = False,
     name: str | None = None,
+    dataset_description: str | None = None,
 ) -> BenchResult:
     """Run Maestra and the ``--no-llm`` baseline on ``csv`` and grade both on the answer key.
 
@@ -152,7 +153,8 @@ def run_task(
     work, test_features, answer = _carve_answer_key(df, target, id_col, holdout_frac, seed)
 
     common = dict(model=model, test_size=0.2, time_limit=time_limit, seed=seed,
-                  test_df=test_features, id_col=id_col, cv_folds=cv_folds)
+                  test_df=test_features, id_col=id_col, cv_folds=cv_folds,
+                  dataset_description=dataset_description)
     res_m = run_pipeline(work, target, use_llm=True, hybrid=hybrid,
                          model_dir="AutogluonModels/bench_maestra", **common)
     res_b = run_pipeline(work, target, use_llm=False, model_dir="AutogluonModels/bench_baseline", **common)
@@ -200,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cv", type=int, default=None, help="Use the k-fold CV path (both arms).")
     p.add_argument("--hybrid", action="store_true", help="Generated-feature gate on the Maestra arm (needs --cv).")
     p.add_argument("--name", default=None, help="Label for the result row (default: CSV stem).")
+    p.add_argument("--description", default=None,
+                   help="Path to a provider-written dataset description fed to the judgment nodes.")
     p.add_argument("--results", default="benchmark.jsonl")
     p.add_argument("--summary", action="store_true", help="Print the accumulated board and exit.")
     args = p.parse_args(argv)
@@ -212,10 +216,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: --csv and --target are required (or use --summary).")
         return 1
 
+    description = None
+    if args.description:
+        with open(args.description) as fh:
+            description = fh.read()
     result = run_task(args.csv, args.target, metric=args.metric, id_col=args.id_col,
                       model=args.model, time_limit=args.time_limit, seed=args.seed,
                       holdout_frac=args.holdout_frac, cv_folds=args.cv, hybrid=args.hybrid,
-                      name=args.name)
+                      name=args.name, dataset_description=description)
     append_result(args.results, result, timestamp=datetime.now().isoformat(timespec="seconds"))
     print(f"\n{result.name} | {result.metric}: baseline {result.baseline:.4f}  "
           f"maestra {result.maestra:.4f}  Δ {result.delta:+.4f}  → "

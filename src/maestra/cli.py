@@ -60,6 +60,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--cv-time-limit", type=int, default=None, help="Training budget per CV fold.")
     p.add_argument(
+        "--fold-advisor",
+        action="store_true",
+        help="Validation Strategist: the LLM decides how CV folds are built (random/group/time) "
+             "from the column semantics; its proposal is verified deterministically (needs --cv).",
+    )
+    p.add_argument(
         "--hybrid",
         action="store_true",
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
@@ -84,6 +90,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default="offline",
         help="Competition rules mode for --research (default offline).",
     )
+    p.add_argument(
+        "--description",
+        help="Path to a provider-written dataset description (e.g. Kaggle's data_description.txt); "
+             "fed to every judgment node so the LLM knows what columns MEAN.",
+    )
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
@@ -103,6 +114,12 @@ def _print_result(result, model: str) -> None:
         print(f"\n=== Strategy research ({model}, rules_mode={r.get('rules_mode')}) ===")
         print(f"  {len(r.get('references') or [])} references, grounded={r.get('grounded')} "
               f"-> fed to planning as non-binding hypotheses")
+
+    if result.fold_strategy is not None:
+        fs = result.fold_strategy
+        print(f"\n=== Validation Strategist ({model}) ===")
+        for line in fs.get("log", []):
+            print(f"  {line}")
 
     if result.diagnosis_log:
         print(f"\n=== Diagnosis / revision loop ({result.attempts} attempts) ===")
@@ -188,6 +205,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"Loaded test {args.test}: rows={len(test_df)}")
 
+    dataset_description = None
+    if args.description:
+        try:
+            with open(args.description) as fh:
+                dataset_description = fh.read()
+        except FileNotFoundError:
+            print(f"Error: description file not found: {args.description}", file=sys.stderr)
+            return 1
+        print(f"Loaded description {args.description} ({len(dataset_description)} chars)")
+
     try:
         result = run_pipeline(
             df,
@@ -203,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             revise_below=args.revise_below,
             cv_folds=args.cv,
             cv_time_limit=args.cv_time_limit,
+            fold_advisor=args.fold_advisor,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,
@@ -210,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             rules_mode=args.rules_mode,
             test_df=test_df,
             id_col=args.id_col,
+            dataset_description=dataset_description,
         )
     except ValueError as exc:  # bad target column
         print(f"Error: {exc}", file=sys.stderr)

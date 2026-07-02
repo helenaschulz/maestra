@@ -130,6 +130,11 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
 
 ## Features
 
+- **Validation Strategist** (`--fold-advisor`) — the LLM decides how CV folds must be built
+  (random / group / time) from the column semantics, the one validation decision AutoML cannot
+  make; every proposal is verified deterministically and falls back to random on any defect
+- **Dataset-description context** (`--description`) — feed the provider's data description to
+  every judgment node, so the LLM knows what columns *mean* (units, ordinal orders, entities)
 - **Agentic cleaning & feature engineering** — constrained JSON plans from fixed vocabularies
 - **Hybrid feature generation** (`--hybrid`) — LLM-written feature code in a locked-down
   sandbox (no network, CPU/memory caps, target stripped), kept only if it beats CV fold noise;
@@ -196,6 +201,8 @@ maestra-mlebench --task /path/to/prepared/public:leaf-classification \
 | `--no-fe` | off | Skip LLM feature engineering |
 | `--cv` | — | Leakage-free K-fold CV instead of a single holdout (K ≥ 2) |
 | `--cv-time-limit` | `--time-limit` | Budget per CV fold |
+| `--fold-advisor` | off | Validation Strategist: LLM-chosen fold strategy, verified deterministically (needs `--cv`) |
+| `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
 | `--hybrid-threshold` | `1.0` | Keep threshold in fold-noise sigmas |
@@ -238,7 +245,8 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`feature_engineering.py`](src/maestra/feature_engineering.py) | Fixed feature vocabulary + fit/transform |
 | [`hybrid_features.py`](src/maestra/hybrid_features.py) | LLM-written feature code: sandbox, row-independence check, greedy CV gate |
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
-| [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (OOF preds + probas) + adversarial validation |
+| [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
+| [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |
 | [`calibration.py`](src/maestra/calibration.py) | Temperature scaling on OOF probabilities |
 | [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics, predict / predict_proba |
 | [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure diagnosis → bounded recovery actions |

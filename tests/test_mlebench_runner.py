@@ -24,6 +24,15 @@ def test_read_task_derives_id_and_target(tmp_path):
     assert task.id_col == "id"          # the sample-submission column also present in test.csv
     assert task.target_col == "label"   # the other column
     assert task.name == "toycomp"
+    assert task.description is None     # no description.md in this toy task
+
+
+def test_read_task_picks_up_description_md(tmp_path):
+    """M0: prepared MLE-bench tasks ship a description.md — read_task carries it to the LLM."""
+    _make_task(tmp_path / "toycomp")
+    (tmp_path / "toycomp" / "description.md").write_text("# Toy\nf is a sensor reading in volts.")
+    task = read_task(str(tmp_path / "toycomp"))
+    assert "sensor reading in volts" in task.description
 
 
 def _result(cv):

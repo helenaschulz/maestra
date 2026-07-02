@@ -88,6 +88,8 @@ class MleTask:
     target_col: str
     submission_columns: list[str]  # the sample submission's non-id columns, in order —
     # defines the output format (single column = label/binary; one per class = multiclass proba)
+    description: str | None = None  # the competition's description.md, when present — fed to
+    # the judgment nodes so the LLM knows what the columns mean
 
 
 @dataclass
@@ -131,9 +133,15 @@ def read_task(task_dir: str) -> MleTask:
     id_col = id_in_test[0] if id_in_test else sub_cols[0]
     sub_targets = [c for c in sub_cols if c != id_col]
 
+    description = None
+    desc_path = os.path.join(task_dir, "description.md")
+    if os.path.exists(desc_path):  # shipped with every prepared MLE-bench task
+        with open(desc_path) as fh:
+            description = fh.read()
+
     def _task(target_col):
         return MleTask(os.path.basename(os.path.normpath(task_dir)), train, test, sample,
-                       id_col, target_col, sub_targets)
+                       id_col, target_col, sub_targets, description)
 
     # Single column: it is itself the target column (label or binary probability).
     if len(sub_targets) == 1 and sub_targets[0] in train_cols:
@@ -258,6 +266,7 @@ def run_mlebench_task(
         model_dir=f"AutogluonModels/mle_{task.name}_s{seed}", use_llm=not no_llm, cv_folds=cv_folds,
         hybrid=hybrid, research=research, eval_metric=ag_metric, test_df=test_df, id_col=task.id_col,
         proba=want_proba, proba_columns=task.submission_columns if want_proba else None,
+        dataset_description=task.description,
     )
     if result.submission is None:
         raise MleBenchError("pipeline produced no submission (is the test set valid?)")
