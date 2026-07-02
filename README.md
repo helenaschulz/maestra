@@ -149,10 +149,12 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
 
 ## Features
 
-- **`maestra-audit`** — a standalone data-risk report to run *before* building a model: the
-  recommended validation strategy, LLM-flagged leakage, deterministic structural traps (id-like,
-  constant, high-missing, free-text columns), and an optional train/test shift check. Trains no
-  model — one LLM call plus a profile.
+- **`maestra-audit`** — a standalone data-risk report to run *before* building a model:
+  an executive summary with an overall risk verdict, the recommended validation strategy, LLM-flagged
+  *and* deterministically-detected leakage (near-copies of the target by correlation), structural
+  traps (id-like, constant, high-missing, free-text columns), and an optional train/test shift
+  check — every finding with a recommended action. English or German output (`--lang de`); reads
+  CSV, Parquet or Excel. Trains no model — one LLM call plus a profile.
 - **Skeptic** (`--skeptic`) — a second LLM in an adversarial role attacks the cleaning plan's
   drops; each high-risk drop is put to the CV arbiter (keep vs drop) and vetoed **only if keeping
   the column measurably helps** — a safety net against dropping real signal, ruled by measurement,
@@ -227,8 +229,8 @@ maestra-bench --csv data/titanic.csv --target Survived \
 maestra-mlebench --task /path/to/prepared/public:leaf-classification \
                  --data-dir ~/.cache/mle-bench/data --metric log_loss --cv 3
 
-# audit a dataset BEFORE modelling — validation strategy, leakage, structural traps
-maestra-audit --csv data/train.csv --target churn --test data/test.csv --out audit.md
+# audit a dataset BEFORE modelling — risk verdict, validation strategy, leakage, actions
+maestra-audit --csv data/train.csv --target churn --test data/test.csv --lang de --out audit.md
 ```
 
 <details>

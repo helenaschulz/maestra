@@ -64,3 +64,58 @@ def test_unknown_target_raises(monkeypatch):
     import pytest
     with pytest.raises(ValueError, match="not in CSV"):
         audit(_df(), "missing", model="m")
+
+
+def test_deterministic_target_leak_scan(monkeypatch):
+    """A numeric feature that is a near-copy of the target must be flagged without any LLM."""
+    _patch_strategist(monkeypatch, strategy="random", group_column=None)
+    rng = np.random.default_rng(1)
+    y = rng.normal(size=200)
+    df = pd.DataFrame({
+        "leaky": y + rng.normal(scale=0.01, size=200),   # |r| ~ 1.0 -> flagged
+        "honest": rng.normal(size=200),                  # uncorrelated -> not flagged
+        "y": y,
+    })
+    r = audit(df, "y", model="m")
+    assert [c for c, _ in r.target_leaks] == ["leaky"]
+    assert r.risk_level == "high"                        # leak evidence -> high
+    assert "leaky" in render_report(r)
+
+
+def test_risk_verdict_levels(monkeypatch):
+    _patch_strategist(monkeypatch, strategy="random", group_column=None)
+    clean = pd.DataFrame({"x": np.random.default_rng(0).normal(size=50), "y": [0, 1] * 25})
+    assert audit(clean, "y", model="m").risk_level == "low"
+
+    _patch_strategist(monkeypatch)                       # group strategy -> validation must change
+    grouped = pd.DataFrame({"customer_id": np.repeat(range(10), 5),
+                            "x": np.random.default_rng(0).normal(size=50), "y": [0, 1] * 25})
+    assert audit(grouped, "y", model="m").risk_level == "elevated"
+
+
+def test_german_report(monkeypatch):
+    _patch_strategist(monkeypatch, warnings=[{"column": "x", "reason": "post-outcome"}])
+    r = audit(_df(), "y", model="m")
+    md = render_report(r, lang="de")
+    assert "Datenrisiko-Audit" in md
+    assert "Gesamtrisiko: HOCH" in md                    # leakage warning -> high
+    assert "Gruppen-Folds nach `customer_id`" in md
+    assert "Maßnahme" in md                              # actions rendered
+    assert "post-outcome" in md                          # LLM rationale stays verbatim
+
+
+def test_reports_carry_actions_and_summary(monkeypatch):
+    _patch_strategist(monkeypatch)
+    md = render_report(audit(_df(), "y", model="m"))
+    assert "Executive summary" in md and "Overall risk" in md
+    assert "→ Action:" in md                             # every main finding is actionable
+
+
+def test_load_table_by_extension(tmp_path):
+    from maestra.audit import _load_table
+    df = pd.DataFrame({"a": [1, 2], "y": [0, 1]})
+    csv, pq = tmp_path / "d.csv", tmp_path / "d.parquet"
+    df.to_csv(csv, index=False)
+    df.to_parquet(pq)
+    assert _load_table(str(csv)).equals(df)
+    assert _load_table(str(pq)).equals(df)
