@@ -69,8 +69,9 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
 | **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | 26 453 / 25 745 | **25 828 / 24 343** | **LLM wins on both seeds** |
+| **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
-Three findings that shape the design:
+Four findings that shape the design:
 
 1. **The LLM pays off where column *semantics* exist, and nowhere else.** On anonymous numeric
    data an LLM is structurally blind; on House Prices (`Neighborhood`, `KitchenQual`,
@@ -83,6 +84,13 @@ Three findings that shape the design:
    rejected **all of them**: gradient-boosted trees already extract that signal from raw columns.
 3. **The CV↔LB gap works as a trust meta-signal.** Near zero on TPS (trust the CV), huge on
    leaf-classification, where 3-fold log-loss over 99 classes is an unstable estimator (don't).
+4. **Where AutoML is structurally blind, the LLM's contribution is two orders of magnitude
+   larger.** On grouped data (several rows per customer, per-entity labels) a random-fold CV
+   reported **0.99** against a true score of **0.49** — the classic silent killer of deployed
+   models. The Validation Strategist (`--fold-advisor`) read the column semantics, detected the
+   entity column, switched to group folds, and reported **0.488 vs 0.493 truth** (gap −0.006).
+   Cleaning/FE judgment moves scores by ~0.005; fixing the validation design moved it by ~0.5.
+   Reproduce it: `python scripts/group_leakage_experiment.py`.
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.
