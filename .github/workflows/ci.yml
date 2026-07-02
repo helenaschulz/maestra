@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The core install is heavy (AutoGluon pulls in PyTorch) but required: modules import
+      # autogluon at the top level even though every test mocks it. The suite itself is fast
+      # and fully offline (LLM and AutoGluon are mocked).
+      - name: Install
+        run: pip install -e ".[dev,research]"
+
+      - name: Test
+        run: python -m pytest -q
