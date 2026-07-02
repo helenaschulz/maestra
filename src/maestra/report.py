@@ -19,12 +19,11 @@ REPORT_SCHEMA: dict = {
 }
 
 _SYSTEM_PROMPT = (
-    "Du bist Data Scientist und schreibst einen knappen, klaren Markdown-Report ueber "
-    "einen AutoML-Lauf. Du bekommst die FAKTEN als JSON. WICHTIG: Verwende ausschliesslich "
-    "die uebergebenen Zahlen WOERTLICH; erfinde KEINE Werte und rechne NICHTS aus. Erklaere "
-    "und fasse zusammen: was bereinigt und an Features erzeugt wurde, das Ergebnis (Metriken, "
-    "bestes Modell), und etwaige Revisionen. Gliedere mit Markdown-Ueberschriften. Sei "
-    "sachlich und kurz."
+    "You are a data scientist writing a concise, clear Markdown report about an AutoML run. "
+    "You are given the FACTS as JSON. IMPORTANT: use the supplied numbers VERBATIM; invent NO "
+    "values and compute NOTHING. Explain and summarize: what was cleaned and which features "
+    "were created, the result (metrics, best model), and any revisions. Structure it with "
+    "Markdown headings. Be factual and brief."
 )
 
 

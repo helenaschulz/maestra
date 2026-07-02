@@ -58,7 +58,7 @@ def test_run_task_grades_maestra_and_baseline(tmp_path, monkeypatch):
     def fake_run(work, target, *, use_llm, test_df, id_col, **kwargs):
         ids = test_df[id_col].tolist()
         preds = [truth[i] for i in ids] if use_llm else [0] * len(ids)  # maestra perfect, baseline all-0
-        return SimpleNamespace(submission=pd.DataFrame({id_col: ids, target: preds}))
+        return SimpleNamespace(submission=pd.DataFrame({id_col: ids, target: preds}), hybrid=None)
 
     monkeypatch.setattr(benchmark, "run_pipeline", fake_run)
     r = run_task(str(csv), "y", metric="accuracy", id_col="id", time_limit=1, seed=0, holdout_frac=0.5)

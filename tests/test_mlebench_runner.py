@@ -50,7 +50,7 @@ def test_run_mlebench_task_smoke_aligned_metric(tmp_path, monkeypatch):
     assert record["cv_lb_gap"] == pytest.approx(0.03)                   # comparable: aligned metric
     assert record["metric_mode"] == "aligned" and record["medal"] == "bronze"
 
-    written = pd.read_csv(out_dir / "toycomp_maestra_submission.csv")
+    written = pd.read_csv(out_dir / "toycomp_maestra_s42_submission.csv")
     assert list(written.columns) == ["id", "label"] and written["id"].tolist() == [5, 6]
     logged = json.loads(runs_log.read_text().splitlines()[-1])
     assert logged["kind"] == "mlebench" and logged["cv_lb_gap"] == pytest.approx(0.03)
@@ -143,6 +143,9 @@ def test_run_mlebench_task_proba_metric_scored_on_oof_probabilities(tmp_path, mo
     assert record["metric_mode"] == "proba"
     assert record["cv_score"] == pytest.approx(expected)                           # on OOF probabilities
     assert record["cv_lb_gap"] == pytest.approx(expected - 0.75)                   # comparable
+    # calibration is fitted and its CV-side effect logged, but the submission is untouched by default
+    assert record["temperature"] > 0 and "cv_score_cal" in record
+    assert record["calibrated_submission"] is False
 
 
 def test_multitarget_submission_aborts(tmp_path):

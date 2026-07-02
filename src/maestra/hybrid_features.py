@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -144,15 +145,14 @@ FEATURE_CODE_SCHEMA: dict = {
 }
 
 _CODEGEN_SYSTEM_PROMPT = (
-    "Du generierst Python-Code fuer NEUE Tabellen-Features. Pro Feature definierst du GENAU "
-    "zwei Funktionen:\n"
-    "  def fit(train_df): -> params      # darf die Zielspalte nutzen (NUR train)\n"
-    "  def transform(df, params): -> pandas.Series der Laenge len(df)\n"
-    "REGELN: transform bekommt df OHNE die Zielspalte und darf NICHT auf sie zugreifen. "
-    "Verwende nur pandas (als pd) und numpy (als np); KEINE imports ausser pandas/numpy/math. "
-    "Keine Datei-/Netzwerkzugriffe. Die Ausgabe von transform muss NUMERISCH sein. Halte den "
-    "Code kurz und robust (fange z.B. Division durch null ab). Schlage nur Features vor, die "
-    "plausibel Signal tragen."
+    "You generate Python code for NEW tabular features. For each feature you define EXACTLY "
+    "two functions:\n"
+    "  def fit(train_df): -> params      # may use the target column (train ONLY)\n"
+    "  def transform(df, params): -> pandas.Series of length len(df)\n"
+    "RULES: transform receives df WITHOUT the target column and must NOT access it. Use only "
+    "pandas (as pd) and numpy (as np); NO imports except pandas/numpy/math. No file/network "
+    "access. The output of transform must be NUMERIC. Keep the code short and robust (e.g. "
+    "guard against division by zero). Propose only features that plausibly carry signal."
 )
 
 
@@ -162,8 +162,8 @@ def propose_feature_code(
     """Ask the LLM to generate feature-code candidates from the profile (+ research ideas)."""
     source = "brief" if research_context else "profile"
     user_prompt = (
-        f"Spalten-Profil (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2, default=str)}\n\n"
-        f"Generiere hoechstens {max_candidates} Feature-Kandidaten."
+        f"Column profile (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2, default=str)}\n\n"
+        f"Generate at most {max_candidates} feature candidates."
     )
     if research_context:
         user_prompt += "\n\n" + research_context
@@ -172,7 +172,7 @@ def propose_feature_code(
         system_prompt=_CODEGEN_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         tool_name="generate_feature_code",
-        tool_description="Generiere Feature-Code-Kandidaten (fit/transform) fuer ein ML-Problem.",
+        tool_description="Generate feature-code candidates (fit/transform) for an ML problem.",
         parameters_schema=FEATURE_CODE_SCHEMA,
     )
     features = []
@@ -196,6 +196,10 @@ def apply_generated_features(train, other, target, features):
         if res.status == "ok":
             train_cols[f"gen_{feat.name}"] = res.train
             other_cols[f"gen_{feat.name}"] = res.val
+        else:
+            # Skipping keeps the pipeline alive (dry-run filters persistent failures), but a
+            # silent skip would masquerade as "feature had no effect" in the CV gate — say so.
+            warnings.warn(f"generated feature {feat.name!r} skipped ({res.status}): {res.error}")
     train, other = train.copy(), other.copy()
     for col, values in train_cols.items():
         train[col] = values
@@ -215,7 +219,7 @@ class CandidateRecord:
     source: str
     cv_delta: float | None
     kept: bool
-    reason: str  # improved | no_improvement | sandbox_error | timeout | row_context_dependent
+    reason: str  # improved | no_improvement | no_effect | sandbox_error | timeout | row_context_dependent
 
 
 def _is_row_independent(code, train, val, target, whole_values, *, tol=1e-6) -> bool:
@@ -290,6 +294,11 @@ def select_features(
             kept.append(cand)
             base = trial  # raise the bar for the next candidate
             records.append(CandidateRecord(cand.name, cand.idea, cand.source, float(delta), True, "improved"))
+        elif delta == 0.0 and trial.fold_scores == base.fold_scores:
+            # Bit-identical CV means the feature changed NOTHING — it duplicates an existing
+            # column (AutoGluon drops duplicates) or was skipped in every fold. Distinct from an
+            # honest "trained on it, didn't help", which never reproduces scores exactly.
+            records.append(CandidateRecord(cand.name, cand.idea, cand.source, 0.0, False, "no_effect"))
         else:
             records.append(CandidateRecord(cand.name, cand.idea, cand.source, float(delta), False, "no_improvement"))
     return kept, records, base

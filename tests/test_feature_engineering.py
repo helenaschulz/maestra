@@ -62,32 +62,32 @@ def test_bin_edges_fitted_on_train_only_no_leakage(train):
 def test_target_is_protected(train):
     out, log = _ft(train, [{"op": "log_transform", "column": "target", "reason": "x"}])
     assert "target_log" not in out.columns
-    assert any("Zielspalte" in line for line in log)
+    assert any("target column" in line for line in log)
 
 
 def test_non_numeric_column_skipped(train):
     out, log = _ft(train, [{"op": "bin", "column": "city", "n_bins": 2, "reason": "x"}])
     assert "city_bin" not in out.columns
-    assert any("nicht numerisch" in line for line in log)
+    assert any("not numeric" in line for line in log)
 
 
 def test_missing_column_skipped(train):
     out, log = _ft(train, [{"op": "log_transform", "column": "ghost", "reason": "x"}])
     assert list(out.columns) == list(train.columns)
-    assert any("nicht vorhanden" in line for line in log)
+    assert any("not present" in line for line in log)
 
 
 def test_unknown_op_skipped(train):
     out, log = _ft(train, [{"op": "fourier", "column": "a", "reason": "x"}])
     assert list(out.columns) == list(train.columns)
-    assert any("unbekannte Op" in line for line in log)
+    assert any("unknown op" in line for line in log)
 
 
 def test_new_column_collision_skipped(train):
     df = train.assign(a_log=99.0)
     out, log = _ft(df, [{"op": "log_transform", "column": "a", "reason": "x"}])
     assert (out["a_log"] == 99.0).all()  # existing column untouched
-    assert any("existiert schon" in line for line in log)
+    assert any("already exists" in line for line in log)
 
 
 def test_input_not_mutated(train):

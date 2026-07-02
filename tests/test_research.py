@@ -197,7 +197,7 @@ def test_live_rules_mode_recorded_and_passed_to_synthesis(monkeypatch):
     assert out.brief["rules_mode"] == "live"        # brief flags the mode (deterministic)
     synth = next(c for c in llm.calls if c["tool_name"] == "write_strategy_brief")
     assert "live" in synth["user_prompt"].lower()   # constraint reached the synthesis prompt
-    assert "externer daten" in synth["user_prompt"].lower()
+    assert "external data" in synth["user_prompt"].lower()
 
 
 def test_second_call_hits_cache_and_skips_all_work(monkeypatch):

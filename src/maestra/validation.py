@@ -43,7 +43,20 @@ class CVResult:
 
 
 def _is_classification(y: pd.Series) -> bool:
-    return type_of_target(y.dropna()) in ("binary", "multiclass")
+    """True if ``y`` should be stratified like a class label.
+
+    sklearn's ``type_of_target`` calls ANY integer-coded column with >2 distinct values
+    "multiclass" — including regression targets like a sale price — which would send a
+    continuous target into StratifiedKFold (crashing on singleton "classes"). So for numeric
+    targets we additionally require a small number of distinct values; string/bool targets
+    stay classification as-is. AutoGluon applies its own, similar inference for training.
+    """
+    y = y.dropna()
+    if type_of_target(y) not in ("binary", "multiclass"):
+        return False
+    if y.dtype.kind in "iuf":  # numeric: many distinct values = a number, not class codes
+        return y.nunique() <= 20
+    return True
 
 
 def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratified: bool):
@@ -113,7 +126,13 @@ def cross_validate(
     eval_metric = problem_type = None
     greater_is_better = True
     oof_pred = pd.Series([None] * len(df), index=df.index, dtype=object)
-    oof_proba: "pd.DataFrame | None" = None  # built lazily once class columns are known
+    # Fixed, complete column set for OOF probabilities: EVERY class in the data, stable order.
+    # A fold whose training part happens to miss a rare class returns proba without that column;
+    # reindexing each fold onto this full set (absent class -> 0) keeps every pooled row a valid
+    # probability vector that sums to 1. Initialising from the first fold's columns instead left
+    # later rows with NaNs and silently blew up any probability metric (log_loss / roc_auc).
+    oof_classes = sorted(df[target].dropna().unique().tolist()) if classification else []
+    oof_proba = pd.DataFrame(index=df.index, columns=oof_classes, dtype=float) if classification else None
     for i, (train_idx, val_idx) in enumerate(folds):
         proc_train, proc_val = _process_fold(
             df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
@@ -129,9 +148,8 @@ def cross_validate(
             # probability metrics (roc_auc / log_loss) can be scored on held-out rows.
             if classification:
                 fold_proba = predict_proba(result.predictor, val_features)
-                if oof_proba is None:
-                    oof_proba = pd.DataFrame(index=df.index, columns=fold_proba.columns, dtype=float)
-                oof_proba.loc[proc_val.index, fold_proba.columns] = fold_proba.to_numpy()
+                aligned = fold_proba.reindex(columns=oof_classes, fill_value=0.0)
+                oof_proba.loc[proc_val.index, oof_classes] = aligned.to_numpy()
         score = result.metrics.get(eval_metric)
         if score is None:  # fall back to any reported value
             score = next(iter(result.metrics.values()))

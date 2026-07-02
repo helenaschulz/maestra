@@ -81,6 +81,25 @@ def test_gate_keeps_improvement_discards_noise(monkeypatch):
     assert not records[1].kept and records[1].reason == "no_improvement"
 
 
+def test_gate_flags_bit_identical_cv_as_no_effect(monkeypatch):
+    """A trial CV that is bit-identical to the base (same mean AND fold scores) means the
+    feature changed nothing — duplicate column or skipped in every fold — and must be
+    distinguishable in the provenance from an honest 'trained on it, did not help'."""
+    monkeypatch.setattr(hf, "_dry_run", lambda *a, **k: SandboxResult("ok"))
+    base = CVResult("accuracy", "binary", [0.79, 0.80, 0.81], 0.80, 0.01, 3, True, True)
+    identical = CVResult("accuracy", "binary", [0.79, 0.80, 0.81], 0.80, 0.01, 3, True, True)
+    results = iter([base, identical])
+    monkeypatch.setattr(hf, "cross_validate", lambda *a, **k: next(results))
+
+    kept, records, _ = select_features(pd.DataFrame({"y": [0, 1]}), "y",
+                                    [GeneratedFeature("dup", "i", "c")],
+                                    cleaning_plan=None, feature_plan=None, model_dir="x",
+                                    time_limit=1, n_folds=3, seed=0)
+
+    assert kept == []
+    assert records[0].reason == "no_effect" and records[0].cv_delta == 0.0
+
+
 def test_gate_skips_cv_for_failed_dry_run(monkeypatch):
     monkeypatch.setattr(hf, "_dry_run", lambda *a, **k: SandboxResult("error", error="boom"))
     cv_calls = []

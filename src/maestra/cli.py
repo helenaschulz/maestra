@@ -13,27 +13,11 @@ from datetime import datetime
 
 import pandas as pd
 
+from maestra.config import load_dotenv
 from maestra.llm import LLMError
 from maestra.pipeline import PipelineError, run_pipeline
 from maestra.report import generate_report
 from maestra.runlog import append_run, compare_runs
-
-
-def load_dotenv(path: str = ".env") -> None:
-    """Load ``KEY=VALUE`` lines from a local ``.env`` into ``os.environ``.
-
-    A tiny hand-rolled loader so the project carries no extra dependency just to read
-    one API key. Existing environment variables take precedence (``setdefault``).
-    """
-    if not os.path.exists(path):
-        return
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:

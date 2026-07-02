@@ -37,14 +37,14 @@ def test_target_is_protected_from_drop_and_impute(train):
     }
     clean, log = _fit_transform(train, plan)
     assert "target" in clean.columns
-    assert sum("ist Zielspalte" in line for line in log) == 2
+    assert sum("is the target column" in line for line in log) == 2
 
 
 def test_hallucinated_column_is_skipped_not_crashed(train):
     plan = {"columns_to_drop": [{"column": "ghost", "reason": "x"}], "imputations": []}
     clean, log = _fit_transform(train, plan)
     assert list(clean.columns) == list(train.columns)
-    assert any("existiert nicht" in line for line in log)
+    assert any("does not exist" in line for line in log)
 
 
 def test_median_imputation_fills_all_missing(train):
@@ -102,7 +102,7 @@ def test_unknown_strategy_is_skipped(train):
     }
     clean, log = _fit_transform(train, plan)
     assert clean["age"].isna().sum() == 2  # untouched
-    assert any("unbekannte Strategie" in line for line in log)
+    assert any("unknown strategy" in line for line in log)
 
 
 def test_numeric_strategy_on_text_column_is_skipped(train):
@@ -112,7 +112,7 @@ def test_numeric_strategy_on_text_column_is_skipped(train):
     }
     clean, log = _fit_transform(train, plan)
     assert clean["city"].isna().sum() == 1  # untouched
-    assert any("passt nicht zum dtype" in line for line in log)
+    assert any("does not match the dtype" in line for line in log)
 
 
 def test_transform_does_not_mutate_input(train):

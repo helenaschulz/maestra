@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from maestra import benchmark
-from maestra.cli import load_dotenv
+from maestra import benchmark, calibration
+from maestra.config import load_dotenv
 from maestra.pipeline import run_pipeline
 
 # Competition metric -> AutoGluon eval_metric. When a metric is here, the CV optimises it.
@@ -180,6 +180,50 @@ def grade_submission(submission_path: str, competition_id: str, *, data_dir: str
     )
 
 
+def _cv_score_in_metric(metric, metric_mode, result, train_df, target_col):
+    """The local CV score expressed in the COMPETITION metric, so the CV↔LB gap is comparable.
+
+    Depending on ``metric_mode`` the score comes from AutoGluon directly (aligned), is computed
+    on the out-of-fold predictions (oof) or on the pooled out-of-fold probabilities (proba).
+    For probability metrics a calibration temperature is fitted on the OOF probabilities and its
+    effect on the CV score recorded. Returns ``(cv_score, cv_metric, temperature, cv_score_cal)``.
+    """
+    cv = result.cv
+    if metric_mode == "oof" and cv is not None and cv.oof_pred is not None:
+        oof = cv.oof_pred.dropna()
+        score = float(benchmark._METRICS[metric](train_df.loc[oof.index, target_col], oof.to_numpy()))
+        return score, metric, None, None
+    if metric_mode == "proba" and cv is not None and cv.oof_proba is not None:
+        oof = cv.oof_proba.dropna()
+        y_oof = train_df.loc[oof.index, target_col]
+        # positive_class only exists for binary problems — asking a multiclass predictor for it
+        # just emits an AutoGluon warning and returns None (the proba scorers ignore it anyway).
+        positive = (getattr(result.training.predictor, "positive_class", None)
+                    if result.training and cv.problem_type == "binary" else None)
+        score = benchmark._PROBA_METRICS[metric](y_oof, oof, positive)
+        # Fit T on the OOF probabilities and always record what it does to the
+        # (calibration-sensitive) CV score. T<1 sharpens, T>1 softens.
+        temperature = calibration.fit_temperature(y_oof, oof)
+        score_cal = benchmark._PROBA_METRICS[metric](
+            y_oof, calibration.apply_temperature(oof, temperature), positive)
+        return score, metric, temperature, score_cal
+    return (cv.mean if cv else None), (cv.eval_metric if cv else None), None, None
+
+
+def _calibrate_submission(submission, columns, temperature):
+    """Reshape the submission's probabilities in place with the OOF-fitted ``temperature``.
+
+    Caution (measured on leaf-classification): the fold-OOF temperature does not necessarily
+    transfer to the full-data final model — this can help or hurt the LB, hence opt-in.
+    """
+    if len(columns) == 1:  # binary: rebuild the 2-class distribution, calibrate, keep the positive col
+        p = submission[columns[0]].to_numpy()
+        two = pd.DataFrame({"neg": 1 - p, "pos": p})
+        submission[columns[0]] = calibration.apply_temperature(two, temperature)["pos"].to_numpy()
+    else:                  # multiclass: the columns already are the full distribution
+        submission[columns] = calibration.apply_temperature(submission[columns], temperature).to_numpy()
+
+
 def run_mlebench_task(
     task_dir: str,
     competition_id: str,
@@ -190,6 +234,8 @@ def run_mlebench_task(
     research: bool = False,
     hybrid: bool = False,
     no_llm: bool = False,
+    calibrate: bool = False,
+    seed: int = 42,
     metric: str | None = None,
     data_dir: str | None = None,
     out_dir: str = "mlebench_out",
@@ -208,36 +254,27 @@ def run_mlebench_task(
     ag_metric, metric_mode = _resolve_metric(metric)
     want_proba = metric_mode == "proba"
     result = run_pipeline(
-        train_df, task.target_col, model=model, test_size=0.2, time_limit=time_limit, seed=42,
-        model_dir=f"AutogluonModels/mle_{task.name}", use_llm=not no_llm, cv_folds=cv_folds,
+        train_df, task.target_col, model=model, test_size=0.2, time_limit=time_limit, seed=seed,
+        model_dir=f"AutogluonModels/mle_{task.name}_s{seed}", use_llm=not no_llm, cv_folds=cv_folds,
         hybrid=hybrid, research=research, eval_metric=ag_metric, test_df=test_df, id_col=task.id_col,
         proba=want_proba, proba_columns=task.submission_columns if want_proba else None,
     )
     if result.submission is None:
         raise MleBenchError("pipeline produced no submission (is the test set valid?)")
 
+    cv_score, cv_metric, temperature, cv_score_cal = _cv_score_in_metric(
+        metric, metric_mode, result, train_df, task.target_col)
+    if calibrate and temperature is not None:
+        _calibrate_submission(result.submission, task.submission_columns, temperature)
+
     os.makedirs(out_dir, exist_ok=True)
     mode = "baseline" if no_llm else "maestra"
-    submission_path = os.path.join(out_dir, f"{task.name}_{mode}_submission.csv")
+    # Name by competition (not the generic "public" dir) + the run's variant + seed, so a file says
+    # exactly which challenge and which configuration produced it.
+    variant = mode + ("_hybrid" if hybrid else "") + ("_research" if research else "") + ("_cal" if calibrate else "")
+    submission_path = os.path.join(out_dir, f"{competition_id}_{variant}_s{seed}_submission.csv")
     result.submission.to_csv(submission_path, index=False)
-
     report = grade_submission(submission_path, competition_id, data_dir=data_dir)
-
-    # Local CV score in the COMPETITION metric, so the gap is comparable.
-    cv = result.cv
-    cv_metric = cv.eval_metric if cv else None
-    if metric_mode == "oof" and cv is not None and cv.oof_pred is not None:
-        oof = cv.oof_pred.dropna()
-        cv_score = float(benchmark._METRICS[metric](train_df.loc[oof.index, task.target_col], oof.to_numpy()))
-        cv_metric = metric
-    elif metric_mode == "proba" and cv is not None and cv.oof_proba is not None:
-        # Probability metric on the pooled out-of-fold probabilities (binary: positive class).
-        oof = cv.oof_proba.dropna()
-        positive = getattr(result.training.predictor, "positive_class", None) if result.training else None
-        cv_score = benchmark._PROBA_METRICS[metric](train_df.loc[oof.index, task.target_col], oof, positive)
-        cv_metric = metric
-    else:
-        cv_score = cv.mean if cv else None
 
     comparable = metric_mode in ("aligned", "oof", "proba")
     gap = (cv_score - report.score) if (comparable and cv_score is not None and report.score is not None) else None
@@ -247,6 +284,7 @@ def run_mlebench_task(
         "task": task.name,
         "competition_id": competition_id,
         "mode": mode,
+        "seed": seed,
         "cv_score": cv_score,
         "cv_metric": cv_metric,
         "mle_score": report.score,
@@ -257,6 +295,14 @@ def run_mlebench_task(
         "metric_mode": metric_mode,
         "submission": submission_path,
     }
+    if temperature is not None:  # probability metric: record the calibration effect on the CV score
+        record["temperature"] = temperature
+        record["cv_score_cal"] = cv_score_cal
+        record["cv_lb_gap_cal"] = (cv_score_cal - report.score) if report.score is not None else None
+        record["calibrated_submission"] = bool(calibrate)
+    if result.hybrid is not None:  # --hybrid provenance, so a run is interpretable after the fact
+        record["hybrid"] = result.hybrid
+        record["hybrid_kept"] = sum(1 for c in result.hybrid if c.get("kept"))
     with open(runs_log, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")
     return record
@@ -294,7 +340,13 @@ def main(argv: list[str] | None = None) -> int:
                         "so the CV↔LB gap is comparable. Probability metrics emit a probability submission.")
     p.add_argument("--research", action="store_true")
     p.add_argument("--hybrid", action="store_true")
+    p.add_argument("--calibrate", action="store_true",
+                   help="Temperature-scale the submission probabilities (proba metrics). The CV-side "
+                        "calibration effect is logged either way.")
     p.add_argument("--no-baseline", action="store_true", help="Skip the --no-llm baseline per task.")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Seed for the split/folds. Re-run with different seeds to gauge run-to-run "
+                        "variance (Maestra's LLM/AutoGluon path is not bit-reproducible).")
     p.add_argument("--data-dir", default=None, help="MLE-bench data dir (for grading).")
     p.add_argument("--out-dir", default="mlebench_out")
     p.add_argument("--runs-log", default="runs.jsonl")
@@ -307,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
 
     common = dict(model=args.model, cv_folds=args.cv, time_limit=args.time_limit,
                   metric=args.metric, data_dir=args.data_dir, out_dir=args.out_dir,
-                  runs_log=args.runs_log)
+                  runs_log=args.runs_log, calibrate=args.calibrate, seed=args.seed)
     rows = []
     for spec in args.task:
         task_dir, competition_id = spec.rsplit(":", 1)

@@ -227,11 +227,10 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
 def _weak_context(val_score: float, floor: float, metric: str) -> str:
     """Synthetic 'failure' context for the quality gate, reusing the diagnosis tool."""
     return (
-        f"Das Training lief erfolgreich durch, aber der interne Validierungs-Score "
-        f"({metric}) = {val_score:.4f} liegt unter dem konservativen Floor {floor}. Der "
-        f"Lauf gilt als zu schwach. Falls der Cleaning-Plan nutzbares Signal verwirft, "
-        f"revidiere ihn (revise_plan); wenn mehr Zeit helfen koennte, increase_time_limit; "
-        f"sonst give_up."
+        f"Training completed successfully, but the internal validation score "
+        f"({metric}) = {val_score:.4f} is below the conservative floor {floor}. The run is "
+        f"considered too weak. If the cleaning plan discards usable signal, revise it "
+        f"(revise_plan); if more time could help, increase_time_limit; otherwise give_up."
     )
 
 

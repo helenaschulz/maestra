@@ -30,10 +30,10 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
-from sklearn.utils.multiclass import type_of_target
 
-from maestra.cli import load_dotenv
+from maestra.config import load_dotenv
 from maestra.pipeline import run_pipeline
+from maestra.validation import _is_classification
 
 # Label-based metrics (the submission carries predicted labels).
 _METRICS = {
@@ -92,6 +92,7 @@ class BenchResult:
     higher_is_better: bool
     n_train: int
     n_grade: int
+    hybrid: list | None = None  # generated-feature provenance (kept/delta/reason), when --hybrid ran
 
 
 def grade(submission: pd.DataFrame, answer: pd.DataFrame, *, metric: str, id_col: str, target: str) -> float:
@@ -111,7 +112,7 @@ def _carve_answer_key(df, target, id_col, holdout_frac, seed):
     df = df.copy()
     if id_col not in df.columns:
         df[id_col] = range(len(df))
-    classification = type_of_target(df[target].dropna()) in ("binary", "multiclass")
+    classification = _is_classification(df[target])  # robust to integer regression targets
     work, answer = train_test_split(
         df, test_size=holdout_frac, random_state=seed,
         stratify=df[target] if classification else None,
@@ -135,24 +136,35 @@ def run_task(
     time_limit: int = 120,
     seed: int = 42,
     holdout_frac: float = 0.25,
+    cv_folds: int | None = None,
+    hybrid: bool = False,
+    name: str | None = None,
 ) -> BenchResult:
-    """Run Maestra and the ``--no-llm`` baseline on ``csv`` and grade both on the answer key."""
+    """Run Maestra and the ``--no-llm`` baseline on ``csv`` and grade both on the answer key.
+
+    ``cv_folds`` switches both arms to the cross-validation path; ``hybrid`` additionally runs
+    the generated-feature gate on the Maestra arm (requires ``cv_folds >= 2``). ``name`` labels
+    the result row (default: the CSV's stem, which for files like ``train.csv`` says nothing).
+    """
     if metric not in _METRICS:
         raise ValueError(f"Unknown metric {metric!r}. Known: {sorted(_METRICS)}")
     df = pd.read_csv(csv)
     work, test_features, answer = _carve_answer_key(df, target, id_col, holdout_frac, seed)
 
     common = dict(model=model, test_size=0.2, time_limit=time_limit, seed=seed,
-                  test_df=test_features, id_col=id_col)
-    res_m = run_pipeline(work, target, use_llm=True, model_dir="AutogluonModels/bench_maestra", **common)
+                  test_df=test_features, id_col=id_col, cv_folds=cv_folds)
+    res_m = run_pipeline(work, target, use_llm=True, hybrid=hybrid,
+                         model_dir="AutogluonModels/bench_maestra", **common)
     res_b = run_pipeline(work, target, use_llm=False, model_dir="AutogluonModels/bench_baseline", **common)
     maestra = grade(res_m.submission, answer, metric=metric, id_col=id_col, target=target)
     baseline = grade(res_b.submission, answer, metric=metric, id_col=id_col, target=target)
 
+    label = (name or Path(csv).stem) + ("+hybrid" if hybrid else "")
     return BenchResult(
-        name=Path(csv).stem, metric=metric, baseline=baseline, maestra=maestra,
+        name=label, metric=metric, baseline=baseline, maestra=maestra,
         delta=maestra - baseline, higher_is_better=metric in _HIGHER_IS_BETTER,
         n_train=len(work), n_grade=len(answer),
+        hybrid=res_m.hybrid,  # provenance, so a --hybrid run is interpretable after the fact
     )
 
 
@@ -169,12 +181,10 @@ def summary(path: str) -> str:
         return f"No benchmark results at {path!r} yet."
     if not rows:
         return "No benchmark results yet."
-    out = [f"{'dataset':<18}{'metric':<19}{'baseline':>10}{'maestra':>10}{'delta':>10}  winner"]
-    for r in rows:
-        win = _winner(r["delta"], r.get("higher_is_better", True))
-        out.append(f"{r['name']:<18}{r['metric']:<19}{r['baseline']:>10.4f}"
-                   f"{r['maestra']:>10.4f}{r['delta']:>+10.4f}  {win}")
-    return "\n".join(out)
+    table = [[r["name"], r["metric"], f"{r['baseline']:.4f}", f"{r['maestra']:.4f}",
+              f"{r['delta']:+.4f}", _winner(r["delta"], r.get("higher_is_better", True))]
+             for r in rows]
+    return render_table(["dataset", "metric", "baseline", "maestra", "delta", "winner"], table)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--time-limit", type=int, default=120)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--holdout-frac", type=float, default=0.25, help="Answer-key fraction.")
+    p.add_argument("--cv", type=int, default=None, help="Use the k-fold CV path (both arms).")
+    p.add_argument("--hybrid", action="store_true", help="Generated-feature gate on the Maestra arm (needs --cv).")
+    p.add_argument("--name", default=None, help="Label for the result row (default: CSV stem).")
     p.add_argument("--results", default="benchmark.jsonl")
     p.add_argument("--summary", action="store_true", help="Print the accumulated board and exit.")
     args = p.parse_args(argv)
@@ -201,7 +214,8 @@ def main(argv: list[str] | None = None) -> int:
 
     result = run_task(args.csv, args.target, metric=args.metric, id_col=args.id_col,
                       model=args.model, time_limit=args.time_limit, seed=args.seed,
-                      holdout_frac=args.holdout_frac)
+                      holdout_frac=args.holdout_frac, cv_folds=args.cv, hybrid=args.hybrid,
+                      name=args.name)
     append_result(args.results, result, timestamp=datetime.now().isoformat(timespec="seconds"))
     print(f"\n{result.name} | {result.metric}: baseline {result.baseline:.4f}  "
           f"maestra {result.maestra:.4f}  Δ {result.delta:+.4f}  → "

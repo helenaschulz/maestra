@@ -47,14 +47,13 @@ DIAGNOSIS_SCHEMA: dict = {
 }
 
 _SYSTEM_PROMPT = (
-    "Du debuggst eine fehlgeschlagene AutoML-Pipeline (Cleaning -> AutoGluon-Training). "
-    "Du bekommst die Fehlermeldung, das Spalten-Profil (nur train), den aktuellen "
-    "Cleaning-Plan und das Zeitbudget. Bestimme die Ursache und waehle GENAU EINE "
-    "Recovery-Aktion. Sei konservativ: revise_plan nur, wenn eine Cleaning-Aenderung den "
-    "Fehler wirklich behebt (z.B. es wurden alle Feature-Spalten gedroppt -> droppe "
-    "weniger). increase_time_limit bei Zeit-/Ressourcenmangel. give_up, wenn weder "
-    "Cleaning noch mehr Zeit hilft. Ein revidierter Plan muss demselben Schema folgen "
-    "und die Zielspalte unangetastet lassen."
+    "You are debugging a failed AutoML pipeline (cleaning -> AutoGluon training). You are "
+    "given the error message, the column profile (train only), the current cleaning plan, "
+    "and the time budget. Determine the cause and choose EXACTLY ONE recovery action. Be "
+    "conservative: revise_plan only if a cleaning change actually fixes the error (e.g. all "
+    "feature columns were dropped -> drop fewer). increase_time_limit for time/resource "
+    "shortage. give_up if neither cleaning nor more time helps. A revised plan must follow "
+    "the same schema and leave the target column untouched."
 )
 
 
@@ -89,7 +88,7 @@ def diagnose_failure(
         "error": error_text,
     }
     user_prompt = (
-        "Die Pipeline ist fehlgeschlagen. Kontext (JSON):\n"
+        "The pipeline failed. Context (JSON):\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
     return call_structured(
@@ -97,6 +96,6 @@ def diagnose_failure(
         system_prompt=_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         tool_name="diagnose_failure",
-        tool_description="Diagnose und Recovery-Aktion fuer eine fehlgeschlagene Pipeline.",
+        tool_description="Diagnosis and recovery action for a failed pipeline.",
         parameters_schema=DIAGNOSIS_SCHEMA,
     )

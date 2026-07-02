@@ -158,35 +158,32 @@ STRATEGY_BRIEF_SCHEMA: dict = {
 
 
 _PLAN_SYSTEM_PROMPT = (
-    "Du bist Senior Data Scientist und planst eine Web-Recherche zu einem ML-Problem. "
-    "Formuliere wenige, praezise Suchanfragen, die zusammen die Strategie abdecken: "
-    "passende Modellfamilien, Preprocessing, Feature-Engineering, Validierungs-Setup, "
-    "Metriken und typische Fallstricke (Leakage, Imbalance, Drift). Keine Floskeln, "
-    "konkrete Suchbegriffe. Wichtigste Anfrage zuerst."
+    "You are a senior data scientist planning web research on an ML problem. Formulate a "
+    "few precise search queries that together cover the strategy: suitable model families, "
+    "preprocessing, feature engineering, validation setup, metrics, and typical pitfalls "
+    "(leakage, imbalance, drift). No filler, concrete search terms. Most important query first."
 )
 
 _SELECT_SYSTEM_PROMPT = (
-    "Du waehlst aus einer Trefferliste die wenigen Quellen aus, die sich zum vollstaendigen "
-    "Lesen lohnen. Bevorzuge fachlich fundierte, spezifische Quellen vor Werbung oder "
-    "Allgemeinplaetzen. Gib AUSSCHLIESSLICH URLs aus der vorgelegten Liste zurueck, beste "
-    "zuerst. Lieber wenige starke Quellen als viele schwache."
+    "You select, from a list of hits, the few sources worth reading in full. Prefer "
+    "technically sound, specific sources over advertising or platitudes. Return ONLY URLs "
+    "from the provided list, best first. A few strong sources beat many weak ones."
 )
 
 _SYNTH_SYSTEM_PROMPT = (
-    "Du bist Senior Data Scientist und schreibst aus Recherche-Evidenz einen strukturierten "
-    "Strategie-Brief fuer ein ML-Problem. Stuetze jede Empfehlung auf die uebergebene "
-    "Evidenz (Snippets und Seiteninhalte); erfinde keine Fakten und keine Quellen. Zitiere "
-    "unter references nur URLs, die in der Evidenz vorkommen. Sei konkret und entscheidbar: "
-    "der Brief speist spaeter die Planung und das Validierungs-Gate. Wenn die Evidenz duenn "
-    "ist, sag das im summary, statt zu spekulieren."
+    "You are a senior data scientist writing a structured strategy brief for an ML problem "
+    "from research evidence. Base every recommendation on the supplied evidence (snippets "
+    "and page contents); do not invent facts or sources. Under references, cite only URLs "
+    "that appear in the evidence. Be concrete and decidable: the brief later feeds planning "
+    "and the validation gate. If the evidence is thin, say so in the summary instead of "
+    "speculating."
 )
 
 _LIVE_RULES_INSTRUCTION = (
-    "WETTBEWERBS-MODUS (live): Die Wettbewerbsregeln koennen die Nutzung EXTERNER DATEN und "
-    "das Uebernehmen FREMDER LOESUNGEN verbieten. Empfiehl daher KEINE externen Datensaetze "
-    "und keine fertigen Loesungen Dritter; beschraenke dich auf Techniken, die nur die "
-    "bereitgestellten Wettbewerbsdaten nutzen. Vermerke diese Einschraenkung explizit im "
-    "Feld rules_note."
+    "COMPETITION MODE (live): the competition rules may forbid the use of EXTERNAL DATA and "
+    "the adoption of OTHERS' SOLUTIONS. Therefore recommend NO external datasets and no "
+    "ready-made third-party solutions; restrict yourself to techniques that use only the "
+    "provided competition data. Note this restriction explicitly in the rules_note field."
 )
 
 
@@ -209,12 +206,12 @@ def plan_queries(
         model=model,
         system_prompt=_PLAN_SYSTEM_PROMPT,
         user_prompt=(
-            "ML-Problem (JSON):\n"
+            "ML problem (JSON):\n"
             f"{_problem_block(problem_description, profile)}\n\n"
-            f"Plane hoechstens {max_queries} Suchanfragen."
+            f"Plan at most {max_queries} search queries."
         ),
         tool_name="plan_research_queries",
-        tool_description="Plane Web-Suchanfragen zu einem ML-Problem.",
+        tool_description="Plan web search queries for an ML problem.",
         parameters_schema=QUERY_PLAN_SCHEMA,
     )
     return list(out.get("queries", []))[:max_queries]
@@ -236,12 +233,12 @@ def select_sources(
         system_prompt=_SELECT_SYSTEM_PROMPT,
         user_prompt=(
             f"Problem: {problem_description}\n\n"
-            "Treffer (JSON):\n"
+            "Hits (JSON):\n"
             f"{json.dumps(listing, ensure_ascii=False, indent=2)}\n\n"
-            f"Waehle hoechstens {max_pages} URLs zum vollstaendigen Lesen."
+            f"Select at most {max_pages} URLs to read in full."
         ),
         tool_name="select_sources",
-        tool_description="Waehle die lesenswerten Quellen aus einer Trefferliste.",
+        tool_description="Select the worthwhile sources from a list of hits.",
         parameters_schema=SOURCE_SELECTION_SCHEMA,
     )
     return list(out.get("urls", []))[:max_pages]
@@ -271,9 +268,9 @@ def synthesize_brief(
     In ``rules_mode="live"`` the prompt forbids recommending external data or third-party
     solutions, since competition rules may disallow them."""
     user_prompt = (
-        "ML-Problem (JSON):\n"
+        "ML problem (JSON):\n"
         f"{_problem_block(problem_description, profile)}\n\n"
-        "Recherche-Evidenz (JSON):\n"
+        "Research evidence (JSON):\n"
         f"{json.dumps(_evidence(results), ensure_ascii=False, indent=2)}"
     )
     if rules_mode == "live":
@@ -283,14 +280,14 @@ def synthesize_brief(
         system_prompt=_SYNTH_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         tool_name="write_strategy_brief",
-        tool_description="Schreibe einen strukturierten Strategie-Brief aus Recherche-Evidenz.",
+        tool_description="Write a structured strategy brief from research evidence.",
         parameters_schema=STRATEGY_BRIEF_SCHEMA,
     )
 
 
 _RESEARCH_HYPOTHESES_PREFIX = (
-    "Strategie-Hypothesen aus Web-Recherche (NUR Vorschlaege, NICHT bindend; jede "
-    "Entscheidung wird weiterhin ueber die Validierung geprueft):\n"
+    "Strategy hypotheses from web research (ONLY suggestions, NOT binding; every decision is "
+    "still checked through validation):\n"
 )
 
 

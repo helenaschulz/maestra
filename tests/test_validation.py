@@ -87,6 +87,54 @@ def test_cross_validate_collects_oof_probabilities(monkeypatch):
     assert score == pytest.approx(roc_auc_score(df["y"], cv.oof_proba[1]))
 
 
+class _MissingClassPredictor:
+    """A multiclass predictor that only ever outputs probabilities over classes 'A' and 'B' —
+    it never saw 'C'. Its predict_proba therefore lacks the 'C' column, exactly as AutoGluon's
+    would when a fold's training part misses a rare class."""
+
+    eval_metric = _eval_metric
+
+    def predict(self, X):
+        return pd.Series(["A"] * len(X), index=X.index)
+
+    def predict_proba(self, X):
+        return pd.DataFrame({"A": [0.6] * len(X), "B": [0.4] * len(X)}, index=X.index)
+
+
+def test_oof_proba_reindexes_to_full_class_set(monkeypatch):
+    """A fold missing a class must not leave NaNs in the pooled OOF probabilities: the matrix
+    spans EVERY class in the data and each row still sums to 1 (the absent class filled with 0).
+    Regression for the log_loss-blows-up bug on many-class tasks (e.g. leaf-classification)."""
+    df = pd.DataFrame({"x": [float(i) for i in range(12)],
+                       "y": ["A", "B", "C"] * 4})  # 'C' is a real class in the data
+
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+        return TrainingResult("multiclass", "log_loss", pd.DataFrame(), {"log_loss": 0.5},
+                              predictor=_MissingClassPredictor())
+
+    monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None,
+                        model_dir="x", time_limit=1, n_folds=3, seed=0)
+
+    assert list(cv.oof_proba.columns) == ["A", "B", "C"]        # full class set, not just the fold's
+    assert not cv.oof_proba.isna().any().any()                  # no NaN despite the missing 'C' column
+    assert (cv.oof_proba["C"] == 0.0).all()                     # absent class -> 0, not NaN
+    assert cv.oof_proba.sum(axis=1).round(6).eq(1.0).all()      # every row stays a probability vector
+
+
+def test_integer_regression_target_is_not_classification():
+    """sklearn calls any many-valued integer column 'multiclass'; a price-like target must
+    NOT be stratified (StratifiedKFold would crash on singleton 'classes' — house-prices bug)."""
+    prices = pd.Series(range(100_000, 100_000 + 500))          # 500 distinct int values
+    assert validation._is_classification(prices) is False
+    assert validation._is_classification(pd.Series([0, 1] * 50)) is True          # few int classes
+    assert validation._is_classification(pd.Series(["a", "b", "c"] * 5)) is True  # strings stay classes
+    # end-to-end: folds on an integer regression target must not raise
+    df = pd.DataFrame({"x": range(40), "y": range(1000, 1040)})
+    folds = validation._make_folds(df, "y", 3, seed=0, stratified=validation._is_classification(df["y"]))
+    assert len(folds) == 3
+
+
 def test_make_folds_is_deterministic():
     df = pd.DataFrame({"x": range(10), "y": [0, 1] * 5})
     a = validation._make_folds(df, "y", 5, seed=1, stratified=True)

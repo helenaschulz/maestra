@@ -49,16 +49,15 @@ FE_SCHEMA: dict = {
 }
 
 _SYSTEM_PROMPT = (
-    "Du bist ein erfahrener Data Scientist und schlaegst NEUE Features fuer ein "
-    "AutoML-Training (AutoGluon) vor. Du bekommst ein Spalten-Profil bereits bereinigter "
-    "Trainingsdaten. Waehle sinnvolle Transformationen aus dem FESTEN Vokabular: "
-    "date_parts (Datum -> Jahr/Monat/Wochentag), bin (numerische Spalte in n_bins "
-    "quantilbasierte Klassen), log_transform (log1p einer NICHTNEGATIVEN, schiefen "
-    "numerischen Spalte), ratio (Verhaeltnis zweier numerischer Spalten), difference "
-    "(Differenz zweier numerischer Spalten). Nur numerische Spalten fuer bin/log/ratio/"
-    "difference; date_parts nur fuer Datumsspalten. Die Zielspalte NIE verwenden. Sei "
-    "konservativ -- schlage nur Features vor, die plausibel Signal tragen. AutoGluon "
-    "uebernimmt Encoding/Skalierung selbst."
+    "You are an experienced data scientist proposing NEW features for an AutoML training "
+    "run (AutoGluon). You are given a column profile of already-cleaned training data. "
+    "Choose sensible transformations from the FIXED vocabulary: "
+    "date_parts (date -> year/month/weekday), bin (a numeric column into n_bins "
+    "quantile-based classes), log_transform (log1p of a NON-NEGATIVE, skewed numeric "
+    "column), ratio (ratio of two numeric columns), difference (difference of two numeric "
+    "columns). Only numeric columns for bin/log/ratio/difference; date_parts only for date "
+    "columns. NEVER use the target column. Be conservative -- propose only features that "
+    "plausibly carry signal. AutoGluon handles encoding/scaling itself."
 )
 
 
@@ -70,8 +69,8 @@ def propose_feature_plan(
     ``research_context`` (optional) carries non-binding strategy hypotheses from the
     research node."""
     user_prompt = (
-        f"Zielspalte: {target}\n"
-        f"Spalten-Profil (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
+        f"Target column: {target}\n"
+        f"Column profile (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
     )
     if research_context:
         user_prompt += "\n\n" + research_context
@@ -171,30 +170,30 @@ def _fit_op(work: pd.DataFrame, item: dict, target: str) -> tuple[bool, dict | N
     """Validate one proposed op against the current frame and fit its state (bin edges)."""
     k = item.get("op")
     if k not in OPS:
-        return False, None, f"unbekannte Op '{k}'"
+        return False, None, f"unknown op '{k}'"
     req = _required_cols(item)
     if any(c is None for c in req):
-        return False, None, "fehlende Spaltenangabe"
+        return False, None, "missing column specification"
     if target in req:
-        return False, None, "verwendet Zielspalte"
+        return False, None, "uses the target column"
     missing = [c for c in req if c not in work.columns]
     if missing:
-        return False, None, f"Spalte(n) nicht vorhanden: {missing}"
+        return False, None, f"column(s) not present: {missing}"
     if k in ("bin", "log_transform", "ratio", "difference"):
         non_numeric = [c for c in req if work[c].dtype.kind not in "iuf"]
         if non_numeric:
-            return False, None, f"nicht numerisch: {non_numeric}"
+            return False, None, f"not numeric: {non_numeric}"
     if k == "log_transform" and (work[item["column"]] < 0).any():
-        return False, None, "negative Werte (log1p braucht >= 0)"
+        return False, None, "negative values (log1p needs >= 0)"
     if k == "date_parts":
         parts = item.get("parts") or []
         if not parts or any(p not in _DATE_PARTS for p in parts):
-            return False, None, "ungueltige/leere parts"
+            return False, None, "invalid/empty parts"
         if pd.to_datetime(work[item["column"]], errors="coerce").notna().sum() == 0:
-            return False, None, "nicht als Datum parsebar"
+            return False, None, "not parseable as a date"
     clash = [c for c in _new_cols(item) if c in work.columns]
     if clash:
-        return False, None, f"neue Spalte existiert schon: {clash}"
+        return False, None, f"new column already exists: {clash}"
 
     fitted = {"op": k, "reason": item.get("reason", "")}
     for key in ("column", "parts", "numerator", "denominator", "left", "right"):

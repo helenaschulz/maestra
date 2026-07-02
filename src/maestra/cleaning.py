@@ -59,20 +59,18 @@ PLAN_SCHEMA: dict = {
 }
 
 _SYSTEM_PROMPT = (
-    "Du bist ein erfahrener Data Scientist und planst die Datenbereinigung fuer ein "
-    "AutoML-Training (AutoGluon). Du bekommst ein Spalten-Profil als JSON. Entscheide, "
-    "welche Spalten gedroppt werden sollen (z.B. ID-artige / hochkardinale Freitexte / "
-    "Leakage) und wie fehlende Werte imputiert werden. WICHTIG: Hohe Kardinalitaet (viele "
-    "eindeutige Werte) ist bei KONTINUIERLICHEN numerischen Spalten (float, z.B. Messwerte, "
-    "Koordinaten, Helligkeiten) voellig NORMAL und KEIN Grund zum Droppen -- solche Spalten "
-    "sind oft die wichtigsten Features. 'Unique pro Zeile' rechtfertigt einen Drop NUR bei "
-    "ID-artigen Spalten (laufende Ganzzahl-IDs) oder hochkardinalem Freitext, NIEMALS bei "
-    "numerischen Messgroessen. Im Profil markiert das Feld 'id_like'=true echte "
-    "ID-/Index-Kandidaten (deterministisch berechnet) -- orientiere dich daran. "
-    "Halte dich kurz und konservativ: "
-    "droppe nur, was klar nutzlos oder schaedlich ist. Imputiere nur Spalten mit "
-    "fehlenden Werten, die du behaeltst. Die Zielspalte NIE droppen oder imputieren. "
-    "AutoGluon uebernimmt Encoding/Skalierung selbst -- plane das nicht."
+    "You are an experienced data scientist planning the data cleaning for an AutoML "
+    "training run (AutoGluon). You are given a column profile as JSON. Decide which columns "
+    "to drop (e.g. ID-like / high-cardinality free text / leakage) and how missing values "
+    "are imputed. IMPORTANT: high cardinality (many unique values) is completely NORMAL for "
+    "CONTINUOUS numeric columns (float, e.g. measurements, coordinates, brightnesses) and NO "
+    "reason to drop -- such columns are often the most important features. 'Unique per row' "
+    "justifies a drop ONLY for ID-like columns (running integer IDs) or high-cardinality "
+    "free text, NEVER for numeric measurements. In the profile the field 'id_like'=true "
+    "marks genuine ID/index candidates (computed deterministically) -- use that as guidance. "
+    "Be brief and conservative: drop only what is clearly useless or harmful. Impute only "
+    "columns with missing values that you keep. NEVER drop or impute the target column. "
+    "AutoGluon handles encoding/scaling itself -- do not plan that."
 )
 
 
@@ -91,8 +89,8 @@ def propose_cleaning_plan(
         A plan dict matching :data:`PLAN_SCHEMA`.
     """
     user_prompt = (
-        f"Zielspalte: {target}\n"
-        f"Spalten-Profil (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
+        f"Target column: {target}\n"
+        f"Column profile (JSON):\n{json.dumps(profile, ensure_ascii=False, indent=2)}"
     )
     if research_context:
         user_prompt += "\n\n" + research_context
@@ -167,9 +165,9 @@ def fit_cleaning_plan(train: pd.DataFrame, plan: dict, target: str) -> CleaningT
     for item in plan.get("columns_to_drop", []):
         col = item.get("column")
         if col == target:
-            log.append(f"SKIP drop '{col}': ist Zielspalte")
+            log.append(f"SKIP drop '{col}': is the target column")
         elif col not in train.columns:
-            log.append(f"SKIP drop '{col}': Spalte existiert nicht")
+            log.append(f"SKIP drop '{col}': column does not exist")
         else:
             drops.append(col)
             log.append(f"DROP '{col}' -- {item.get('reason', '')}")
@@ -179,23 +177,23 @@ def fit_cleaning_plan(train: pd.DataFrame, plan: dict, target: str) -> CleaningT
         col = item.get("column")
         strategy = item.get("strategy")
         if col == target:
-            log.append(f"SKIP impute '{col}': ist Zielspalte")
+            log.append(f"SKIP impute '{col}': is the target column")
             continue
         if col in drops or col not in train.columns:
-            log.append(f"SKIP impute '{col}': Spalte nicht vorhanden (evtl. gedroppt)")
+            log.append(f"SKIP impute '{col}': column not present (possibly dropped)")
             continue
         if strategy not in STRATEGIES:
-            log.append(f"SKIP impute '{col}': unbekannte Strategie '{strategy}'")
+            log.append(f"SKIP impute '{col}': unknown strategy '{strategy}'")
             continue
         try:
             fill = _fit_fill_value(train[col], strategy, item.get("fill_value"))
         except TypeError:
-            log.append(f"SKIP impute '{col}': Strategie '{strategy}' passt nicht zum dtype")
+            log.append(f"SKIP impute '{col}': strategy '{strategy}' does not match the dtype")
             continue
         fills[col] = fill
         n_missing = int(train[col].isna().sum())
         log.append(
-            f"IMPUTE '{col}' [{strategy}] fit auf train (fehlend={n_missing}) -> {fill!r} "
+            f"IMPUTE '{col}' [{strategy}] fit on train (missing={n_missing}) -> {fill!r} "
             f"-- {item.get('reason', '')}"
         )
 
