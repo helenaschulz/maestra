@@ -159,6 +159,40 @@ def test_dataset_description_reaches_the_planner(df, fake_training, monkeypatch)
     assert "Dataset description" in captured["ctx"]      # wrapped in the prompt-ready block
 
 
+def test_hybrid_with_no_candidates_is_equivalent_to_plain_cv(df, monkeypatch):
+    """Closes an old suspicion: on leaf, hybrid runs with kept=0 scored differently from plain
+    runs. Verified cause was LLM plan drift between invocations, NOT a path difference — with
+    identical plans, the hybrid path's base CV must receive exactly the same arguments as the
+    plain CV path (model_dir aside), and the final fit must see identical data."""
+    from maestra.engine import TrainingResult
+
+    captured = []
+
+    def fake_cross_validate(df_, target, **kwargs):
+        from maestra.validation import CVResult
+        captured.append({**kwargs, "n_rows": len(df_)})
+        return CVResult("accuracy", "binary", [0.8], 0.8, 0.0, 2, True, True)
+
+    fitted = []
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "propose_feature_code", lambda *a, **k: [])  # no candidates
+    monkeypatch.setattr(pipeline, "cross_validate", fake_cross_validate)
+    monkeypatch.setattr("maestra.hybrid_features.cross_validate", fake_cross_validate)
+    monkeypatch.setattr(pipeline, "fit_predictor",
+                        lambda train, *a, **k: fitted.append(list(train.columns)) or
+                        TrainingResult("binary", "accuracy", pd.DataFrame(), {}))
+
+    common = dict(model="m", test_size=0.25, time_limit=1, seed=0, cv_folds=2, use_fe=False)
+    pipeline.run_pipeline(df, "y", model_dir="plain", **common)
+    pipeline.run_pipeline(df, "y", model_dir="hyb", hybrid=True, **common)
+
+    plain_kwargs, hybrid_kwargs = captured[0], captured[1]
+    plain_kwargs.pop("model_dir"), hybrid_kwargs.pop("model_dir")   # the only allowed difference
+    assert plain_kwargs == hybrid_kwargs                            # identical CV inputs
+    assert fitted[0] == fitted[1]                                   # identical final-fit columns
+
+
 # --- opt-in research wiring --------------------------------------------------------
 
 def test_research_runs_feeds_planning_and_logs(df, fake_training, monkeypatch):

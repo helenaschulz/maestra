@@ -192,6 +192,12 @@ cp .env.example .env        # add the key for your --model backbone
 Optional extras: `pip install -e ".[research]"` (web research) ·
 `pip install -e ".[mlebench]"` (MLE-bench grading; needs Python ≤ 3.11 and Kaggle credentials).
 
+> **MLE-bench + kaggle ≥ 2.x note:** mlebench pins `kaggle<1.7`, which cannot read the new
+> `access_token` credential format. With kaggle 2.x installed instead, mlebench imports
+> `kaggle.rest.ApiException`, which no longer exists — create a one-line shim
+> `site-packages/kaggle/rest.py` re-exporting `ApiException` (any `pip install kaggle`
+> wipes it, so re-create it after upgrades).
+
 ## Usage
 
 ```bash
