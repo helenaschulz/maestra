@@ -78,10 +78,13 @@ Four findings that shape the design:
    `YearBuilt`, …) its cleaning/encoding judgment beat the baseline on both seeds. This
    independently reproduces what [CAAFE](https://arxiv.org/abs/2305.03403) and
    [LATTEArena](https://arxiv.org/pdf/2606.09004) report.
-2. **LLM-generated *features* don't beat AutoGluon — even good ones.** The `--hybrid` layer let
-   the LLM write real feature code (sandboxed, CV-gated). It proposed exactly the right domain
-   features (`age_of_house = YrSold − YearBuilt`, `total_bathrooms`, …) and the gate correctly
-   rejected **all of them**: gradient-boosted trees already extract that signal from raw columns.
+2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal.** The
+   `--hybrid` layer let the LLM write real feature code (sandboxed, CV-gated); it proposed exactly
+   the right domain features (`age_of_house = YrSold − YearBuilt`, …) and the gate rejected **all
+   of them** — trees already extract that from raw columns. Even `--ordinal` encoding (mapping
+   `KitchenQual` to a rank, the one FE type that *injects* information) was mean-negative across
+   seeds: a monotonic rank is lossy versus native categorical handling. Where CAAFE/MALMAS/LLM-FE
+   concentrate their effort, a strong engine has already closed the gap.
 3. **The CV↔LB gap works as a trust meta-signal.** Near zero on TPS (trust the CV), huge on
    leaf-classification, where 3-fold log-loss over 99 classes is an unstable estimator (don't).
 4. **Where AutoML is structurally blind, the LLM's contribution is two orders of magnitude
