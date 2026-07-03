@@ -173,6 +173,10 @@ parameter is fitted on train (per fold, under CV) and replayed on holdout/test, 
   sandbox (network blocked, secrets stripped from the environment, CPU/memory caps, target
   stripped; file *reads* are not blocked — it bounds execution, it is not a security boundary),
   kept only if it beats a paired per-fold CV test; full provenance (kept/rejected/why) in the run log
+- **Free-text featurization** (`--text-features`) — detects prose columns, shows the LLM real
+  sample text, and has it write *deterministic* extraction code (semantic keyword groups, numbers
+  parsed out of prose) — no per-row LLM calls; same sandbox and CV gate as `--hybrid`, so an
+  extractor is kept only if it beats the engine's own n-grams beyond fold noise
 - **Leakage-safe by construction** — fit on train only, replayed per fold
 - **Trustworthy validation** — leakage-free k-fold CV (`--cv`), out-of-fold predictions *and*
   probabilities, adversarial train/test shift check
@@ -255,6 +259,7 @@ maestra-audit --csv data/train.csv --target churn --test data/test.csv --lang de
 | `--target-framing` | off | LLM proposes `log1p` for a skewed regression target; adopted only if a paired CV in original units beats the base (needs `--cv`) |
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
+| `--text-features` | off | Free-text lane: LLM-written deterministic text extractors, same sandbox + CV gate (needs `--cv`) |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
 | `--hybrid-threshold` | `1.0` | Keep threshold in fold-noise sigmas |
 | `--research` | off | Web-grounded strategy brief feeding the planners |
@@ -297,6 +302,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`encoding.py`](src/maestra/encoding.py) | Ordinal-encoding agent: LLM worst→best order + deterministic, leakage-free apply |
 | [`skeptic.py`](src/maestra/skeptic.py) | Skeptic agent: adversarial review of cleaning drops, each veto ruled by a CV measurement |
 | [`hybrid_features.py`](src/maestra/hybrid_features.py) | LLM-written feature code: sandbox, row-independence check, greedy CV gate |
+| [`text_features.py`](src/maestra/text_features.py) | Free-text lane: detects prose columns; the LLM reads sample text and writes deterministic extractors — same sandbox and CV gate |
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
 | [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |

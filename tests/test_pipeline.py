@@ -270,3 +270,55 @@ def test_hybrid_runs_gate_and_logs_provenance(df, fake_training, monkeypatch):
 
     assert result.cv is cv                          # the gated CV (with kept features) is reported
     assert result.hybrid == [asdict(rec)]           # provenance logged (kept, delta, reason, source)
+
+
+def test_text_lane_feeds_the_shared_gate(df, fake_training, monkeypatch):
+    """Text candidates go through the SAME select_features gate; the summary records the lane."""
+    from maestra.hybrid_features import CandidateRecord, GeneratedFeature
+    from maestra.validation import CVResult
+
+    cv = CVResult("accuracy", "binary", [0.80, 0.82], 0.81, 0.01, 2, True, True)
+    text_feat = GeneratedFeature("kw_group", "luxury terms", "code", source="text")
+    gate_calls = {}
+
+    def fake_gate(_df, _target, candidates, **kwargs):
+        gate_calls["candidates"] = candidates
+        rec = CandidateRecord("kw_group", "luxury terms", "text", 0.02, True, "improved")
+        return [text_feat], [rec], cv
+
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "detect_text_columns", lambda *a, **k: ["description"])
+    monkeypatch.setattr(pipeline, "propose_text_feature_code", lambda *a, **k: [text_feat])
+    monkeypatch.setattr(pipeline, "select_features", fake_gate)
+    monkeypatch.setattr(pipeline, "apply_generated_features", lambda train, other, target, feats: (train, other))
+    monkeypatch.setattr(pipeline, "fit_predictor", lambda *a, **k: fake_training)
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                          cv_folds=2, text_features=True, use_fe=False)
+
+    assert gate_calls["candidates"] == [text_feat]   # the text lane fed the shared gate
+    assert result.text_features == {"columns": ["description"], "n_candidates": 1}
+    assert result.hybrid[0]["source"] == "text"      # provenance distinguishes the lane
+
+
+def test_text_lane_skips_gate_when_no_text_columns(df, fake_training, monkeypatch):
+    """No detected text columns -> no LLM call, no extra gate CV; summary still recorded."""
+    from maestra.validation import CVResult
+
+    cv = CVResult("accuracy", "binary", [0.80, 0.82], 0.81, 0.01, 2, True, True)
+    monkeypatch.setattr(pipeline, "cross_validate", lambda *a, **k: cv)
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "detect_text_columns", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "propose_text_feature_code",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(pipeline, "select_features",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(pipeline, "fit_predictor", lambda *a, **k: fake_training)
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                          cv_folds=2, text_features=True, use_fe=False)
+
+    assert result.text_features == {"columns": [], "n_candidates": 0}
+    assert result.hybrid is None

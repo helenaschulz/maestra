@@ -92,6 +92,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
              "(requires --cv). Off by default.",
     )
+    p.add_argument(
+        "--text-features",
+        action="store_true",
+        help="Free-text lane: the LLM reads sample text from detected free-text columns and "
+             "writes deterministic extraction code (semantic keyword groups, parsed numbers); "
+             "same sandbox and CV gate as --hybrid (requires --cv). Off by default.",
+    )
     p.add_argument("--hybrid-max-candidates", type=int, default=5, help="Max feature candidates.")
     p.add_argument(
         "--hybrid-threshold",
@@ -214,6 +221,12 @@ def _print_result(result, model: str) -> None:
         verdict = "no detectable shift" if auc < 0.6 else ("mild shift" if auc < 0.75 else "strong shift")
         print(f"\n=== Adversarial validation ===\n  train-vs-test AUC: {auc:.4f}  ({verdict})")
 
+    if result.text_features is not None:
+        tf = result.text_features
+        cols = ", ".join(tf.get("columns", [])) or "none detected"
+        print(f"\n=== Free-text lane ===\n  columns: {cols}"
+              f"  ({tf.get('n_candidates', 0)} candidates -> CV gate below)")
+
     if result.hybrid is not None:
         kept = [r for r in result.hybrid if r.get("kept")]
         print(f"\n=== Hybrid features (CV-gated): {len(kept)}/{len(result.hybrid)} kept ===")
@@ -289,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
             ordinal=args.ordinal,
             skeptic=args.skeptic,
             target_framing=args.target_framing,
+            text_features=args.text_features,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,

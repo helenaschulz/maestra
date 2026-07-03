@@ -27,6 +27,7 @@ from maestra.engine import (
 )
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
 from maestra.hybrid_features import apply_generated_features, propose_feature_code, select_features
+from maestra.text_features import detect_text_columns, propose_text_feature_code
 from maestra.encoding import fit_ordinal_encodings, propose_ordinal_encodings
 from maestra.profiling import description_context, profile_dataframe
 from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
@@ -69,6 +70,8 @@ class PipelineResult:
     # when --skeptic was used
     target_framing: dict | None = None  # target-framing verdict (transform/accepted/cv_delta/log),
     # when --target-framing was used
+    text_features: dict | None = None  # free-text lane summary ({columns, n_candidates}); the
+    # per-candidate verdicts share the hybrid provenance list (source="text")
 
 
 def _do_research(model, df, target, rules_mode):
@@ -186,7 +189,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False,
-                 target_framing=False) -> PipelineResult:
+                 target_framing=False, text_features=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -251,11 +254,23 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         full, feature_log = ft.transform(full), ft.log
         transforms.append(ft)
 
-    # Hybrid feature generation (opt-in): generate code, gate fold-wise by CV, keep what helps.
-    generated_features, hybrid_records = [], None
+    # Generated-feature lanes (opt-in): the structured hybrid lane and the free-text lane
+    # both produce fit/transform candidates; ONE greedy CV gate judges them all, so every
+    # kept candidate raises the bar for the next regardless of which lane proposed it.
+    generated_features, hybrid_records, text_summary = [], None, None
+    candidates = []
     if hybrid and use_llm:
-        candidates = propose_feature_code(
+        candidates += propose_feature_code(
             model, profile_dataframe(full, target), research_context, hybrid_max_candidates)
+    if text_features and use_llm:
+        text_cols = detect_text_columns(full, target)
+        text_summary = {"columns": text_cols, "n_candidates": 0}
+        if text_cols:
+            text_candidates = propose_text_feature_code(
+                model, full, target, text_cols, research_context, hybrid_max_candidates)
+            text_summary["n_candidates"] = len(text_candidates)
+            candidates += text_candidates
+    if candidates:
         generated_features, records, cv = select_features(
             df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
@@ -322,7 +337,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
         fold_strategy=fold_strategy, ordinal=ordinal_summary, skeptic=skeptic_records,
-        target_framing=framing_summary,
+        target_framing=framing_summary, text_features=text_summary,
     )
 
 
@@ -366,6 +381,7 @@ def run_pipeline(
     ordinal: bool = False,
     skeptic: bool = False,
     target_framing: bool = False,
+    text_features: bool = False,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -424,6 +440,9 @@ def run_pipeline(
     if target_framing and not (cv_folds and cv_folds >= 2):
         raise ValueError(
             "--target-framing requires --cv (the CV is the arbiter that accepts the transform).")
+    if text_features and not (cv_folds and cv_folds >= 2):
+        raise ValueError(
+            "--text-features requires --cv (the CV is the gate that keeps/drops extractors).")
 
     n_before = len(df.columns)
 
@@ -448,7 +467,7 @@ def run_pipeline(
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
-            target_framing=target_framing,
+            target_framing=target_framing, text_features=text_features,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

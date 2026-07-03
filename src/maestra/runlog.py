@@ -58,6 +58,7 @@ def append_run(
         "research": result.research,
         "hybrid": result.hybrid,
         "target_framing": result.target_framing,
+        "text_features": result.text_features,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")
