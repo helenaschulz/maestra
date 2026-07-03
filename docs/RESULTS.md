@@ -186,6 +186,24 @@ difficulty varies between seeds (baseline 25 640 → 44 222): exactly why the co
 paired per seed, and why single-seed results were never trustworthy. The claim upgrades from
 "directional (n=2)" to supported under the pipeline's own strict arbiter rule.
 
+## E1 — Strategist detection benchmark (2026-07-03, gpt-4o, v1 prompt)
+
+17 classic datasets with known structure truth (6 grouped, 5 temporal, 6 iid incl. a deliberate
+trap), acceptable-answer sets for panel data, detection from the column profile alone:
+
+| Metric | Result |
+|---|---|
+| Overall acceptable | **14/17 (82%)** |
+| **Group recall** | **6/6** — the flagship claim, now quantified (correct column every time) |
+| Time recall | 3/5 — both misses are minimal `{time, value}` schemas; identical-schema datasets got opposite verdicts (airpassengers/ukgas OK, nottem/lynx MISS) → the judgment is *unstable at the decision boundary*, not systematically wrong |
+| False alarms on iid | **1/6** — the designed trap fired: PlantGrowth's `group` column (a 3-level treatment factor) was read as an entity |
+
+**Risk asymmetry worth stating:** a false alarm makes the CV *conservative* (pessimistic estimate)
+— the safe direction; a miss produces an optimistic lie. The agent errs mostly on the safe side.
+**Response (v2, same day):** prompt hardened (few-balanced-levels ≠ entity; a numeric monotone
+`time` axis IS temporal) + the verifier now logs a verify-this note for groups with < 5 entities.
+Re-run pending — before/after lives in `detection_benchmark.jsonl`.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across all three layers a conductor could touch:

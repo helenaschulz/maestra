@@ -162,3 +162,13 @@ def test_group_folds_stay_stratified_for_classification():
         # labels are entity-bound here, so perfect balance is impossible — but every fold must
         # contain BOTH classes (an unstratified group split can produce single-class folds)
         assert 0.0 < df["y"].iloc[val_idx].mean() < 1.0
+
+
+def test_few_entity_group_gets_a_treatment_factor_warning():
+    """The PlantGrowth trap: a verified group column with very few entities is legitimate
+    (small panels exist) but gets an explicit verify-this note in the log."""
+    df = pd.DataFrame({"arm": ["ctrl", "trt1", "trt2"] * 10, "x": range(30), "y": [0, 1] * 15})
+    verified, log = validate_fold_strategy(
+        {"strategy": "group", "group_column": "arm", "rationale": "r"}, df, "y")
+    assert verified["strategy"] == "group"                       # judgment not overridden
+    assert any("treatment/design factor" in line for line in log)

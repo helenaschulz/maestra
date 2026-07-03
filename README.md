@@ -101,7 +101,10 @@ Four findings that shape the design:
    `economics` time series it was **15.3× too optimistic** (rmse 282 vs 4 304 future truth); the
    Strategist detected `date`, switched to time-ordered folds, and cut it to 2.4×. Reproduce:
    `scripts/group_leakage_experiment.py`, `scripts/real_group_leakage_experiment.py`,
-   `scripts/time_leakage_experiment.py`.
+   `scripts/time_leakage_experiment.py`. **Detection quantified** on a 17-dataset benchmark
+   with ground truth (`scripts/strategist_detection_benchmark.py`): group recall **6/6**,
+   time 3/5 (unstable only on minimal two-column series), **1/6 false alarms** on iid data —
+   and a false alarm errs in the *safe* direction (a conservative CV, not an optimistic one).
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.

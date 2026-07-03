@@ -59,9 +59,14 @@ _SYSTEM_PROMPT = (
     "  time   - the task is to predict the FUTURE from the past (a timestamp/date/period "
     "column orders the rows and the target evolves over it). Name it as time_column.\n"
     "Evidence for group: an id-like column with n_unique clearly BELOW n_rows (repeats!), or "
-    "the description says several rows belong to one entity. Evidence for time: a date/period "
-    "column plus a forecasting-flavoured task. Be conservative: when in doubt, random — but "
-    "missing a real group/time structure is the costlier error, so weigh repeats seriously. "
+    "the description says several rows belong to one entity. CAUTION: a categorical with only a "
+    "FEW balanced levels (control/treatment arms, A/B variants, product categories) is a design "
+    "or feature column, NOT an entity — entities are typically numerous (many patients, many "
+    "firms). Evidence for time: a date/period column plus a forecasting-flavoured task; this "
+    "includes a NUMERIC time axis (e.g. decimal years, monotonically increasing) — a series "
+    "whose only ordering column is numeric 'time'/'year' is still temporal. Be conservative: "
+    "when in doubt, random — but missing a real group/time structure is the costlier error, so "
+    "weigh repeats seriously. "
     "Only name columns that exist in the profile. Additionally flag columns that look like "
     "TARGET LEAKS (recorded after the outcome, or a near-proxy of the target) under "
     "leakage_warnings — flagging is advice, not an instruction to drop."
@@ -117,6 +122,10 @@ def validate_fold_strategy(proposal: dict, df: pd.DataFrame, target: str) -> tup
             return fallback(f"group column {col!r} has fewer than 2 groups")
         verified.update(strategy="group", group_column=col)
         log.append(f"FOLDS group by {col!r} ({n_unique} entities) -- {rationale}")
+        if n_unique < 5:  # small panels are legitimate, but a few balanced levels smell of a
+            # treatment/design factor (the PlantGrowth trap) — warn, don't override the judgment
+            log.append(f"NOTE: only {n_unique} entities — verify {col!r} is an entity, "
+                       "not a treatment/design factor")
     elif strategy == "time":
         col = proposal.get("time_column")
         if not col or col not in df.columns:
