@@ -309,19 +309,27 @@ said log1p, and it's the textbook case" on faith would have added a transform fo
 the empirical arbiter earning its place: the LLM contributes a sound hypothesis, the measurement
 decides, and a wrong-for-this-setup convention is caught before it ships.
 
-**What would a stronger test look like — and a caution against an easy but hollow one.** The
-tempting "decisive" test is M11 under RMSLE, where a log target matches the metric. But that test
-is close to *tautological*: RMSLE(y, ŷ) = RMSE(log1p y, log1p ŷ), so training on log1p with a
-squared-error loss minimises RMSLE almost by construction — the adoption would be pre-determined,
-not discovered, making it weak evidence for the thesis (and AutoGluon has no native RMSLE metric,
-so it would also need a custom scorer to run at all). The genuinely informative open tests are
-instead: (a) a **precision control** — a symmetric / non-skewed target where the agent *should*
-answer `none`, testing that it does not fire spuriously; and (b) whether *any* realistic target is
-skewed enough that log1p helps even on a neutral absolute-error metric with boosted trees — the
-real open question the SalePrice run answered "no" for. The plain-RMSE result does not falsify M11;
-it correctly reports that log1p does not help *this metric on this engine*. (Implementation verified
-end-to-end: each fold trains in log space, inverts predictions via `expm1`, and rescores against the
-original-space truth held aside before transforming.)
+**Precision control (2026-07-03).** The complementary test: a *symmetric* target, where the agent
+should decline. On friedman-synth / `y` (skewness 0.048, mean 14.088 ≈ median 14.069, max only 2×
+median):
+
+| Step | Outcome |
+|---|---|
+| LLM proposal | **`none`** — correctly reasoned (low skew, mean ≈ median, no long tail), no transform |
+| Arbiter | not invoked (no verified proposal) — zero cost |
+
+Together the two runs characterise M11 on both sides: it **fires on a genuinely skewed target** (and
+the arbiter then gates it on measurement) and it **does not fire on a symmetric one** (no false
+positive). The agent has precision, and the arbiter has the final say — exactly the intended split.
+
+**The one open question worth a run** is whether *any* realistic target is skewed enough that log1p
+helps even on a neutral absolute-error metric with boosted trees — the real question SalePrice
+answered "no" for. (Explicitly *not* worth running: M11 under RMSLE. That test is near-tautological —
+RMSLE(y, ŷ) = RMSE(log1p y, log1p ŷ), so log1p training minimises it by construction — and AutoGluon
+has no native RMSLE metric anyway.) The plain-RMSE result does not falsify M11; it correctly reports
+that log1p does not help *this metric on this engine*. (Implementation verified end-to-end: each fold
+trains in log space, inverts predictions via `expm1`, and rescores against the original-space truth
+held aside before transforming.)
 
 ## Where LLM judgment pays off — the whole map
 
