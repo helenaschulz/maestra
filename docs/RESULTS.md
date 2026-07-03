@@ -209,23 +209,43 @@ motivated the fixes carries Goodhart risk — generalization to unseen datasets 
 and a single run does not prove boundary stability (v1 demonstrated instability). Both get fresh
 evidence from M9 (same catalog, different models). Before/after: `detection_benchmark.jsonl`.
 
-## M9 — model-robustness matrix, first row (2026-07-03)
+## M9 — model-robustness matrix, cross-provider (2026-07-03)
 
-Same 17-dataset catalog, same v2 prompt, different backbone:
+Same 17-dataset catalog, same v2 prompt, five backbones across two providers:
 
-| Model | Overall | group | time | False alarms (iid) | Misses |
-|---|---|---|---|---|---|
-| gpt-4o | **17/17** | 6/6 | 5/5 | 0/6 | — |
-| gpt-4o-mini | 14/17 | **4/6** | 5/5 | 1/6 | emplUK, mathachieve (group→random); the PlantGrowth trap |
+| Model | Overall | group | time | random | False alarms (iid) | Misses |
+|---|---|---|---|---|---|---|
+| anthropic/claude-opus-4-8 | **17/17** | 6/6 | 5/5 | 6/6 | 0/6 | — |
+| anthropic/claude-sonnet-4-5 | **17/17** | 6/6 | 5/5 | 6/6 | 0/6 | — |
+| anthropic/claude-haiku-4-5 | **17/17** | 6/6 | 5/5 | 6/6 | 0/6 | — |
+| gpt-4o | **17/17** | 6/6 | 5/5 | 6/6 | 0/6 | — |
+| gpt-4o-mini | 14/17 | **4/6** | 5/5 | 5/6 | 1/6 | emplUK, mathachieve (group→random); the PlantGrowth trap |
 
-**Reading:** the small model degrades exactly on the flagship capability — and its misses are in
-the **dangerous direction** (`group→random` = a silently optimistic CV), unlike false alarms which
-only cost conservatism. The v2 prompt generalizes *partially* across models: the numeric-time-axis
-principle transferred (time 5/5 on the mini — softening the Goodhart concern for that fix), the
-treatment-factor principle did not (the mini fell for the trap despite the hardened prompt — a
-prompt principle only works if the model can apply it). **First data row for the consulting
-question "which decisions need an expensive model": validation design does.** Limits: one run per
-model, no v1 baseline for the mini, both models from one family.
+**Reading — two findings, one against expectation.**
+
+*(1) The judgment is provider-robust.* All four current frontier models — across OpenAI and
+Anthropic — hit a full 17/17, including the `PlantGrowth` trap (a column literally named `group`
+that is a treatment factor, not an entity). So the v2 prompt's principles are not a lucky fit to
+one backbone; they transfer across the provider boundary. That is a stronger portfolio claim than
+"works on gpt-4o".
+
+*(2) The boundary is "expensive vs. cheap", not "big vs. small" — and it is model-specific.* Only
+gpt-4o-mini degrades, and it degrades exactly on the flagship capability (group 4/6), with misses
+in the **dangerous direction** (`group→random` = a silently optimistic CV), unlike false alarms
+which only cost conservatism. But **Haiku 4.5 — a small, cheap model — matches the flagships
+perfectly.** The pre-run hypothesis that a toy single-sentence probe suggested (Haiku would false-
+alarm) did not survive the real profile-driven benchmark: given the actual column profile, Haiku
+applies the same principles as Opus. So the failure is specific to gpt-4o-mini, not a general
+property of cheap models.
+
+**Consulting takeaway:** the capability "recognize when a random CV would leak" is present in
+today's frontier families and is *not* the exclusive property of the largest model — but at least
+one deliberately-stripped small model (gpt-4o-mini) loses it, and loses it in the direction that
+silently inflates your validation score. The honest recommendation is therefore not "buy the
+biggest model" but "verify this specific judgment on your specific model — a cheap model may or
+may not have it, and the failure mode is invisible without a benchmark like this one." Limits: one
+run per model (temperature 0, so deterministic-ish but not variance-quantified); mini has no v1
+baseline; catalog is 17 classic datasets.
 
 ## E2 — task battery (running; 2/10 done, 2026-07-03)
 
