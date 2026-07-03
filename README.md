@@ -68,16 +68,16 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | Titanic | poor | balanced_acc | **0.793** | 0.732 | LLM hurts |
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
-| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | 26 453 / 25 745 | **25 828 / 24 343** | LLM ahead on both seeds (n = 2, within the noise band) |
+| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | **Maestra, 5/5 seeds** — passes the paired 2-SEM test (narrowly) |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
 Four findings that shape the design:
 
 1. **The LLM pays off where column *semantics* exist, and nowhere else.** On anonymous numeric
    data an LLM is structurally blind; on House Prices (`Neighborhood`, `KitchenQual`,
-   `YearBuilt`, …) its cleaning/encoding judgment came out ahead of the baseline on both seeds —
-   a directional result: n = 2, and the margin sits inside the run-to-run noise band (~960
-   rmse), so treat it as suggestive, not settled. This
+   `YearBuilt`, …) its cleaning/encoding judgment beat the baseline on **all 5 seeds** (mean
+   improvement 1 285 rmse; passes the paired 2-SEM + majority rule, though narrowly — the same
+   strict arbiter rule the pipeline's own gates use). This
    independently reproduces what [CAAFE](https://arxiv.org/abs/2305.03403) and
    [LATTEArena](https://arxiv.org/pdf/2606.09004) report.
 2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal.** The
@@ -182,8 +182,10 @@ is fitted on train (per fold, under CV) and replayed on holdout/test, so scores 
   that inform planning but never bypass validation
 - **Kaggle-ready** — label *and* probability submissions (binary + multiclass), shaped from
   the sample submission
-- **Benchmark harnesses** — `maestra-bench` (local answer-key carving) and `maestra-mlebench`
-  (real MLE-bench grading with medal thresholds and the CV↔LB gap)
+- **Benchmark harnesses** — `maestra-bench` (local answer-key carving; `--seeds 1 2 3 …` runs
+  genuine replications and settles the comparison with a paired test whose third verdict,
+  *undecided-within-noise*, is a first-class outcome) and `maestra-mlebench` (real MLE-bench
+  grading with medal thresholds and the CV↔LB gap)
 - **Model-agnostic** — any [LiteLLM](https://docs.litellm.ai/) backbone via one `--model` string
 - **Extensively tested** — the decision logic, gates and wiring are covered by a fast,
   fully offline suite (LLM *and* AutoGluon mocked); `engine.py`/`cli.py` are thin wrappers
@@ -221,9 +223,9 @@ maestra --csv data/train.csv --target class --cv 5 --hybrid
 # build a Kaggle submission
 maestra --csv data/train.csv --target class --test data/test.csv --submission sub.csv
 
-# benchmark Maestra vs. the no-LLM baseline on a carved answer key
+# benchmark Maestra vs. the no-LLM baseline: 5 seeded replications, paired verdict
 maestra-bench --csv data/titanic.csv --target Survived \
-              --metric balanced_accuracy --id-col PassengerId --cv 3 --name titanic
+              --metric balanced_accuracy --id-col PassengerId --cv 3 --seeds 1 2 3 4 5 --name titanic
 
 # run + grade a prepared MLE-bench task (medals, CV↔LB gap)
 maestra-mlebench --task /path/to/prepared/public:leaf-classification \

@@ -75,3 +75,55 @@ def test_summary_renders_and_handles_missing(tmp_path):
     append_result(p, BenchResult("toy", "accuracy", 0.50, 0.80, 0.30, True, 6, 2), timestamp="t")
     out = summary(p)
     assert "toy" in out and "maestra" in out
+
+
+# --- M8: multi-seed mode (run_task mocked; the paired verdict logic is the unit under test) ---
+
+def _bench(seed, baseline, maestra, higher=True):
+    from maestra.benchmark import BenchResult
+    return BenchResult(name="toy", metric="m", baseline=baseline, maestra=maestra,
+                       delta=maestra - baseline, higher_is_better=higher,
+                       n_train=80, n_grade=20, seed=seed)
+
+
+def test_multi_seed_clear_win_is_maestra(monkeypatch):
+    from maestra import benchmark as B
+    results = {1: _bench(1, 0.80, 0.85), 2: _bench(2, 0.81, 0.86), 3: _bench(3, 0.79, 0.84)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms = B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2, 3])
+    assert ms.verdict == "maestra"
+    assert ms.mean_delta == pytest.approx(0.05)
+    assert [r.seed for r in ms.per_seed] == [1, 2, 3]
+
+
+def test_multi_seed_noisy_result_is_undecided(monkeypatch):
+    from maestra import benchmark as B
+    # Maestra ahead twice by a hair, behind once by a lot -> neither side passes the paired rule
+    results = {1: _bench(1, 0.80, 0.805), 2: _bench(2, 0.80, 0.803), 3: _bench(3, 0.80, 0.76)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms = B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2, 3])
+    assert ms.verdict == "undecided"          # within noise is a first-class outcome
+
+
+def test_multi_seed_lower_is_better_baseline_win(monkeypatch):
+    from maestra import benchmark as B
+    # rmse-style (lower is better): maestra consistently worse -> baseline verdict
+    results = {s: _bench(s, 100.0, 110.0 + s, higher=False) for s in (1, 2, 3)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms = B.run_multi_seed("x.csv", "y", metric="rmse", seeds=[1, 2, 3])
+    assert ms.verdict == "baseline"
+
+
+def test_multi_seed_aggregate_row_feeds_summary(monkeypatch, tmp_path):
+    from maestra import benchmark as B
+    results = {1: _bench(1, 0.80, 0.85), 2: _bench(2, 0.81, 0.86), 3: _bench(3, 0.79, 0.84)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms = B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2, 3])
+    log = tmp_path / "bench.jsonl"
+    B.append_multi_seed(str(log), ms, timestamp="t")
+    board = B.summary(str(log))
+    assert "n=3 seeds" in board and "maestra" in board   # verdict rendered on the board

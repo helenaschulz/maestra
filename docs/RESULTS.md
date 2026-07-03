@@ -167,6 +167,25 @@ the only signal — exactly what the id-heuristic trap eats). Result: the **hard
 accuracy 0.867. The safety net had nothing to catch and raised no false alarm — which is the
 designed behaviour: cheap when the cleaner is sane, decisive (arbiter veto) when it is not.
 
+## M6 evidence run — House Prices over 5 seeds (2026-07-03)
+
+The one n=2 headline claim, hardened. Five seeds (42, 7, 1, 2, 3), each re-carving the answer key
+and re-splitting folds; baseline and Maestra share each seed's carve, so the deltas are paired:
+
+| Seed | Baseline rmse | Maestra rmse | Δ (improvement) |
+|---|---|---|---|
+| 42 | 26 453 | 25 828 | +625 |
+| 7 | 25 745 | 24 343 | +1 402 |
+| 1 | 31 655 | 31 278 | +377 |
+| 2 | 44 222 | 40 569 | +3 653 |
+| 3 | 25 640 | 25 270 | +370 |
+
+**Verdict: Maestra — 5/5 seeds ahead, mean improvement 1 285 rmse; passes the paired 2-SEM +
+majority rule (SEM 621, threshold 1 243) — narrowly, and we say so.** Note how much the carve
+difficulty varies between seeds (baseline 25 640 → 44 222): exactly why the comparison must be
+paired per seed, and why single-seed results were never trustworthy. The claim upgrades from
+"directional (n=2)" to supported under the pipeline's own strict arbiter rule.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across all three layers a conductor could touch:
@@ -174,7 +193,7 @@ The systematic answer to the project's question, across all three layers a condu
 | Layer | Does LLM judgment beat the AutoGluon baseline? | Evidence |
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better |
-| Cleaning / encoding | Marginally, and only on semantic-rich data | House Prices plain −2.4% (seed 42), within noise elsewhere |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data | House Prices: 5/5 seeds, mean +1 285 rmse, passes the paired 2-SEM rule (narrowly) |
 | **Feature engineering** (arithmetic *and* ordinal) | **No — across the board** | hybrid kept 0/5; ordinal mean-negative |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work

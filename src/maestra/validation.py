@@ -48,6 +48,23 @@ class CVResult:
     # one column per class), for probability metrics (roc_auc / log_loss)
 
 
+def paired_delta_test(deltas: list[float], *, sigma_mult: float = 2.0,
+                      min_abs: float = 1e-4) -> bool:
+    """The arbiter's core accept rule on PAIRED differences (fold-wise or seed-wise).
+
+    Passes only if the mean delta exceeds ``sigma_mult`` standard errors of the deltas AND a
+    strict majority of the pairs improved. Pairing removes shared difficulty variance; the
+    majority clause guards against a single outlier pair carrying the mean.
+    """
+    n = len(deltas)
+    if n < 2:
+        return False
+    mean = float(np.mean(deltas))
+    sem = float(np.std(deltas, ddof=1)) / (n ** 0.5)
+    majority = sum(1 for d in deltas if d > 0) > n / 2
+    return mean > max(min_abs, sigma_mult * sem) and majority
+
+
 def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: float = 2.0,
                           min_abs: float = 1e-4) -> tuple[bool, float]:
     """Does ``trial`` beat ``base`` beyond fold noise? Returns ``(passes, mean_delta)``.
@@ -67,10 +84,7 @@ def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: fl
     if paired_ok:
         sign = 1.0 if base.greater_is_better else -1.0
         d = [sign * (t - b) for b, t in zip(base.fold_scores, trial.fold_scores)]
-        n = len(d)
-        sem = float(np.std(d, ddof=1)) / (n ** 0.5)
-        majority = sum(1 for x in d if x > 0) > n / 2
-        return (delta > max(min_abs, sigma_mult * sem)) and majority, float(delta)
+        return paired_delta_test(d, sigma_mult=sigma_mult, min_abs=min_abs), float(delta)
     return delta > max(min_abs, sigma_mult * base.std), float(delta)
 
 

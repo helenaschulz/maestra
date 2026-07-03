@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
@@ -93,6 +94,7 @@ class BenchResult:
     n_train: int
     n_grade: int
     hybrid: list | None = None  # generated-feature provenance (kept/delta/reason), when --hybrid ran
+    seed: int | None = None  # the run's seed (carve + folds), for multi-seed provenance
 
 
 def grade(submission: pd.DataFrame, answer: pd.DataFrame, *, metric: str, id_col: str, target: str) -> float:
@@ -167,12 +169,73 @@ def run_task(
         delta=maestra - baseline, higher_is_better=metric in _HIGHER_IS_BETTER,
         n_train=len(work), n_grade=len(answer),
         hybrid=res_m.hybrid,  # provenance, so a --hybrid run is interpretable after the fact
+        seed=seed,
+    )
+
+
+@dataclass
+class MultiSeedResult:
+    """Aggregate of one task run over several seeds, with a paired three-way verdict."""
+
+    name: str
+    metric: str
+    seeds: list[int]
+    per_seed: list[BenchResult]
+    baseline_mean: float
+    maestra_mean: float
+    mean_delta: float          # mean(maestra - baseline), raw metric direction
+    higher_is_better: bool
+    verdict: str               # "maestra" | "baseline" | "undecided"
+
+
+def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kwargs) -> MultiSeedResult:
+    """Run :func:`run_task` once per seed and settle the comparison with the arbiter's rule.
+
+    Every seed re-carves the answer key and re-splits the folds, so the seeds are genuine
+    replications. Baseline and Maestra share each seed's carve, so the per-seed deltas are
+    PAIRED — the same machinery as the fold-wise gate (``paired_delta_test``: mean beyond
+    2 standard errors AND a strict majority of seeds). The verdict is deliberately three-way:
+    **undecided-within-noise is a first-class, honest outcome**, not a failure to report.
+    """
+    from maestra.validation import paired_delta_test
+
+    per_seed = [run_task(csv, target, metric=metric, seed=s, **kwargs) for s in seeds]
+    higher = per_seed[0].higher_is_better
+    # signed improvement per seed: positive = Maestra better, regardless of metric direction
+    improvements = [(r.maestra - r.baseline) * (1.0 if higher else -1.0) for r in per_seed]
+    if paired_delta_test(improvements):
+        verdict = "maestra"
+    elif paired_delta_test([-d for d in improvements]):
+        verdict = "baseline"
+    else:
+        verdict = "undecided"
+    return MultiSeedResult(
+        name=per_seed[0].name, metric=metric, seeds=list(seeds), per_seed=per_seed,
+        baseline_mean=float(np.mean([r.baseline for r in per_seed])),
+        maestra_mean=float(np.mean([r.maestra for r in per_seed])),
+        mean_delta=float(np.mean([r.delta for r in per_seed])),
+        higher_is_better=higher, verdict=verdict,
     )
 
 
 def append_result(path: str, result: BenchResult, *, timestamp: str) -> None:
     with open(path, "a") as fh:
         fh.write(json.dumps({"timestamp": timestamp, **asdict(result)}, default=float) + "\n")
+
+
+def append_multi_seed(path: str, result: MultiSeedResult, *, timestamp: str) -> None:
+    """Log the aggregate as one row compatible with ``summary`` (means + explicit verdict);
+    the per-seed rows are logged individually by the caller."""
+    record = {
+        "timestamp": timestamp, "kind": "multi_seed",
+        "name": f"{result.name} (n={len(result.seeds)} seeds)", "metric": result.metric,
+        "baseline": result.baseline_mean, "maestra": result.maestra_mean,
+        "delta": result.mean_delta, "higher_is_better": result.higher_is_better,
+        "seeds": result.seeds, "verdict": result.verdict,
+        "n_train": result.per_seed[0].n_train, "n_grade": result.per_seed[0].n_grade,
+    }
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record, default=float) + "\n")
 
 
 def summary(path: str) -> str:
@@ -184,7 +247,9 @@ def summary(path: str) -> str:
     if not rows:
         return "No benchmark results yet."
     table = [[r["name"], r["metric"], f"{r['baseline']:.4f}", f"{r['maestra']:.4f}",
-              f"{r['delta']:+.4f}", _winner(r["delta"], r.get("higher_is_better", True))]
+              f"{r['delta']:+.4f}",
+              # multi-seed rows carry the arbiter's three-way verdict; single runs keep the raw sign
+              r.get("verdict") or _winner(r["delta"], r.get("higher_is_better", True))]
              for r in rows]
     return render_table(["dataset", "metric", "baseline", "maestra", "delta", "winner"], table)
 
@@ -198,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=os.environ.get("AUTOML_MODEL", "gpt-4o"))
     p.add_argument("--time-limit", type=int, default=120)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seeds", type=int, nargs="+", default=None, metavar="S",
+                   help="Run the task once per seed and settle the comparison with the paired "
+                        "arbiter rule (verdict: maestra / baseline / undecided-within-noise). "
+                        "Overrides --seed.")
     p.add_argument("--holdout-frac", type=float, default=0.25, help="Answer-key fraction.")
     p.add_argument("--cv", type=int, default=None, help="Use the k-fold CV path (both arms).")
     p.add_argument("--hybrid", action="store_true", help="Generated-feature gate on the Maestra arm (needs --cv).")
@@ -220,11 +289,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.description:
         with open(args.description) as fh:
             description = fh.read()
-    result = run_task(args.csv, args.target, metric=args.metric, id_col=args.id_col,
-                      model=args.model, time_limit=args.time_limit, seed=args.seed,
-                      holdout_frac=args.holdout_frac, cv_folds=args.cv, hybrid=args.hybrid,
-                      name=args.name, dataset_description=description)
-    append_result(args.results, result, timestamp=datetime.now().isoformat(timespec="seconds"))
+    common = dict(metric=args.metric, id_col=args.id_col, model=args.model,
+                  time_limit=args.time_limit, holdout_frac=args.holdout_frac,
+                  cv_folds=args.cv, hybrid=args.hybrid, name=args.name,
+                  dataset_description=description)
+    now = lambda: datetime.now().isoformat(timespec="seconds")  # noqa: E731
+
+    if args.seeds:
+        ms = run_multi_seed(args.csv, args.target, seeds=args.seeds, **common)
+        for r in ms.per_seed:
+            append_result(args.results, r, timestamp=now())
+            print(f"  seed {r.seed:<4} baseline {r.baseline:.4f}  maestra {r.maestra:.4f}  "
+                  f"Δ {r.delta:+.4f}")
+        append_multi_seed(args.results, ms, timestamp=now())
+        print(f"\n{ms.name} | {ms.metric} over seeds {ms.seeds}: "
+              f"baseline {ms.baseline_mean:.4f}  maestra {ms.maestra_mean:.4f}  "
+              f"Δ {ms.mean_delta:+.4f}  →  verdict: {ms.verdict}"
+              + ("  (within noise — an honest result, not a failure)" if ms.verdict == "undecided" else ""))
+        print(f"Logged to {args.results}. Board: maestra-bench --summary")
+        return 0
+
+    result = run_task(args.csv, args.target, seed=args.seed, **common)
+    append_result(args.results, result, timestamp=now())
     print(f"\n{result.name} | {result.metric}: baseline {result.baseline:.4f}  "
           f"maestra {result.maestra:.4f}  Δ {result.delta:+.4f}  → "
           f"{_winner(result.delta, result.higher_is_better)}")
