@@ -286,6 +286,35 @@ honestly returns *undecided* on the five where the signal is within noise is exa
 arbiter doing its job — it refuses to manufacture wins. Still pending (4/10): diamonds, wage,
 abalone, friedman-synth (two more poor-semantics controls, expected undecided-or-baseline).
 
+## M11 — target framing agent: the arbiter overrules the textbook (2026-07-03)
+
+The target-framing agent proposes a `log1p` reframing for a skewed regression target; a paired CV
+on identical folds, **scored in original units** (predictions inverted before scoring, so base and
+trial are comparable), is the arbiter. First evidence run, House Prices / `SalePrice`, plain RMSE,
+3 folds:
+
+| Step | Outcome |
+|---|---|
+| LLM proposal | `log1p` — correctly reasoned (skewness 1.88, mean 180.9k ≫ median 163k, max 4.6× median) |
+| Arbiter | **REJECT** — CV −28 860 → −28 735 rmse, Δ +124.66 (≈0.43%), within the 3-fold paired noise band |
+
+**Reading — the arbiter overruled a plausible, textbook-correct suggestion, and was right to.** The
+project's own prior expectation was that House Prices ("the textbook log-transform case") would be a
+*win* for M11. It was not — and the reason is instructive. The classic advice is textbook for
+**RMSLE + linear models**: a log-scale metric and a model class sensitive to target skew. This run
+used **plain RMSE + AutoGluon's gradient-boosted trees**, which are ~invariant to a monotone target
+transform and already absorb the tail. So the transform moved the score by less than half a percent
+— indistinguishable from fold noise — and the arbiter declined it. A system that applied "the LLM
+said log1p, and it's the textbook case" on faith would have added a transform for nothing. This is
+the empirical arbiter earning its place: the LLM contributes a sound hypothesis, the measurement
+decides, and a wrong-for-this-setup convention is caught before it ships.
+
+**Decisive test still open:** M11 under **RMSLE** (where the log transform matches the metric — the
+setup where the thesis genuinely predicts a win) with 5 seeds for statistical power. The plain-RMSE
+result does not falsify M11; it correctly reports that log1p does not help *this metric on this
+engine*. (Implementation verified end-to-end: each fold trains in log space, inverts predictions
+via `expm1`, and rescores against the original-space truth held aside before transforming.)
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across all three layers a conductor could touch:
