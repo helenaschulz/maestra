@@ -81,6 +81,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "put to the CV arbiter and vetoed only if keeping the column helps (needs --cv).",
     )
     p.add_argument(
+        "--target-framing",
+        action="store_true",
+        help="Target framing: the LLM proposes log1p for a skewed regression target; adopted "
+             "only if a paired CV in ORIGINAL units beats the base beyond noise (needs --cv).",
+    )
+    p.add_argument(
         "--hybrid",
         action="store_true",
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
@@ -155,6 +161,11 @@ def _print_result(result, model: str) -> None:
     if result.ordinal is not None:
         print(f"\n=== Ordinal encoding ({model}) ===")
         for line in result.ordinal.get("log", []):
+            print(f"  {line}")
+
+    if result.target_framing is not None:
+        print(f"\n=== Target framing ({model}) ===")
+        for line in result.target_framing.get("log", []):
             print(f"  {line}")
 
     if result.skeptic is not None:
@@ -277,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
             fold_advisor=_resolve_fold_advisor(args.fold_advisor, args.cv),
             ordinal=args.ordinal,
             skeptic=args.skeptic,
+            target_framing=args.target_framing,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,

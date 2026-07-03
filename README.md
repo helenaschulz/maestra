@@ -159,6 +159,10 @@ parameter is fitted on train (per fold, under CV) and replayed on holdout/test, 
 - **Validation Strategist** (`--fold-advisor`) — the LLM decides how CV folds must be built
   (random / group / time) from the column semantics, the one validation decision AutoML cannot
   make; every proposal is verified deterministically and falls back to random on any defect
+- **Target framing** (`--target-framing`) — the LLM proposes `log1p` for a skewed regression
+  target (a setup decision AutoGluon never makes: it fits the target exactly as given); the
+  transform is adopted **only if a paired CV, scored in original units, beats the untransformed
+  base beyond noise**
 - **Dataset-description context** (`--description`) — feed the provider's data description to
   every judgment node, so the LLM knows what columns *mean* (units, ordinal orders, entities)
 - **Ordinal encoding** (`--ordinal`) — the LLM maps ordinal categoricals (quality/condition
@@ -248,6 +252,7 @@ maestra-audit --csv data/train.csv --target churn --test data/test.csv --lang de
 | `--fold-advisor` / `--no-fold-advisor` | **on with `--cv`** | Validation Strategist: LLM-chosen fold strategy, verified deterministically. Default-on whenever CV is active (0 false alarms across all frontier models, cross-provider); `--no-fold-advisor` opts out |
 | `--ordinal` | off | Ordinal encoding: LLM-chosen worst→best rank for ordinal categoricals |
 | `--skeptic` | off | Skeptic reviews cleaning drops; the CV arbiter vetoes a drop only if keeping helps (needs `--cv`) |
+| `--target-framing` | off | LLM proposes `log1p` for a skewed regression target; adopted only if a paired CV in original units beats the base (needs `--cv`) |
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
@@ -295,6 +300,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
 | [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |
+| [`target_framing.py`](src/maestra/target_framing.py) | Target framing agent: LLM `log1p` proposal for skewed regression targets, CV-arbitrated in original units |
 | [`audit.py`](src/maestra/audit.py) | `maestra-audit`: standalone data-risk report (validation / leakage / structural / shift) |
 | [`calibration.py`](src/maestra/calibration.py) | Temperature scaling on OOF probabilities |
 | [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics, predict / predict_proba |

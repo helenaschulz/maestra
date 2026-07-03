@@ -31,7 +31,8 @@ from maestra.encoding import fit_ordinal_encodings, propose_ordinal_encodings
 from maestra.profiling import description_context, profile_dataframe
 from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
-from maestra.validation import CVResult, adversarial_validation, cross_validate
+from maestra.target_framing import propose_target_framing, validate_target_framing
+from maestra.validation import CVResult, adversarial_validation, cross_validate, improves_beyond_noise
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -66,6 +67,8 @@ class PipelineResult:
     ordinal: dict | None = None  # ordinal-encoding provenance ({log, encodings}), when --ordinal used
     skeptic: list | None = None  # Skeptic review provenance (column/risk/reason/cv_delta/vetoed),
     # when --skeptic was used
+    target_framing: dict | None = None  # target-framing verdict (transform/accepted/cv_delta/log),
+    # when --target-framing was used
 
 
 def _do_research(model, df, target, rules_mode):
@@ -119,7 +122,8 @@ def _proba_submission(predictor, features, ids, id_col, proba_columns):
 
 
 def _build_submission(transforms, predictor, test_df, target, id_col,
-                      generated_features=None, fit_df=None, proba=False, proba_columns=None):
+                      generated_features=None, fit_df=None, proba=False, proba_columns=None,
+                      target_inverse=None):
     """Predict on the test set and return a Kaggle-style submission frame.
 
     The test set is run through the *same* fitted transforms as training (cleaning, then
@@ -141,6 +145,8 @@ def _build_submission(transforms, predictor, test_df, target, id_col,
     if proba:
         return _proba_submission(predictor, features, ids, id_col, proba_columns)
     preds = predict(predictor, features)
+    if target_inverse is not None:  # model was trained on a transformed target — invert back
+        preds = target_inverse(preds)
     return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
 
@@ -179,7 +185,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  research_context=None, research_summary=None,
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
-                 fold_advisor=False, ordinal=False, skeptic=False) -> PipelineResult:
+                 fold_advisor=False, ordinal=False, skeptic=False,
+                 target_framing=False) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -261,10 +268,40 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                             eval_metric=eval_metric,
                             group_column=group_column, time_column=time_column)
 
+    # Target framing (opt-in): the LLM proposes a log1p reframing of a skewed regression target;
+    # a second CV on IDENTICAL folds, scored in ORIGINAL space, is the arbiter. Adopted only if
+    # it beats the base beyond noise — one extra CV run, and only when a verified proposal exists.
+    framing_summary, adopted_transform = None, None
+    if target_framing:
+        tf_proposal = propose_target_framing(
+            model, profile_dataframe(df, target), df, target, research_context)
+        transform, tf_log = validate_target_framing(
+            tf_proposal, df, target, cv.problem_type, cv.eval_metric)
+        accepted, tf_delta = None, None
+        if transform is not None:
+            trial_cv = cross_validate(
+                df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+                model_dir=f"{model_dir}/framing", time_limit=cv_time_limit, n_folds=n_folds,
+                seed=seed, eval_metric=eval_metric, generated_features=generated_features or None,
+                group_column=group_column, time_column=time_column, target_transform=transform)
+            accepted, tf_delta = improves_beyond_noise(base=cv, trial=trial_cv)
+            verdict = "ACCEPT" if accepted else "REJECT"
+            tf_log.append(f"{verdict} {transform.name}: cv {cv.mean:.4f} -> {trial_cv.mean:.4f} "
+                          f"(delta {tf_delta:+.4f}, paired {n_folds}-fold test)")
+            if accepted:
+                cv, adopted_transform = trial_cv, transform
+        framing_summary = {
+            "proposal": tf_proposal, "transform": transform.name if transform else "none",
+            "accepted": accepted, "cv_delta": tf_delta, "log": tf_log,
+        }
+
     # Final model on all data, plus kept generated features (fitted on the full cleaned+FE data).
     full_for_fit = full
     if generated_features:
         full_for_fit, _ = apply_generated_features(full, full, target, generated_features)
+    if adopted_transform is not None:  # train the final model in the adopted target space
+        full_for_fit = full_for_fit.assign(
+            **{target: adopted_transform.forward(full_for_fit[target])})
     _validate_trainable(full_for_fit, target)
     training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final", eval_metric)
 
@@ -275,7 +312,9 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                                                   model_dir=f"{model_dir}/adversarial")
         submission = _build_submission(transforms, training.predictor, test_df, target, id_col,
                                        generated_features=generated_features or None, fit_df=full,
-                                       proba=proba, proba_columns=proba_columns)
+                                       proba=proba, proba_columns=proba_columns,
+                                       target_inverse=(adopted_transform.inverse
+                                                       if adopted_transform else None))
 
     return PipelineResult(
         n_cols_before=n_before, n_cols_after=len(full_for_fit.columns), n_cols_clean=n_clean,
@@ -283,6 +322,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         feature_plan=feature_plan, feature_log=feature_log, submission=submission,
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
         fold_strategy=fold_strategy, ordinal=ordinal_summary, skeptic=skeptic_records,
+        target_framing=framing_summary,
     )
 
 
@@ -325,6 +365,7 @@ def run_pipeline(
     fold_advisor: bool = False,
     ordinal: bool = False,
     skeptic: bool = False,
+    target_framing: bool = False,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -380,6 +421,9 @@ def run_pipeline(
         raise ValueError("--fold-advisor requires --cv (it decides how the CV folds are built).")
     if skeptic and not (cv_folds and cv_folds >= 2):
         raise ValueError("--skeptic requires --cv (the CV is the arbiter that vetoes a drop).")
+    if target_framing and not (cv_folds and cv_folds >= 2):
+        raise ValueError(
+            "--target-framing requires --cv (the CV is the arbiter that accepts the transform).")
 
     n_before = len(df.columns)
 
@@ -404,6 +448,7 @@ def run_pipeline(
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
+            target_framing=target_framing,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

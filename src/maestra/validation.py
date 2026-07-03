@@ -88,6 +88,24 @@ def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: fl
     return delta > max(min_abs, sigma_mult * base.std), float(delta)
 
 
+def _ag_score(y_true: pd.Series, y_pred: pd.Series, metric: str) -> float:
+    """Score regression predictions in AutoGluon's reporting convention (higher is better,
+    error metrics negated). Used when a target transform makes the predictor's own metric
+    (computed in transformed space) incomparable — the trial must be scored in ORIGINAL space
+    with the same sign convention as the untransformed base CV, or the paired test is invalid."""
+    t = y_true.to_numpy(dtype=float)
+    p = y_pred.to_numpy(dtype=float)
+    if metric == "root_mean_squared_error":
+        return -float(np.sqrt(np.mean((t - p) ** 2)))
+    if metric == "mean_absolute_error":
+        return -float(np.mean(np.abs(t - p)))
+    if metric == "r2":
+        ss_res = float(np.sum((t - p) ** 2))
+        ss_tot = float(np.sum((t - np.mean(t)) ** 2))
+        return 1.0 - ss_res / ss_tot if ss_tot else 0.0
+    raise ValueError(f"metric {metric!r} not supported for target-transformed scoring")
+
+
 def _is_classification(y: pd.Series) -> bool:
     """True if ``y`` should be stratified like a class label.
 
@@ -172,6 +190,7 @@ def cross_validate(
     eval_metric: str | None = None,
     group_column: str | None = None,
     time_column: str | None = None,
+    target_transform=None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -184,6 +203,10 @@ def cross_validate(
         n_folds: Number of folds (>= 2).
         seed: Seed for the (deterministic) fold split.
         stratified: Force stratification on/off; default = on for classification targets.
+        target_transform: Optional :class:`~maestra.target_framing.TargetTransform`
+            (regression only). Each fold trains on ``forward(target)``; predictions are
+            inverted back and the fold is scored in ORIGINAL space via :func:`_ag_score`,
+            so the result pairs cleanly against an untransformed base CV on the same folds.
 
     Returns:
         A :class:`CVResult` with the per-fold scores and their mean/std.
@@ -208,22 +231,40 @@ def cross_validate(
         proc_train, proc_val = _process_fold(
             df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
         )
+        val_true = None
+        if target_transform is not None:
+            # Train (and let AutoGluon internally validate) in transformed space; keep the
+            # original-space truth aside for honest scoring below.
+            val_true = proc_val[target]
+            proc_train = proc_train.assign(**{target: target_transform.forward(proc_train[target])})
+            proc_val = proc_val.assign(**{target: target_transform.forward(proc_val[target])})
         result = train_and_evaluate(proc_train, proc_val, target, time_limit, f"{model_dir}/fold_{i}", eval_metric)
         eval_metric, problem_type = result.eval_metric, result.problem_type
+        preds_orig = None
         if result.predictor is not None:
             greater_is_better = getattr(result.predictor.eval_metric, "greater_is_better", True)
             val_features = proc_val.drop(columns=[target], errors="ignore")
             # Out-of-fold predictions: each row predicted by a model that did not see it.
-            oof_pred.loc[proc_val.index] = predict(result.predictor, val_features).to_numpy()
+            # With a target transform, stored in ORIGINAL space (inverted).
+            preds = predict(result.predictor, val_features)
+            preds_orig = target_transform.inverse(preds) if target_transform is not None else preds
+            oof_pred.loc[proc_val.index] = preds_orig.to_numpy()
             # Out-of-fold class probabilities (classification only — regression has none), so
             # probability metrics (roc_auc / log_loss) can be scored on held-out rows.
             if classification:
                 fold_proba = predict_proba(result.predictor, val_features)
                 aligned = fold_proba.reindex(columns=oof_classes, fill_value=0.0)
                 oof_proba.loc[proc_val.index, oof_classes] = aligned.to_numpy()
-        score = result.metrics.get(eval_metric)
-        if score is None:  # fall back to any reported value
-            score = next(iter(result.metrics.values()))
+        if target_transform is not None:
+            # The predictor's own metric lives in transformed space and is NOT comparable to an
+            # untransformed base CV — rescore in original space, same sign convention.
+            if preds_orig is None:
+                raise ValueError("target_transform requires a fitted predictor to score folds")
+            score = _ag_score(val_true, preds_orig, eval_metric)
+        else:
+            score = result.metrics.get(eval_metric)
+            if score is None:  # fall back to any reported value
+                score = next(iter(result.metrics.values()))
         fold_scores.append(float(score))
 
     return CVResult(

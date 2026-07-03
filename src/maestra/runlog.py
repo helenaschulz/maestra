@@ -57,6 +57,7 @@ def append_run(
         "adversarial_auc": result.adversarial_auc,
         "research": result.research,
         "hybrid": result.hybrid,
+        "target_framing": result.target_framing,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")
