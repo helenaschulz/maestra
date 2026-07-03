@@ -29,6 +29,14 @@ def test_log_transform_adds_column(train):
     assert np.allclose(out["a_log"], np.log1p([1.0, 2.0, 3.0, 4.0]))
 
 
+def test_non_dict_feature_entry_is_skipped_not_crashed(train):
+    """Forced tool-calling does not validate arguments against the schema; a model may return a
+    bare string where an op object is expected. Skip it with a log line, stay total."""
+    out, log = _ft(train, ["log_transform", {"op": "log_transform", "column": "a", "reason": "ok"}])
+    assert "a_log" in out.columns  # the valid op still applied
+    assert any("not a feature entry" in line for line in log)
+
+
 def test_difference_and_ratio(train):
     out, _ = _ft(train, [
         {"op": "difference", "left": "b", "right": "a", "reason": "x"},

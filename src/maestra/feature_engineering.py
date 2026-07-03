@@ -219,6 +219,9 @@ def fit_feature_plan(train: pd.DataFrame, plan: dict, target: str) -> FeatureTra
     operations: list[dict] = []
     log: list[str] = []
     for item in plan.get("features", []):
+        if not isinstance(item, dict):  # schema asks for objects; a model may return bare
+            log.append(f"SKIP {item!r}: not a feature entry")  # strings — stay total, don't crash
+            continue
         ok, fitted, message = _fit_op(work, item, target)
         if not ok:
             log.append(f"SKIP {item.get('op')}: {message}")

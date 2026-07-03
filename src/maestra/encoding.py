@@ -104,6 +104,9 @@ def fit_ordinal_encodings(df: pd.DataFrame, encodings: list[dict], target: str) 
     inform the encoding but never corrupt it."""
     enc = OrdinalEncoding()
     for item in encodings or []:
+        if not isinstance(item, dict):  # schema asks for objects; tolerate a bare-string reply
+            enc.log.append(f"SKIP ordinal {item!r}: not an encoding entry")
+            continue
         col = item.get("column")
         order = item.get("order") or []
         reason = item.get("reason", "")

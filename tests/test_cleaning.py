@@ -47,6 +47,27 @@ def test_hallucinated_column_is_skipped_not_crashed(train):
     assert any("does not exist" in line for line in log)
 
 
+def test_bare_string_drop_entry_is_normalized(train):
+    """A model may return columns_to_drop as bare name strings instead of {column, reason}
+    objects (forced tool-calling does not validate arguments against the schema). The plan is
+    still applied, not crashed — the function is total by contract."""
+    plan = {"columns_to_drop": ["id", "city"], "imputations": []}
+    clean, log = _fit_transform(train, plan)
+    assert "id" not in clean.columns and "city" not in clean.columns
+    assert sum(line.startswith("DROP ") for line in log) == 2
+
+
+def test_non_entry_plan_items_are_skipped_not_crashed(train):
+    """Anything that is neither dict nor string (a number, a nested list) is skipped with a log
+    line rather than raising AttributeError on .get."""
+    plan = {"columns_to_drop": [123, ["nested"]],
+            "imputations": ["age"]}  # bare-string impute lacks a strategy -> skipped
+    clean, log = _fit_transform(train, plan)
+    assert list(clean.columns) == list(train.columns)  # nothing dropped
+    assert sum("not a column entry" in line for line in log) == 2
+    assert any("unknown strategy" in line for line in log)  # 'age' -> no strategy
+
+
 def test_median_imputation_fills_all_missing(train):
     plan = {
         "columns_to_drop": [],

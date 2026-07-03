@@ -189,7 +189,7 @@ def propose_feature_code(
     )
     features = []
     for item in out.get("features", [])[:max_candidates]:
-        if item.get("name") and item.get("code"):
+        if isinstance(item, dict) and item.get("name") and item.get("code"):
             features.append(GeneratedFeature(item["name"], item.get("idea", ""), item["code"], source))
     return features
 

@@ -104,6 +104,22 @@ def propose_cleaning_plan(
     )
 
 
+def _normalize_entry(raw: Any) -> dict | None:
+    """Coerce one plan entry to a dict, keeping :func:`fit_cleaning_plan` total.
+
+    The schema asks for objects (``{"column": ..., "reason": ...}``), but forced tool-calling
+    does not validate arguments against it, and a model sometimes returns a bare column-name
+    string instead — treat that as ``{"column": raw}``. Anything that is neither dict nor string
+    (a number, a nested list) yields ``None`` so the caller can skip it with a log line rather
+    than raising ``AttributeError`` on ``.get``.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        return {"column": raw}
+    return None
+
+
 def _fit_fill_value(series: pd.Series, strategy: str, fill_value: str | None) -> Any:
     """Compute the fill value for a column under the given strategy.
 
@@ -162,7 +178,11 @@ def fit_cleaning_plan(train: pd.DataFrame, plan: dict, target: str) -> CleaningT
     """
     log: list[str] = []
     drops: list[str] = []
-    for item in plan.get("columns_to_drop", []):
+    for raw in plan.get("columns_to_drop", []):
+        item = _normalize_entry(raw)
+        if item is None:
+            log.append(f"SKIP drop {raw!r}: not a column entry")
+            continue
         col = item.get("column")
         if col == target:
             log.append(f"SKIP drop '{col}': is the target column")
@@ -173,7 +193,11 @@ def fit_cleaning_plan(train: pd.DataFrame, plan: dict, target: str) -> CleaningT
             log.append(f"DROP '{col}' -- {item.get('reason', '')}")
 
     fills: dict[str, Any] = {}
-    for item in plan.get("imputations", []):
+    for raw in plan.get("imputations", []):
+        item = _normalize_entry(raw)
+        if item is None:
+            log.append(f"SKIP impute {raw!r}: not an imputation entry")
+            continue
         col = item.get("column")
         strategy = item.get("strategy")
         if col == target:
