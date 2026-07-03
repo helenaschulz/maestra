@@ -227,6 +227,24 @@ prompt principle only works if the model can apply it). **First data row for the
 question "which decisions need an expensive model": validation design does.** Limits: one run per
 model, no v1 baseline for the mini, both models from one family.
 
+## E2 — task battery (running; 2/10 done, 2026-07-03)
+
+`maestra-bench --seeds 42 7 1 2 3` over a semantic spectrum; three-way paired verdict.
+
+| Task | Semantics | Metric | Baseline | Maestra | Δ | Verdict |
+|---|---|---|---|---|---|---|
+| wine-quality | mixed (named) | rmse ↓ | 0.658 | 0.651 | −0.007 | undecided |
+| wine-quality-anon | poor (anonymized twin) | rmse ↓ | 0.658 | 0.666 | +0.008 | undecided |
+
+**The anonymized-twin control (first result).** Byte-identical data, only the column names
+differ — so the baseline is identical (0.658 both), confirming the control is clean and the only
+variable is semantics. Maestra is relatively better *with* names (−0.007) and worse *without*
+(+0.008): the semantic effect, isolated, is ~0.015 rmse **in the predicted direction**. But both
+comparisons are individually *undecided*, on one twin pair, and wine-quality is only "mixed"
+semantics (physico-chemical measurements, not human domain terms) — exactly where the thesis
+predicts a *weak* effect. Consistent with the thesis, not yet conclusive; the decisive test is the
+rich-semantics tasks still to run (insurance, heart, credit, loan-grade).
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across all three layers a conductor could touch:

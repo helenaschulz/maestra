@@ -11,6 +11,12 @@ import json
 
 import litellm
 
+# Drop provider-unsupported params per model instead of erroring. This keeps the
+# backbone swappable: newer Claude models (Sonnet 5, Opus 4.7+, Fable 5) reject
+# sampling params like temperature, while gpt-4o still honours temperature=0.
+# drop_params is per-model, so each backend keeps exactly the params it supports.
+litellm.drop_params = True
+
 # Per-call network timeout and retry budget. LiteLLM retries transient errors itself.
 _TIMEOUT_S = 60
 _NUM_RETRIES = 2
