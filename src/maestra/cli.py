@@ -61,9 +61,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--cv-time-limit", type=int, default=None, help="Training budget per CV fold.")
     p.add_argument(
         "--fold-advisor",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Validation Strategist: the LLM decides how CV folds are built (random/group/time) "
-             "from the column semantics; its proposal is verified deterministically (needs --cv).",
+             "from the column semantics; its proposal is verified deterministically. "
+             "ON BY DEFAULT when --cv is set (M9: 0 false alarms across all frontier models); "
+             "use --no-fold-advisor to disable, or pass --fold-advisor without --cv for an error.",
     )
     p.add_argument(
         "--ordinal",
@@ -119,6 +122,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Print the latest --no-llm vs LLM diff for this csv/target from the run log, then exit.",
     )
     return p.parse_args(argv)
+
+
+def _resolve_fold_advisor(flag: bool | None, cv: int | None) -> bool:
+    """Resolve the tri-state --fold-advisor/--no-fold-advisor into a concrete bool.
+
+    ``flag`` is ``None`` when the user passed neither form → "auto": the Validation Strategist
+    runs by default whenever CV is active (``cv >= 2``). This promotion is gated on M9 evidence
+    (0 false alarms across all four frontier models, cross-provider). An explicit
+    ``--fold-advisor``/``--no-fold-advisor`` always wins; an explicit ``--fold-advisor`` without
+    ``--cv`` stays ``True`` so the pipeline raises its "needs --cv" error rather than silently
+    ignoring the request.
+    """
+    if flag is not None:
+        return flag
+    return bool(cv and cv >= 2)
 
 
 def _print_result(result, model: str) -> None:
@@ -256,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             revise_below=args.revise_below,
             cv_folds=args.cv,
             cv_time_limit=args.cv_time_limit,
-            fold_advisor=args.fold_advisor,
+            fold_advisor=_resolve_fold_advisor(args.fold_advisor, args.cv),
             ordinal=args.ordinal,
             skeptic=args.skeptic,
             hybrid=args.hybrid,

@@ -245,7 +245,7 @@ maestra-audit --csv data/train.csv --target churn --test data/test.csv --lang de
 | `--no-fe` | off | Skip LLM feature engineering |
 | `--cv` | — | Leakage-free K-fold CV instead of a single holdout (K ≥ 2) |
 | `--cv-time-limit` | `--time-limit` | Budget per CV fold |
-| `--fold-advisor` | off | Validation Strategist: LLM-chosen fold strategy, verified deterministically (needs `--cv`) |
+| `--fold-advisor` / `--no-fold-advisor` | **on with `--cv`** | Validation Strategist: LLM-chosen fold strategy, verified deterministically. Default-on whenever CV is active (0 false alarms across all frontier models, cross-provider); `--no-fold-advisor` opts out |
 | `--ordinal` | off | Ordinal encoding: LLM-chosen worst→best rank for ordinal categoricals |
 | `--skeptic` | off | Skeptic reviews cleaning drops; the CV arbiter vetoes a drop only if keeping helps (needs `--cv`) |
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
