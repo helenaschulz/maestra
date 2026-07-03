@@ -124,35 +124,25 @@ profile signal that never flags continuous floats), and the final submission sco
 public — within 0.001 of the local estimate, confirming the leakage-safe pipeline gives honest
 numbers.
 
-## How it works
+## Architecture
 
-```
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                     🎼  MAESTRA  ·  the LLM                       │
-        │     profile → clean → engineer → [research] → diagnose failures   │
-        └──────────────────────────────────────────────────────────────────┘
-              │ structured JSON only        │ sandboxed feature code (--hybrid)
-              ▼                             ▼  kept only if CV improves
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                  🎻  AUTOGLUON  ·  the engine                     │
-        │            split · train · tune · score · predict                 │
-        └──────────────────────────────────────────────────────────────────┘
-              ▼
-        ⚖️  the arbiter: leakage-free CV · --no-llm baseline · CV↔LB gap
-```
+**Specialized LLM agents propose. A measurement arbiter disposes.** Every agent's output is a
+*proposal*, not a decision — a leakage-free CV, a `--no-llm` baseline, or a per-candidate gate has
+the final word. That inverts the usual multi-agent design, where one LLM judges another.
 
-One function per step, orchestrated by a plain Python loop — **no agent framework**; the whole
-flow reads top to bottom in [`pipeline.py`](src/maestra/pipeline.py).
+![Maestra architecture](assets/architecture.png)
 
-| 🎼 The LLM **decides** | 🎻 The engine **computes** | ⚖️ The arbiter **judges** |
+Orchestrated by a plain Python loop — **no agent framework** — so the whole control flow reads top
+to bottom in [`pipeline.py`](src/maestra/pipeline.py). The three planes:
+
+| 🎼 LLM agents **propose** | 🎻 The engine **executes** | ⚖️ The arbiter **decides** |
 |---|---|---|
-| Cleaning plan (drop / impute) | Model & HP search | Leakage-free k-fold CV |
-| Feature plan (fixed vocabulary) | Every metric | Baseline comparison |
-| Failure diagnosis & recovery | Training & prediction | CV↔LB gap vs. real answer keys |
-| Research brief (opt-in, non-binding) | Probability calibration math | Per-candidate feature gate |
+| Validation strategy, cleaning, encoding, features, diagnosis | AutoGluon model & HP search, every metric | Leakage-free k-fold CV |
+| Structured JSON only, from fixed vocabularies | Deterministic fit/transform (fit on train, replay per fold) | `--no-llm` baseline, paired tests |
+| The Skeptic attacks proposals adversarially | Any generated code runs sandboxed | CV↔LB gap, per-candidate gate, JSONL audit trail |
 
-Cleaning and feature engineering follow strict **fit/transform separation** — every parameter
-is fitted on train (per fold, under CV) and replayed on holdout/test, so scores are honest.
+Cleaning, encoding and feature engineering follow strict **fit/transform separation** — every
+parameter is fitted on train (per fold, under CV) and replayed on holdout/test, so scores are honest.
 
 ## Features
 
@@ -290,7 +280,7 @@ result.cv                 # CVResult with OOF predictions/probabilities (with cv
 result.hybrid             # generated-feature provenance (with hybrid=True)
 ```
 
-## Architecture
+## Module map
 
 | Module | Responsibility |
 |--------|----------------|
@@ -332,8 +322,8 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 
 - **Run-to-run nondeterminism.** LLM plans vary between runs (even at temperature 0) and
   AutoGluon under a wall-clock budget varies with timing; on House Prices the swing (~960 rmse)
-  is the same order as the LLM-vs-baseline effect. Comparisons need multiple seeds — `--seed`
-  exists for exactly that.
+  is the same order as the LLM-vs-baseline effect. Comparisons need multiple seeds —
+  `maestra-bench --seeds …` runs genuine replications and reports a paired verdict for exactly this.
 - **Feature generation rarely beats a strong engine.** Measured and expected: keep `--hybrid`
   for semantic long-shots, not as a default.
 - **Submission-side calibration is opt-in for a reason** — a temperature fitted on out-of-fold
