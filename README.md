@@ -260,6 +260,7 @@ maestra-audit --csv data/train.csv --target churn --test data/test.csv --lang de
 | `--description` | — | Path to a provider-written dataset description, fed to every judgment node |
 | `--hybrid` | off | LLM-generated feature code, sandboxed + CV-gated (needs `--cv`) |
 | `--text-features` | off | Free-text lane: LLM-written deterministic text extractors, same sandbox + CV gate (needs `--cv`) |
+| `--cv-budget` | unlimited | Cap on counterfactual trial CVs across all intervention gates; exhausted trials are recorded as skipped |
 | `--hybrid-max-candidates` | `5` | Max generated-feature candidates |
 | `--hybrid-threshold` | `1.0` | Keep threshold in fold-noise sigmas |
 | `--research` | off | Web-grounded strategy brief feeding the planners |
@@ -304,6 +305,7 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`hybrid_features.py`](src/maestra/hybrid_features.py) | LLM-written feature code: sandbox, row-independence check, greedy CV gate |
 | [`text_features.py`](src/maestra/text_features.py) | Free-text lane: detects prose columns; the LLM reads sample text and writes deterministic extractors — same sandbox and CV gate |
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
+| [`intervention.py`](src/maestra/intervention.py) | The intervention core: one counterfactual primitive (base vs. trial on identical folds) shared by every gate, plus the per-run CV budget |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
 | [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |
 | [`target_framing.py`](src/maestra/target_framing.py) | Target framing agent: LLM `log1p` proposal for skewed regression targets, CV-arbitrated in original units |

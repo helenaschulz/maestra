@@ -17,8 +17,9 @@ import copy
 import json
 from dataclasses import dataclass
 
+from maestra.intervention import run_counterfactual
 from maestra.llm import call_structured
-from maestra.validation import cross_validate, improves_beyond_noise
+from maestra.validation import cross_validate
 
 _MIN_ABS_DELTA = 1e-4
 
@@ -63,6 +64,7 @@ class SkepticRecord:
     reason: str
     cv_delta: float | None = None   # improvement from KEEPING the column (None if not measured)
     vetoed: bool = False            # True = drop overturned, column kept
+    measured: bool = True           # False when the CV budget refused the counterfactual trial
 
 
 def review_cleaning_plan(model: str, plan: dict, profile: dict) -> list[dict]:
@@ -94,11 +96,14 @@ def _plan_without_drop(plan: dict, column: str) -> dict:
 
 def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, model_dir, time_limit,
                        n_folds, seed, eval_metric=None, sigma_mult=2.0,
-                       group_column=None, time_column=None):
+                       group_column=None, time_column=None, budget=None):
     """Put each high-risk drop to the arbiter and veto it if keeping the column helps.
 
     Returns ``(revised_plan, records)``. The revised plan keeps any column whose retention
-    improved the CV beyond fold noise; every other drop stands.
+    improved the CV beyond fold noise; every other drop stands. Each keep-vs-drop trial is
+    one counterfactual through the shared intervention core; with a ``budget`` (a
+    :class:`~maestra.intervention.CVBudget`) exhausted trials are skipped and recorded as
+    unmeasured — the drop then stands, the conservative default.
     """
     high = [r for r in reviews if r.get("risk") == "high" and r.get("column")]
     records = [SkepticRecord(r["column"], r["risk"], r.get("reason", "")) for r in reviews
@@ -113,11 +118,14 @@ def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, mode
     revised = cleaning_plan
     for i, r in enumerate(high):
         col = r["column"]
-        trial = cross_validate(df, target, cleaning_plan=_plan_without_drop(revised, col),
-                               model_dir=f"{model_dir}/keep_{i}", **cv_kwargs)
-        vetoed, delta = improves_beyond_noise(trial=trial, base=base, sigma_mult=sigma_mult,
-                                              min_abs=_MIN_ABS_DELTA)
-        records.append(SkepticRecord(col, "high", r.get("reason", ""), float(delta), vetoed))
-        if vetoed:  # keeping the column helped -> overturn the drop and raise the bar
-            revised, base = _plan_without_drop(revised, col), trial
+        trial_plan = _plan_without_drop(revised, col)
+        outcome, base = run_counterfactual(
+            f"keep:{col}", "skeptic_keep", "skeptic", base=base, budget=budget,
+            trial_fn=lambda p=trial_plan, i=i: cross_validate(
+                df, target, cleaning_plan=p, model_dir=f"{model_dir}/keep_{i}", **cv_kwargs),
+            sigma_mult=sigma_mult, min_abs=_MIN_ABS_DELTA)
+        records.append(SkepticRecord(col, "high", r.get("reason", ""), outcome.cv_delta,
+                                     outcome.accepted, measured=outcome.reason != "budget_exhausted"))
+        if outcome.accepted:  # keeping the column helped -> overturn the drop (bar already raised)
+            revised = trial_plan
     return revised, records

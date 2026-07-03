@@ -33,7 +33,8 @@ from maestra.profiling import description_context, profile_dataframe
 from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
 from maestra.target_framing import propose_target_framing, validate_target_framing
-from maestra.validation import CVResult, adversarial_validation, cross_validate, improves_beyond_noise
+from maestra.intervention import CVBudget, run_counterfactual
+from maestra.validation import CVResult, adversarial_validation, cross_validate
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -72,6 +73,7 @@ class PipelineResult:
     # when --target-framing was used
     text_features: dict | None = None  # free-text lane summary ({columns, n_candidates}); the
     # per-candidate verdicts share the hybrid provenance list (source="text")
+    cv_budget: dict | None = None  # intervention cost ({limit, trials_spent}), CV path only
 
 
 def _do_research(model, df, target, rules_mode):
@@ -189,7 +191,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False,
-                 target_framing=False, text_features=False) -> PipelineResult:
+                 target_framing=False, text_features=False, cv_budget=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -227,6 +229,11 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         if use_llm else None
     )
 
+    # One shared budget for every intervention gate's counterfactual trials (skeptic keeps,
+    # generated-feature candidates, target framing). limit=None = unlimited; it still counts,
+    # so the run log always states the run's real intervention cost.
+    budget = CVBudget(cv_budget)
+
     # Skeptic (opt-in): a second LLM attacks the drops; each high-risk drop is put to the CV
     # arbiter (keep vs drop) and vetoed only if keeping the column measurably helps.
     skeptic_records = None
@@ -235,7 +242,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         cleaning_plan, recs = apply_skeptic_gate(
             df, target, cleaning_plan=cleaning_plan, feature_plan=None, reviews=reviews,
             model_dir=f"{model_dir}/skeptic", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
-            eval_metric=eval_metric, group_column=group_column, time_column=time_column)
+            eval_metric=eval_metric, group_column=group_column, time_column=time_column,
+            budget=budget)
         skeptic_records = [asdict(r) for r in recs]
 
     # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
@@ -275,7 +283,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
             sigma_mult=hybrid_threshold, eval_metric=eval_metric,
-            group_column=group_column, time_column=time_column)
+            group_column=group_column, time_column=time_column, budget=budget)
         hybrid_records = [asdict(r) for r in records]
     else:
         cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
@@ -294,17 +302,27 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             tf_proposal, df, target, cv.problem_type, cv.eval_metric)
         accepted, tf_delta = None, None
         if transform is not None:
-            trial_cv = cross_validate(
-                df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
-                model_dir=f"{model_dir}/framing", time_limit=cv_time_limit, n_folds=n_folds,
-                seed=seed, eval_metric=eval_metric, generated_features=generated_features or None,
-                group_column=group_column, time_column=time_column, target_transform=transform)
-            accepted, tf_delta = improves_beyond_noise(base=cv, trial=trial_cv)
-            verdict = "ACCEPT" if accepted else "REJECT"
-            tf_log.append(f"{verdict} {transform.name}: cv {cv.mean:.4f} -> {trial_cv.mean:.4f} "
-                          f"(delta {tf_delta:+.4f}, paired {n_folds}-fold test)")
-            if accepted:
-                cv, adopted_transform = trial_cv, transform
+            outcome, cv = run_counterfactual(
+                f"target:{transform.name}", "target_framing", "target_framing",
+                base=cv, budget=budget,
+                trial_fn=lambda: cross_validate(
+                    df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+                    model_dir=f"{model_dir}/framing", time_limit=cv_time_limit, n_folds=n_folds,
+                    seed=seed, eval_metric=eval_metric,
+                    generated_features=generated_features or None,
+                    group_column=group_column, time_column=time_column,
+                    target_transform=transform))
+            if outcome.reason == "budget_exhausted":
+                tf_log.append(f"SKIP {transform.name} trial: cv budget exhausted "
+                              f"({budget.spent}/{budget.limit} trials spent) — not measured")
+            else:
+                accepted, tf_delta = outcome.accepted, outcome.cv_delta
+                verdict = "ACCEPT" if accepted else "REJECT"
+                tf_log.append(f"{verdict} {transform.name}: cv {outcome.base_mean:.4f} -> "
+                              f"{outcome.trial_mean:.4f} "
+                              f"(delta {tf_delta:+.4f}, paired {n_folds}-fold test)")
+                if accepted:
+                    adopted_transform = transform
         framing_summary = {
             "proposal": tf_proposal, "transform": transform.name if transform else "none",
             "accepted": accepted, "cv_delta": tf_delta, "log": tf_log,
@@ -338,6 +356,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         cv=cv, adversarial_auc=adversarial_auc, research=research_summary, hybrid=hybrid_records,
         fold_strategy=fold_strategy, ordinal=ordinal_summary, skeptic=skeptic_records,
         target_framing=framing_summary, text_features=text_summary,
+        cv_budget=budget.as_record(),
     )
 
 
@@ -382,6 +401,7 @@ def run_pipeline(
     skeptic: bool = False,
     target_framing: bool = False,
     text_features: bool = False,
+    cv_budget: int | None = None,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -467,7 +487,7 @@ def run_pipeline(
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
-            target_framing=target_framing, text_features=text_features,
+            target_framing=target_framing, text_features=text_features, cv_budget=cv_budget,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

@@ -101,6 +101,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--hybrid-max-candidates", type=int, default=5, help="Max feature candidates.")
     p.add_argument(
+        "--cv-budget",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap the counterfactual trial CVs the intervention gates (skeptic, generated "
+             "features, target framing) may spend in one run — each trial is a full k-fold "
+             "AutoGluon run. Exhausted trials are recorded as skipped, never silently dropped. "
+             "Default: unlimited (the spend is still counted and logged).",
+    )
+    p.add_argument(
         "--hybrid-threshold",
         type=float,
         default=2.0,
@@ -235,6 +245,11 @@ def _print_result(result, model: str) -> None:
             mark = "KEEP" if r.get("kept") else "drop"
             print(f"  [{mark}] {r.get('name')}  Δcv={delta}  ({r.get('reason')})  src={r.get('source')}")
 
+    if result.cv_budget is not None and result.cv_budget.get("trials_spent", 0):
+        b = result.cv_budget
+        cap = b["limit"] if b.get("limit") is not None else "unlimited"
+        print(f"\nIntervention cost: {b['trials_spent']} counterfactual trial CV(s) (budget: {cap})")
+
     if t.metrics:  # holdout path; empty under --cv (CV is the estimate)
         print("\n=== Best-model metrics on holdout ===")
         for name, value in t.metrics.items():
@@ -303,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             skeptic=args.skeptic,
             target_framing=args.target_framing,
             text_features=args.text_features,
+            cv_budget=args.cv_budget,
             hybrid=args.hybrid,
             hybrid_max_candidates=args.hybrid_max_candidates,
             hybrid_threshold=args.hybrid_threshold,

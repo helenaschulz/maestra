@@ -25,13 +25,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from maestra.intervention import run_counterfactual
 from maestra.llm import call_structured
 from maestra.validation import (
     _is_classification,
     _make_folds,
     _process_fold,
     cross_validate,
-    improves_beyond_noise,
 )
 
 # A candidate is kept only if it beats the baseline CV mean by more than this many fold
@@ -231,7 +231,8 @@ class CandidateRecord:
     source: str
     cv_delta: float | None
     kept: bool
-    reason: str  # improved | no_improvement | no_effect | sandbox_error | timeout | row_context_dependent
+    reason: str  # improved | no_improvement | no_effect | budget_exhausted
+    #             | sandbox_error | timeout | row_context_dependent
 
 
 def _is_row_independent(code, train, val, target, whole_values, *, tol=1e-6) -> bool:
@@ -280,13 +281,16 @@ def select_features(
     eval_metric: str | None = None,
     group_column: str | None = None,
     time_column: str | None = None,
+    budget=None,
 ):
     """Greedy CV gate: keep a candidate only if it improves the CV mean beyond fold noise.
 
     Returns ``(kept_features, records, final_cv)``. Each kept feature raises the baseline for
     the next candidate; ``final_cv`` is the CV with all kept features (reusable as the run's
-    reported estimate). The cross-validation is the arbiter; a plausible-but-useless feature
-    is dropped.
+    reported estimate). Each candidate trial is one counterfactual through the shared
+    intervention core; with a ``budget`` (a :class:`~maestra.intervention.CVBudget`) exhausted
+    trials are recorded as ``budget_exhausted`` and the candidate is dropped unmeasured. The
+    cross-validation is the arbiter; a plausible-but-useless feature is dropped.
     """
     folds = dict(group_column=group_column, time_column=time_column)  # same strategy as the reported CV
     base = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
@@ -301,21 +305,17 @@ def select_features(
                 dry.status, "sandbox_error")
             records.append(CandidateRecord(cand.name, cand.idea, cand.source, None, False, reason))
             continue
-        trial = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
-                               generated_features=kept + [cand], model_dir=f"{model_dir}/cand_{i}",
-                               time_limit=time_limit, n_folds=n_folds, seed=seed, eval_metric=eval_metric,
-                               **folds)
-        passes, delta = improves_beyond_noise(trial=trial, base=base, sigma_mult=sigma_mult,
-                                              min_abs=_MIN_ABS_DELTA)
-        if passes:
-            kept.append(cand)
-            base = trial  # raise the bar for the next candidate
-            records.append(CandidateRecord(cand.name, cand.idea, cand.source, float(delta), True, "improved"))
-        elif delta == 0.0 and trial.fold_scores == base.fold_scores:
-            # Bit-identical CV means the feature changed NOTHING — it duplicates an existing
-            # column (AutoGluon drops duplicates) or was skipped in every fold. Distinct from an
-            # honest "trained on it, didn't help", which never reproduces scores exactly.
-            records.append(CandidateRecord(cand.name, cand.idea, cand.source, 0.0, False, "no_effect"))
-        else:
-            records.append(CandidateRecord(cand.name, cand.idea, cand.source, float(delta), False, "no_improvement"))
+        outcome, base = run_counterfactual(
+            f"feature:{cand.name}", "generated_feature", f"codegen_{cand.source}",
+            base=base, budget=budget,
+            trial_fn=lambda c=cand, i=i: cross_validate(
+                df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
+                generated_features=kept + [c], model_dir=f"{model_dir}/cand_{i}",
+                time_limit=time_limit, n_folds=n_folds, seed=seed, eval_metric=eval_metric,
+                **folds),
+            sigma_mult=sigma_mult, min_abs=_MIN_ABS_DELTA)
+        if outcome.accepted:
+            kept.append(cand)  # the bar was already raised (base is the trial CV)
+        records.append(CandidateRecord(cand.name, cand.idea, cand.source, outcome.cv_delta,
+                                       outcome.accepted, outcome.reason))
     return kept, records, base
