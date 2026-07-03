@@ -18,6 +18,9 @@ dependencies = [
     "autogluon.tabular[all]>=1.0",
     "pandas>=2.0",
     "litellm>=1.40",
+    # LiteLLM lazily imports tenacity only on its retry path (we set num_retries),
+    # so it isn't pulled in transitively — declare it explicitly.
+    "tenacity>=8",
 ]
 
 [project.optional-dependencies]
