@@ -209,6 +209,24 @@ motivated the fixes carries Goodhart risk — generalization to unseen datasets 
 and a single run does not prove boundary stability (v1 demonstrated instability). Both get fresh
 evidence from M9 (same catalog, different models). Before/after: `detection_benchmark.jsonl`.
 
+## M9 — model-robustness matrix, first row (2026-07-03)
+
+Same 17-dataset catalog, same v2 prompt, different backbone:
+
+| Model | Overall | group | time | False alarms (iid) | Misses |
+|---|---|---|---|---|---|
+| gpt-4o | **17/17** | 6/6 | 5/5 | 0/6 | — |
+| gpt-4o-mini | 14/17 | **4/6** | 5/5 | 1/6 | emplUK, mathachieve (group→random); the PlantGrowth trap |
+
+**Reading:** the small model degrades exactly on the flagship capability — and its misses are in
+the **dangerous direction** (`group→random` = a silently optimistic CV), unlike false alarms which
+only cost conservatism. The v2 prompt generalizes *partially* across models: the numeric-time-axis
+principle transferred (time 5/5 on the mini — softening the Goodhart concern for that fix), the
+treatment-factor principle did not (the mini fell for the trap despite the hardened prompt — a
+prompt principle only works if the model can apply it). **First data row for the consulting
+question "which decisions need an expensive model": validation design does.** Limits: one run per
+model, no v1 baseline for the mini, both models from one family.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across all three layers a conductor could touch:

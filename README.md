@@ -104,9 +104,11 @@ Four findings that shape the design:
    `scripts/time_leakage_experiment.py`. **Detection quantified** on a 17-dataset benchmark
    with ground truth (`scripts/strategist_detection_benchmark.py`), including iid datasets and a
    deliberate trap column: first run 14/17 — the benchmark exposed two weaknesses, one targeted
-   prompt iteration later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). Caveat
-   stated where it belongs: a perfect score on the benchmark that drove the fix needs unseen-data
-   confirmation (next: the same catalog under different models).
+   prompt iteration later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). Under a small
+   model (gpt-4o-mini) group recall drops to **4/6 with misses in the dangerous direction**
+   (a missed group means a silently optimistic CV) — with data, not opinion: **validation design
+   is a frontier-model decision.** The prompt's principles transferred only partially to the
+   smaller model, so the perfect frontier score keeps its held-out caveat.
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.
