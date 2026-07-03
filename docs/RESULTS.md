@@ -200,9 +200,14 @@ trap), acceptable-answer sets for panel data, detection from the column profile 
 
 **Risk asymmetry worth stating:** a false alarm makes the CV *conservative* (pessimistic estimate)
 — the safe direction; a miss produces an optimistic lie. The agent errs mostly on the safe side.
-**Response (v2, same day):** prompt hardened (few-balanced-levels ≠ entity; a numeric monotone
-`time` axis IS temporal) + the verifier now logs a verify-this note for groups with < 5 entities.
-Re-run pending — before/after lives in `detection_benchmark.jsonl`.
+
+**v2 (same day): prompt hardened → re-measured → 17/17 (100%).** Group 6/6, time 5/5 (nottem and
+lynx now detected), false alarms 0/6 (the PlantGrowth trap correctly read as a treatment factor).
+The fixes encode general principles (few-balanced-levels ≠ entity; a numeric monotone time axis is
+temporal), not dataset-specific strings. **Honest caveats:** a perfect score on the benchmark that
+motivated the fixes carries Goodhart risk — generalization to unseen datasets is not yet shown —
+and a single run does not prove boundary stability (v1 demonstrated instability). Both get fresh
+evidence from M9 (same catalog, different models). Before/after: `detection_benchmark.jsonl`.
 
 ## Where LLM judgment pays off — the whole map
 
