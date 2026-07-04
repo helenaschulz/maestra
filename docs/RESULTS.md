@@ -260,13 +260,13 @@ balanced_accuracy higher is better (a positive Δ favours Maestra).
 | heart | rich | bal-acc ↑ | 0.788 | 0.811 | +0.023 | undecided |
 | insurance | rich | rmse ↓ | 4484.1 | 4550.6 | +66.5 | undecided |
 | loan-grade | rich | bal-acc ↑ | 0.221 | 0.221 | −0.001 | undecided |
-| diamonds | rich | rmse ↓ | — | — | — | *invalidated: harness leak; rerun below* |
+| diamonds (leak-free rerun) | rich | rmse ↓ | 609.51 | 609.20 | −0.31 | undecided |
 | abalone | mixed | rmse ↓ | 2.459 | 2.500 | +0.041 | undecided |
 | wine-quality | mixed | rmse ↓ | 0.658 | 0.651 | −0.007 | undecided |
 | wine-quality-anon | poor (anon. twin) | rmse ↓ | 0.658 | 0.666 | +0.008 | undecided |
 | friedman-synth | poor (synthetic) | rmse ↓ | 1.205 | 1.203 | −0.001 | undecided |
 
-**The pattern (9 valid tasks): 2 decided wins, 7 undecided, 0 decided losses — and the wins are
+**The pattern (10 valid tasks): 2 decided wins, 8 undecided, 0 decided losses — and the wins are
 exactly where the thesis puts them.**
 
 - **Both decided wins are rich-semantics tasks** (credit −39%, wage −1.1%), human-domain columns
@@ -294,11 +294,14 @@ Maestra 602 — ~3× worse, consistent across all 5 seeds). That anomaly did not
 3. **Proof:** baseline *with* the leak column: rmse 156. Baseline *without* it: rmse **681** —
    behind Maestra's honest 588 on the same seed. The entire "loss" was the leak.
 
-The battery loader now strips `rownames` unconditionally (E1's loader always did); diamonds is
-being rerun leak-free. Two lessons worth the space: (a) the **anomaly-shaped verdict is what
-exposed the leak** — a battery that only reported means would have shipped a false conclusion;
-(b) this is the project's core claim playing out *inside its own harness*: leakage silently
-corrupts comparisons, and honest cleaning **looks like losing** until the leak is found.
+The battery loader now strips `rownames` unconditionally (E1's loader always did). **The
+leak-free rerun confirms the diagnosis end to end:** the baseline fell from 217 to 609.5 rmse
+(its entire advantage *was* the leak), Maestra is statistically unchanged (602 → 609.2 — it never
+had the leak), and the verdict is a clean *undecided* with per-seed deltas scattered around zero
+(−10.4 … +11.9). Two lessons worth the space: (a) the **anomaly-shaped verdict is what exposed
+the leak** — a battery that only reported means would have shipped a false conclusion; (b) this
+is the project's core claim playing out *inside its own harness*: leakage silently corrupts
+comparisons, and honest cleaning **looks like losing** until the leak is found.
 
 ## M11 — target framing agent: the arbiter overrules the textbook (2026-07-03)
 
@@ -353,7 +356,7 @@ The systematic answer to the project's question, across every layer a conductor 
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
 | Setup / target framing (M11) | The *judgment* is sound; the win depends on metric × engine | House Prices: LLM correctly proposed `log1p` (skew 1.88), arbiter correctly **rejected** it (plain RMSE + trees are transform-invariant); correctly silent on a symmetric target |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery: 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 7 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
 | **Feature engineering** (arithmetic *and* ordinal) | **No — across the board** | hybrid kept 0/5; ordinal mean-negative |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work
