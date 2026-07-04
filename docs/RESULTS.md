@@ -247,6 +247,49 @@ may not have it, and the failure mode is invisible without a benchmark like this
 run per model (temperature 0, so deterministic-ish but not variance-quantified); mini has no v1
 baseline; catalog is 17 classic datasets.
 
+## M9-extend — model robustness of the CLEANING node (2026-07-04)
+
+M9's sibling benchmark for the other blind-spot agent: does the *drop* judgment hold across
+models? Same method as E1 — profile-only, one structured call per dataset, no AutoGluon, scored
+against known ground truth (`scripts/cleaning_robustness_benchmark.py`, 6 datasets: 5 controlled
+synthetics + raw Rdatasets diamonds). Two directions scored separately, because their costs
+differ enormously: **drop-recall** (catching genuine junk — running ids, constants, a
+name-flagged leak) is a nuisance if missed; **keep-violations** (dropping a genuine feature) is
+the *dangerous* direction — the exact Stellar bug (`u,g,r,i,z` bands dropped as "unique per row").
+The 10 **trap** columns are high-cardinality *float* measurements (5 photometric bands, lat/lon,
+diamonds x/y/z); since the deterministic `id_like` flag exempts floats, any trap drop is pure
+model over-eagerness.
+
+| Model | drop-recall | keep-violations | trap-drops (dangerous) |
+|---|---|---|---|
+| gpt-4o | 7/7 | 0 | **0/10** |
+| gpt-4o-mini | 6/7 | 0 | **0/10** |
+| claude-opus-4-8 | 7/7 | 0 | **0/10** |
+| claude-sonnet-4-5 | 7/7 | 0 | **0/10** |
+| claude-haiku-4-5 | 7/7 | 0 | **0/10** |
+
+**The dangerous direction is solved across every current model: 0/10 float traps dropped.** The
+failure that motivated this whole project's "validate against a baseline" philosophy no longer
+reproduces on any frontier model — they respect that a high-cardinality float is a measurement,
+not an id. The only recall miss is gpt-4o-mini failing to flag the leak by *name*
+(`target_snapshot`) — consistent with M9 (the small model degrades on judgment), but here in the
+*safe* direction (a surviving leak is caught by the separate correlation-based audit scan, M7; a
+missed group in M9 was a silent CV lie).
+
+**The benchmark also found — and closed — a real weakness in this pipeline's own heuristic.** The
+first run (v1 prompt) had 2 keep-violations: gpt-4o and haiku both dropped `population` (a genuine
+integer feature). Traced to the deterministic `id_like` flag, which flags any high-cardinality
+non-float — so a scattered real integer (`population`, unique_frac 0.996) is flagged exactly like
+a running id, and those two models deferred to it. The flag *cannot* be fixed univariately: a
+sparse high-card integer is statistically indistinguishable from a sampled sparse id (e.g.
+diamonds' `rownames` after subsampling) — which is precisely why it is a judgment call for the
+LLM. So the fix was prompt-level (mirroring E1's v2 hardening): a general principle that
+high-cardinality *integers* can be legitimate features (counts, amounts, populations, years) and
+must be judged by name/meaning, with `id_like` demoted from "guidance" to "a hint to scrutinise".
+**v2 result: keep-violations 2 → 0, with no regression on recall or traps** (table above is v2).
+The v1→v2 loop is the E1 story again in miniature: the benchmark exposed a specific weakness, one
+targeted general-principle edit fixed it, and a re-run confirmed it.
+
 ## E2 — task battery, complete (2026-07-04)
 
 `maestra-bench --seeds 42 7 1 2 3` over a semantic spectrum; three-way paired verdict (M8). Δ is
@@ -402,7 +445,7 @@ The systematic answer to the project's question, across every layer a conductor 
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
 | Setup / target framing (M11) | **Yes — the predicted setup win** | House Prices, 5 seeds: log1p improves rmse in **5/5** (mean +2 273, ≈ −8%), seed-level paired test unambiguous; agent correctly silent on symmetric and classification targets. Caveat: the per-run 3-fold gate under-accepts (1/5) — conservative in the safe direction |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend) |
 | **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work
