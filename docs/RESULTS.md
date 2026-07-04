@@ -303,50 +303,70 @@ the leak** — a battery that only reported means would have shipped a false con
 is the project's core claim playing out *inside its own harness*: leakage silently corrupts
 comparisons, and honest cleaning **looks like losing** until the leak is found.
 
-## M11 — target framing agent: the arbiter overrules the textbook (2026-07-03)
+## M11 — target framing: the predicted setup win, confirmed the hard way (2026-07-03/04)
 
 The target-framing agent proposes a `log1p` reframing for a skewed regression target; a paired CV
 on identical folds, **scored in original units** (predictions inverted before scoring, so base and
-trial are comparable), is the arbiter. First evidence run, House Prices / `SalePrice`, plain RMSE,
-3 folds:
+trial are comparable), is the arbiter. (Implementation verified end-to-end: each fold trains in
+log space, inverts via `expm1`, rescores against the original-space truth held aside before
+transforming.)
 
-| Step | Outcome |
-|---|---|
-| LLM proposal | `log1p` — correctly reasoned (skewness 1.88, mean 180.9k ≫ median 163k, max 4.6× median) |
-| Arbiter | **REJECT** — CV −28 860 → −28 735 rmse, Δ +124.66 (≈0.43%), within the 3-fold paired noise band |
+**The final evidence — 5 seeds, House Prices / `SalePrice`, plain RMSE, 3 folds each:**
 
-**Reading — the arbiter overruled a plausible, textbook-correct suggestion, and was right to.** The
-project's own prior expectation was that House Prices ("the textbook log-transform case") would be a
-*win* for M11. It was not — and the reason is instructive. The classic advice is textbook for
-**RMSLE + linear models**: a log-scale metric and a model class sensitive to target skew. This run
-used **plain RMSE + AutoGluon's gradient-boosted trees**, which are ~invariant to a monotone target
-transform and already absorb the tail. So the transform moved the score by less than half a percent
-— indistinguishable from fold noise — and the arbiter declined it. A system that applied "the LLM
-said log1p, and it's the textbook case" on faith would have added a transform for nothing. This is
-the empirical arbiter earning its place: the LLM contributes a sound hypothesis, the measurement
-decides, and a wrong-for-this-setup convention is caught before it ships.
+| Seed | log1p proposed | Δ rmse (improvement) | Per-run 3-fold gate |
+|---|---|---|---|
+| 42 | yes | +3 634.6 | reject |
+| 7 | yes | +3 221.5 | **accept** |
+| 1 | yes | +2 079.7 | reject |
+| 2 | yes | +1 214.8 | reject |
+| 3 | yes | +1 212.4 | reject |
 
-**Precision control (2026-07-03).** The complementary test: a *symmetric* target, where the agent
-should decline. On friedman-synth / `y` (skewness 0.048, mean 14.088 ≈ median 14.069, max only 2×
-median):
+**log1p genuinely helps: 5/5 seeds improve, mean +2 273 rmse (≈ −8%).** At the seed level the
+project's own paired rule is unambiguous — mean 2 273 > 2×SEM (≈1 004), improvement in 5/5 seeds.
+**This is the setup win the thesis predicted**: target framing is a decision AutoGluon never makes,
+and the LLM's textbook judgment (skewness 1.88, long right tail) was correct.
 
-| Step | Outcome |
-|---|---|
-| LLM proposal | **`none`** — correctly reasoned (low skew, mean ≈ median, no long tail), no transform |
-| Arbiter | not invoked (no verified proposal) — zero cost |
+Three harder-won findings sit underneath that headline:
 
-Together the two runs characterise M11 on both sides: it **fires on a genuinely skewed target** (and
-the arbiter then gates it on measurement) and it **does not fire on a symmetric one** (no false
-positive). The agent has precision, and the arbiter has the final say — exactly the intended split.
+1. **An earlier single run said the opposite, and we published it too early.** The first evidence
+   run (2026-07-03) returned REJECT at Δ +124 and was recorded as "the arbiter overrules the
+   textbook", with a plausible invariance story attached. That run turns out to have been doubly
+   compromised: its cleaning plan had been silently discarded by a tool-argument double-encoding
+   bug (see the M8 receipt below), and its +124 was a 10–30× downward outlier against the
+   multi-seed deltas. The correction chain is the project working as designed — the regression
+   receipt caught the bug, the fix enabled a clean rerun, the flipped verdict demanded multi-seed,
+   and multi-seed settled it.
+2. **The per-run 3-fold gate is conservative enough to miss a real ~2 300-rmse effect** (1/5
+   accepts): with n=3 folds and ±5 900 fold spread, 2 SEM is a high bar. The error is in the safe
+   direction — a missed improvement, never a false adoption — but the miss rate is now measured,
+   not assumed. Practical consequence: for adopt-decisions of this size, judge framing at the
+   seed level (M8) or raise the fold count; the per-run gate alone under-accepts.
+3. **Precision holds on both controls:** `none` on the symmetric friedman target (skew 0.048) and
+   `none` on a classification target (SMS spam) — the agent fires only where the textbook says it
+   should, and the false-positive direction stays clean.
 
-**The one open question worth a run** is whether *any* realistic target is skewed enough that log1p
-helps even on a neutral absolute-error metric with boosted trees — the real question SalePrice
-answered "no" for. (Explicitly *not* worth running: M11 under RMSLE. That test is near-tautological —
-RMSLE(y, ŷ) = RMSE(log1p y, log1p ŷ), so log1p training minimises it by construction — and AutoGluon
-has no native RMSLE metric anyway.) The plain-RMSE result does not falsify M11; it correctly reports
-that log1p does not help *this metric on this engine*. (Implementation verified end-to-end: each fold
-trains in log space, inverts predictions via `expm1`, and rescores against the original-space truth
-held aside before transforming.)
+(Still not worth running: M11 under RMSLE — near-tautological, since RMSLE(y, ŷ) =
+RMSE(log1p y, log1p ŷ), and AutoGluon has no native RMSLE scorer.)
+
+## M4 receipt — the refactor holds; the receipt itself caught a real bug (2026-07-04)
+
+After the M4 intervention-core refactor (one `run_counterfactual` primitive replacing three ad-hoc
+gate loops, plus the `CVBudget`), the regression evidence is two-layered:
+
+* **Code level:** all pre-refactor gate tests pass unchanged (behaviour-neutral by test suite);
+  the M10 run and the M11 multi-seed runs exercised the new path end-to-end on real data
+  (`cv_budget: {limit, trials_spent}` now in every CV-path ledger record).
+* **What the replication receipt actually found:** re-running the pre-M4 House-Prices framing
+  command surfaced not a refactor regression but a **tool-argument double-encoding bug** —
+  claude-sonnet-5 occasionally returns a schema-declared array as a JSON string (re-wrapping the
+  whole arguments object), and iterating that string char-by-char silently discarded every
+  planned column drop. Fixed schema-guided in `call_structured` (string-typed fields are never
+  decoded; unparseable values left to the total processors). The pre-M4 reference run itself
+  turned out to carry this bug, which is what had made its REJECT verdict look reproducible.
+
+The honest net of the receipt: no M4 regression found; one real robustness bug found and fixed;
+and a measured demonstration that **single-run 3-fold verdicts on a high-variance target are not
+stable across runs** — the finding that forced M11 to multi-seed and settled it properly.
 
 ## M10 — free-text featurization: the FE thesis dies in its last lane (2026-07-04)
 
@@ -381,7 +401,7 @@ The systematic answer to the project's question, across every layer a conductor 
 | Layer | Does LLM judgment beat the AutoGluon baseline? | Evidence |
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
-| Setup / target framing (M11) | The *judgment* is sound; the win depends on metric × engine | House Prices: LLM correctly proposed `log1p` (skew 1.88), arbiter correctly **rejected** it (plain RMSE + trees are transform-invariant); correctly silent on a symmetric target |
+| Setup / target framing (M11) | **Yes — the predicted setup win** | House Prices, 5 seeds: log1p improves rmse in **5/5** (mean +2 273, ≈ −8%), seed-level paired test unambiguous; agent correctly silent on symmetric and classification targets. Caveat: the per-run 3-fold gate under-accepts (1/5) — conservative in the safe direction |
 | Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
 | **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
 

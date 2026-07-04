@@ -69,24 +69,35 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
 | **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | **Maestra, 5/5 seeds** — passes the paired 2-SEM test (narrowly) |
+| **10-task battery** (5 seeds each, paired verdict) | rich → anonymous | mixed | — | — | **2 decided wins (both rich: credit −39%, wage −1.1%), 8 undecided, 0 decided losses**; anonymous controls inert (Δ ≈ 0) |
+| **Target framing** (House Prices, `--target-framing`) | setup decision | rmse ↓ | raw target | **log1p, 5/5 seeds** | **mean −2 273 rmse (≈ −8%)** — a setup win AutoGluon cannot make itself |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
 Four findings that shape the design:
 
-1. **The LLM pays off where column *semantics* exist, and nowhere else.** On anonymous numeric
-   data an LLM is structurally blind; on House Prices (`Neighborhood`, `KitchenQual`,
-   `YearBuilt`, …) its cleaning/encoding judgment beat the baseline on **all 5 seeds** (mean
-   improvement 1 285 rmse; passes the paired 2-SEM + majority rule, though narrowly — the same
-   strict arbiter rule the pipeline's own gates use). This
-   independently reproduces what [CAAFE](https://arxiv.org/abs/2305.03403) and
-   [LATTEArena](https://arxiv.org/pdf/2606.09004) report.
-2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal.** The
-   `--hybrid` layer let the LLM write real feature code (sandboxed, CV-gated); it proposed exactly
-   the right domain features (`age_of_house = YrSold − YearBuilt`, …) and the gate rejected **all
-   of them** — trees already extract that from raw columns. Even `--ordinal` encoding (mapping
-   `KitchenQual` to a rank, the one FE type that *injects* information) was mean-negative across
-   seeds: a monotonic rank is lossy versus native categorical handling. Where CAAFE/MALMAS/LLM-FE
-   concentrate their effort, a strong engine has already closed the gap.
+1. **The LLM pays off where column *semantics* exist, and nowhere else — now shown causally.**
+   On House Prices (`Neighborhood`, `KitchenQual`, `YearBuilt`, …) its cleaning/encoding judgment
+   beat the baseline on **all 5 seeds**; over a 10-task battery both decided wins are
+   rich-semantics tasks (credit −39%, wage −1.1% rmse) with zero decided losses. The causal half:
+   an **anonymized-twin control** (identical bytes, names stripped to `x1..xn`) and a synthetic
+   control show the effect *vanishes* (Δ −0.001/+0.008) when semantics are removed — semantics is
+   the mechanism, not a correlate. This independently reproduces what
+   [CAAFE](https://arxiv.org/abs/2305.03403) and [LATTEArena](https://arxiv.org/pdf/2606.09004)
+   report. (The battery also caught its own harness leak: a Rdatasets index column ordered by the
+   outcome made the baseline look 3× better on one task — the anomaly-shaped verdict flagged it,
+   and the leak-free rerun landed on *undecided*. Honest cleaning looks like losing until the
+   leak is found.)
+2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal, not even
+   free-text.** The `--hybrid` layer let the LLM write real feature code (sandboxed, CV-gated);
+   it proposed exactly the right domain features (`age_of_house = YrSold − YearBuilt`, …) and the
+   gate rejected **all of them** — trees already extract that from raw columns. `--ordinal`
+   encoding was mean-negative across seeds. And on free text (SMS spam), five textbook semantic
+   extractors — currency mentions, exclamation density, informality — all failed to move a 0.986
+   n-gram baseline beyond noise (`--text-features`, 0/5 kept): a currency mention *is* an n-gram.
+   Where CAAFE/MALMAS/LLM-FE concentrate their effort, a strong engine has already closed the
+   gap. The one FE-adjacent decision that **does** pay is one level up, in *setup*: training on
+   `log1p` of a skewed target (`--target-framing`) improved House-Prices rmse in **5/5 seeds
+   (mean ≈ −8%)** — a reframing AutoGluon never performs on its own.
 3. **The CV↔LB gap works as a trust meta-signal.** Near zero on TPS (trust the CV), huge on
    leaf-classification, where 3-fold log-loss over 99 classes is an unstable estimator (don't).
 4. **Where AutoML is structurally blind, the LLM's contribution is two orders of magnitude
@@ -104,11 +115,14 @@ Four findings that shape the design:
    `scripts/time_leakage_experiment.py`. **Detection quantified** on a 17-dataset benchmark
    with ground truth (`scripts/strategist_detection_benchmark.py`), including iid datasets and a
    deliberate trap column: first run 14/17 — the benchmark exposed two weaknesses, one targeted
-   prompt iteration later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). Under a small
-   model (gpt-4o-mini) group recall drops to **4/6 with misses in the dangerous direction**
-   (a missed group means a silently optimistic CV) — with data, not opinion: **validation design
-   is a frontier-model decision.** The prompt's principles transferred only partially to the
-   smaller model, so the perfect frontier score keeps its held-out caveat.
+   prompt iteration later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). The
+   judgment is **provider-robust**: claude-opus-4-8, claude-sonnet-4-5, claude-haiku-4-5 and
+   gpt-4o all score 17/17 on the same catalog. Only gpt-4o-mini degrades (group recall **4/6,
+   misses in the dangerous direction** — a missed group means a silently optimistic CV). Notably
+   the boundary is *model-specific, not price-tier*: Haiku 4.5, a small cheap model, matches the
+   flagships. The honest consulting takeaway is not "buy the biggest model" but **"verify this
+   specific judgment on your specific model — the failure mode is invisible without a benchmark
+   like this one."**
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.

@@ -25,3 +25,4 @@ docs/CHANGELOG.md
 # Second venv (Python 3.11, mlebench runs) + tool caches
 .venv311/
 cache/
+x/
