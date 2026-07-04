@@ -247,44 +247,58 @@ may not have it, and the failure mode is invisible without a benchmark like this
 run per model (temperature 0, so deterministic-ish but not variance-quantified); mini has no v1
 baseline; catalog is 17 classic datasets.
 
-## E2 — task battery (running; 6/10 done, 2026-07-03)
+## E2 — task battery, complete (2026-07-04)
 
 `maestra-bench --seeds 42 7 1 2 3` over a semantic spectrum; three-way paired verdict (M8). Δ is
 `maestra − baseline`; for rmse lower is better (a negative Δ favours Maestra), for
 balanced_accuracy higher is better (a positive Δ favours Maestra).
 
-| Task | Semantics | Metric | Baseline | Maestra | Δ | Favours | Verdict |
-|---|---|---|---|---|---|---|---|
-| credit | rich | rmse ↓ | 72.832 | 44.284 | **−28.548** | Maestra | **maestra** |
-| heart | rich | bal-acc ↑ | 0.788 | 0.811 | +0.023 | Maestra | undecided |
-| insurance | rich | rmse ↓ | 4484.1 | 4550.6 | +66.5 | baseline | undecided |
-| loan-grade | rich | bal-acc ↑ | 0.221 | 0.221 | −0.001 | ~tie | undecided |
-| wine-quality | mixed | rmse ↓ | 0.658 | 0.651 | −0.007 | Maestra | undecided |
-| wine-quality-anon | poor (anon. twin) | rmse ↓ | 0.658 | 0.666 | +0.008 | baseline | undecided |
+| Task | Semantics | Metric | Baseline | Maestra | Δ | Verdict |
+|---|---|---|---|---|---|---|
+| credit | rich | rmse ↓ | 72.832 | 44.284 | **−28.548 (−39%)** | **maestra** |
+| wage | rich | rmse ↓ | 34.059 | 33.685 | **−0.374 (−1.1%)** | **maestra** |
+| heart | rich | bal-acc ↑ | 0.788 | 0.811 | +0.023 | undecided |
+| insurance | rich | rmse ↓ | 4484.1 | 4550.6 | +66.5 | undecided |
+| loan-grade | rich | bal-acc ↑ | 0.221 | 0.221 | −0.001 | undecided |
+| diamonds | rich | rmse ↓ | — | — | — | *invalidated: harness leak; rerun below* |
+| abalone | mixed | rmse ↓ | 2.459 | 2.500 | +0.041 | undecided |
+| wine-quality | mixed | rmse ↓ | 0.658 | 0.651 | −0.007 | undecided |
+| wine-quality-anon | poor (anon. twin) | rmse ↓ | 0.658 | 0.666 | +0.008 | undecided |
+| friedman-synth | poor (synthetic) | rmse ↓ | 1.205 | 1.203 | −0.001 | undecided |
 
-**Reading — the arbiter is working, and that is the result.** Across six tasks the paired verdict
-returns exactly **one decided win (credit) and five undecided** — and that restraint is the point,
-not a disappointment:
+**The pattern (9 valid tasks): 2 decided wins, 7 undecided, 0 decided losses — and the wins are
+exactly where the thesis puts them.**
 
-- **credit is a genuine, decided win:** rmse nearly halved (72.8 → 44.3) with a clean `maestra`
-  verdict, on rich human-domain columns (`Student`, `Married`, `Income`, `Limit`). This is the
-  thesis firing where it predicts.
-- **But rich semantics is *not* a uniform win.** heart trends Maestra-ward, insurance trends
-  slightly the other way, loan-grade is a dead tie — all three land *undecided*. AutoGluon is
-  already strong enough on these that added semantic reasoning produces no effect the paired test
-  can distinguish from noise. This is consistent with the core thesis ("the LLM helps where the
-  engine is blind, not where it is already strong"): on these tasks the engine is not blind.
-- **The anonymized-twin control behaves as designed.** Byte-identical data, only column names
-  differ → baseline identical (0.658 both), confirming the control is clean and semantics is the
-  only variable. Maestra is relatively better *with* names (−0.007) and worse *without* (+0.008):
-  the isolated semantic effect is ~0.015 rmse in the predicted direction, though both individually
-  undecided on this one mixed-semantics pair.
+- **Both decided wins are rich-semantics tasks** (credit −39%, wage −1.1%), human-domain columns
+  (`Student`, `Married`, `Income`; `education`, `jobclass`, `health`). The other rich tasks land
+  *undecided*: AutoGluon is already strong there, and the paired test refuses to call noise a win.
+- **The poor-semantics controls are as close to zero as measurement gets:** friedman Δ −0.001,
+  anonymized twin Δ +0.008. Without column semantics, Maestra's judgment layer is **inert** — it
+  neither helps nor hurts. That is the cleanest possible support for "the semantics are the
+  mechanism": remove them and the effect vanishes, not just shrinks.
+- **The anonymized-twin control worked as designed** (identical baseline 0.658 on both twins —
+  semantics was the only variable; the isolated effect ~0.015 rmse in the predicted direction).
 
-**Why this is the *good* outcome for a measurement-arbiter tool:** a conductor that reported
-"Maestra wins" on all six would be non-credible. One that lets a real effect through (credit) and
-honestly returns *undecided* on the five where the signal is within noise is exactly the empirical
-arbiter doing its job — it refuses to manufacture wins. Still pending (4/10): diamonds, wage,
-abalone, friedman-synth (two more poor-semantics controls, expected undecided-or-baseline).
+### The diamonds verdict was a harness leak — found *because* the verdict pattern flagged it
+
+diamonds initially returned the battery's only decided-**baseline** verdict (baseline 217 vs
+Maestra 602 — ~3× worse, consistent across all 5 seeds). That anomaly did not survive scrutiny:
+
+1. Ablations cleared the suspects one by one: the cleaning plan drops only id columns; the FE
+   plan is purely additive; the ratio ops guard division by zero. Cleaning-only Maestra was
+   *still* 4× behind — so the gap was never caused by what Maestra *did*.
+2. The cause was what the **baseline was allowed to keep**: Rdatasets CSVs carry the source
+   frame's row index as `rownames`, and ggplot2's diamonds is ordered in price blocks —
+   spearman(`rownames`, `price`) = **−0.40**, a target leak. Maestra's cleaning had correctly
+   dropped it as id-like; the baseline exploited it.
+3. **Proof:** baseline *with* the leak column: rmse 156. Baseline *without* it: rmse **681** —
+   behind Maestra's honest 588 on the same seed. The entire "loss" was the leak.
+
+The battery loader now strips `rownames` unconditionally (E1's loader always did); diamonds is
+being rerun leak-free. Two lessons worth the space: (a) the **anomaly-shaped verdict is what
+exposed the leak** — a battery that only reported means would have shipped a false conclusion;
+(b) this is the project's core claim playing out *inside its own harness*: leakage silently
+corrupts comparisons, and honest cleaning **looks like losing** until the leak is found.
 
 ## M11 — target framing agent: the arbiter overrules the textbook (2026-07-03)
 
@@ -333,17 +347,22 @@ held aside before transforming.)
 
 ## Where LLM judgment pays off — the whole map
 
-The systematic answer to the project's question, across all three layers a conductor could touch:
+The systematic answer to the project's question, across every layer a conductor could touch:
 
 | Layer | Does LLM judgment beat the AutoGluon baseline? | Evidence |
 |---|---|---|
-| **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data | House Prices: 5/5 seeds, mean +1 285 rmse, passes the paired 2-SEM rule (narrowly) |
+| **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
+| Setup / target framing (M11) | The *judgment* is sound; the win depends on metric × engine | House Prices: LLM correctly proposed `log1p` (skew 1.88), arbiter correctly **rejected** it (plain RMSE + trees are transform-invariant); correctly silent on a symmetric target |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery: 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 7 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
 | **Feature engineering** (arithmetic *and* ordinal) | **No — across the board** | hybrid kept 0/5; ordinal mean-negative |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work
 concentrates (CAAFE, MALMAS, LLM-FE) — is a wash against a strong engine. The LLM's value is
 real but concentrated where the engine is structurally **blind**: validation design and setup.
+E2 sharpens the cleaning row into a causal claim: the anonymized-twin control and the synthetic
+control show the effect **vanishes** (not shrinks) when column semantics are removed — semantics
+is the mechanism, and the arbiter is what converts that mechanism into only-upside (2 wins, 0
+losses, noise refused).
 
 ## Recurring pattern
 

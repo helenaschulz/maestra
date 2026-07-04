@@ -84,6 +84,13 @@ def _load(spec: dict) -> str:
         urllib.request.urlretrieve(spec["src"], path + ".tmp")
         df = pd.read_csv(path + ".tmp", **spec.get("read_kwargs", {}))
         os.remove(path + ".tmp")
+    # Rdatasets CSVs carry the source data frame's row index as `rownames`. Drop it ALWAYS
+    # (E1's loader does too): it is an artefact, and when the source frame is ordered by the
+    # outcome it becomes a target leak that only the baseline arm exploits — Maestra's cleaning
+    # correctly drops it as id-like and gets *punished* for honesty. Found exactly that way:
+    # diamonds (ggplot2 orders it in price blocks; spearman(rownames, price) = -0.40) was the
+    # battery's sole decided-baseline verdict until this fix.
+    df = df.drop(columns=[c for c in ("rownames",) if c in df.columns])
     if spec.get("columns"):
         df.columns = spec["columns"]
     if spec.get("sample") and len(df) > spec["sample"]:
