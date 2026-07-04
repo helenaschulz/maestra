@@ -87,6 +87,43 @@ def test_cross_validate_collects_oof_probabilities(monkeypatch):
     assert score == pytest.approx(roc_auc_score(df["y"], cv.oof_proba[1]))
 
 
+class _BoolProbaPredictor:
+    """Same shape as _FakeProbaPredictor, but the class labels are native Python bools --
+    the Kaggle spaceship-titanic `Transported` case."""
+
+    positive_class = True
+    eval_metric = _eval_metric
+
+    def predict(self, X):
+        return X["x"] >= X["x"].median()
+
+    def predict_proba(self, X):
+        lo, hi = X["x"].min(), X["x"].max()
+        p = (X["x"] - lo) / (hi - lo) if hi > lo else X["x"] * 0 + 0.5
+        return pd.DataFrame({False: 1 - p, True: p}, index=X.index)
+
+
+def test_cross_validate_handles_boolean_target_classes(monkeypatch):
+    """Regression: a bool target ([False, True]) made `.loc[rows, oof_classes]` ambiguous --
+    pandas reads a bool list as a column MASK, not labels, silently selecting the wrong shape
+    (found on real Kaggle data: spaceship-titanic's `Transported` column)."""
+    df = pd.DataFrame({"x": [float(i) for i in range(12)],
+                       "y": [False, False, False, True, True, True] * 2})
+
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+        return TrainingResult("binary", "roc_auc", pd.DataFrame(), {"roc_auc": 0.5},
+                              predictor=_BoolProbaPredictor())
+
+    monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None,
+                        model_dir="x", time_limit=1, n_folds=3, seed=0)
+
+    assert list(cv.oof_proba.columns) == [False, True]
+    assert not cv.oof_proba.isna().any().any()
+    assert cv.oof_proba.sum(axis=1).round(6).eq(1.0).all()
+    assert not cv.oof_pred.isna().any()
+
+
 class _MissingClassPredictor:
     """A multiclass predictor that only ever outputs probabilities over classes 'A' and 'B' —
     it never saw 'C'. Its predict_proba therefore lacks the 'C' column, exactly as AutoGluon's

@@ -254,7 +254,13 @@ def cross_validate(
             if classification:
                 fold_proba = predict_proba(result.predictor, val_features)
                 aligned = fold_proba.reindex(columns=oof_classes, fill_value=0.0)
-                oof_proba.loc[proc_val.index, oof_classes] = aligned.to_numpy()
+                # Positional assignment: a BOOLEAN target (oof_classes == [False, True]) makes
+                # `.loc[rows, oof_classes]` ambiguous -- pandas reads a bool list as a boolean
+                # MASK over the columns, not as labels, silently selecting the wrong shape.
+                # get_indexer sidesteps that regardless of the class label dtype.
+                row_pos = oof_proba.index.get_indexer(proc_val.index)
+                col_pos = oof_proba.columns.get_indexer(oof_classes)
+                oof_proba.iloc[row_pos, col_pos] = aligned.to_numpy()
         if target_transform is not None:
             # The predictor's own metric lives in transformed space and is NOT comparable to an
             # untransformed base CV — rescore in original space, same sign convention.
