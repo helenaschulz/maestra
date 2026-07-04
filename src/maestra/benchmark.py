@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -186,6 +186,7 @@ class MultiSeedResult:
     mean_delta: float          # mean(maestra - baseline), raw metric direction
     higher_is_better: bool
     verdict: str               # "maestra" | "baseline" | "undecided"
+    failed_seeds: list[dict] = field(default_factory=list)  # [{"seed", "error"}], visibly recorded
 
 
 def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kwargs) -> MultiSeedResult:
@@ -196,10 +197,24 @@ def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kw
     PAIRED — the same machinery as the fold-wise gate (``paired_delta_test``: mean beyond
     2 standard errors AND a strict majority of seeds). The verdict is deliberately three-way:
     **undecided-within-noise is a first-class, honest outcome**, not a failure to report.
+
+    A single seed's crash (e.g. an AutoGluon internal fragility on a rare data/fold shape) does
+    NOT void the whole run: it is caught, recorded in ``failed_seeds`` with its error, and the
+    remaining seeds still produce a verdict — conservatively, since ``paired_delta_test`` already
+    returns False below 2 data points. If every seed fails, that is a real error, not a silent
+    "undecided": it raises.
     """
     from maestra.validation import paired_delta_test
 
-    per_seed = [run_task(csv, target, metric=metric, seed=s, **kwargs) for s in seeds]
+    per_seed, failed = [], []
+    for s in seeds:
+        try:
+            per_seed.append(run_task(csv, target, metric=metric, seed=s, **kwargs))
+        except Exception as exc:  # noqa: BLE001 - AutoGluon/LLM failures are unpredictable by type
+            failed.append({"seed": s, "error": f"{type(exc).__name__}: {exc}"})
+    if not per_seed:
+        raise RuntimeError(f"all {len(seeds)} seeds failed: {failed}")
+
     higher = per_seed[0].higher_is_better
     # signed improvement per seed: positive = Maestra better, regardless of metric direction
     improvements = [(r.maestra - r.baseline) * (1.0 if higher else -1.0) for r in per_seed]
@@ -210,11 +225,11 @@ def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kw
     else:
         verdict = "undecided"
     return MultiSeedResult(
-        name=per_seed[0].name, metric=metric, seeds=list(seeds), per_seed=per_seed,
+        name=per_seed[0].name, metric=metric, seeds=[r.seed for r in per_seed], per_seed=per_seed,
         baseline_mean=float(np.mean([r.baseline for r in per_seed])),
         maestra_mean=float(np.mean([r.maestra for r in per_seed])),
         mean_delta=float(np.mean([r.delta for r in per_seed])),
-        higher_is_better=higher, verdict=verdict,
+        higher_is_better=higher, verdict=verdict, failed_seeds=failed,
     )
 
 
@@ -233,6 +248,7 @@ def append_multi_seed(path: str, result: MultiSeedResult, *, timestamp: str) -> 
         "delta": result.mean_delta, "higher_is_better": result.higher_is_better,
         "seeds": result.seeds, "verdict": result.verdict,
         "n_train": result.per_seed[0].n_train, "n_grade": result.per_seed[0].n_grade,
+        "failed_seeds": result.failed_seeds,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

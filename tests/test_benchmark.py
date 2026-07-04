@@ -117,6 +117,37 @@ def test_multi_seed_lower_is_better_baseline_win(monkeypatch):
     assert ms.verdict == "baseline"
 
 
+def test_multi_seed_one_seed_crashing_does_not_void_the_run(monkeypatch):
+    """A single seed's AutoGluon/LLM crash is caught and recorded, not fatal to the whole run --
+    found on real Kaggle data (an AutoGluon internal fragility on one seed's fold shape)."""
+    from maestra import benchmark as B
+    results = {1: _bench(1, 0.80, 0.85), 3: _bench(3, 0.79, 0.84)}
+
+    def flaky(csv, target, *, metric, seed, **k):
+        if seed == 2:
+            raise ValueError("boom: setting an array element with a sequence")
+        return results[seed]
+
+    monkeypatch.setattr(B, "run_task", flaky)
+    ms = B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2, 3])
+
+    assert [r.seed for r in ms.per_seed] == [1, 3]           # the two survivors
+    assert ms.failed_seeds == [{"seed": 2, "error": "ValueError: boom: setting an array "
+                                "element with a sequence"}]
+    assert ms.verdict == "maestra"                            # the survivors still settle it
+
+
+def test_multi_seed_all_seeds_failing_raises_not_silent_undecided(monkeypatch):
+    from maestra import benchmark as B
+
+    def always_fails(csv, target, *, metric, seed, **k):
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(B, "run_task", always_fails)
+    with pytest.raises(RuntimeError, match="all 2 seeds failed"):
+        B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2])
+
+
 def test_multi_seed_aggregate_row_feeds_summary(monkeypatch, tmp_path):
     from maestra import benchmark as B
     results = {1: _bench(1, 0.80, 0.85), 2: _bench(2, 0.81, 0.86), 3: _bench(3, 0.79, 0.84)}
