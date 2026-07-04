@@ -65,7 +65,7 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 
 | Task | Semantics | Metric | Baseline | Maestra | Verdict |
 |---|---|---|---|---|---|
-| Titanic | poor | balanced_acc | **0.793** | 0.732 | LLM hurts |
+| Titanic | mixed (891 rows) | balanced_acc | 0.814 | 0.806 | undecided over 5 seeds (an earlier single-seed "LLM hurts" was an outlier — corrected) |
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
 | **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | **Maestra, 5/5 seeds** — passes the paired 2-SEM test (narrowly) |

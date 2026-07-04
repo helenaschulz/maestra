@@ -39,7 +39,7 @@
 
 | Competition | Metric | Baseline | Maestra | Winner |
 |---|---|---|---|---|
-| Titanic | balanced_accuracy | **0.7933** | 0.7322 | Baseline (LLM hurts — expected negative; what the harness is for) |
+| Titanic | balanced_accuracy | **0.7933** | 0.7322 | Baseline — single seed; **superseded 2026-07-04 by the K1 5-seed verdict: *undecided*** (this seed was a downward outlier, see K1) |
 | House Prices, seed 42 | rmse ↓ | 26 453 | **25 828** (−625) | Maestra |
 | House Prices, seed 7 | rmse ↓ | 25 745 | **24 343** (−1 402) | Maestra |
 | House Prices + `--hybrid`, seed 42 | rmse ↓ | 26 453 | 25 390 / 26 350 | (0/5 features kept — noise) |
@@ -436,6 +436,28 @@ strong engine is a wash even where the LLM can read prose** — the thesis' FE-n
 survives its most favourable test. (The run also exercised the M4 intervention core end-to-end
 on real data: `cv_budget: {limit: null, trials_spent: 5}` in the ledger, and the framing agent
 correctly declined the classification target — a third precision data point for M11.)
+
+## K1 — the Kaggle battery (started 2026-07-04; real competition data)
+
+E2's instrument (5 seeds, paired three-way verdict) on REAL Kaggle competition data — messier
+columns, competition metrics, known leaks handled up front (bike's `casual`+`registered` sum to
+the target and are dropped in the loader: the diamonds lesson applied proactively). Catalog:
+rich (spaceship-titanic, house-prices ✓ M6), mixed/small (titanic), anonymized control
+(allstate), temporal (bike-sharing). `scripts/kaggle_battery.py`; `--make-submission` produces
+real leaderboard submissions with the CV estimate attached — the CV↔LB gap on live competitions.
+
+| Task | Semantics | Metric | Baseline | Maestra | Δ | Verdict |
+|---|---|---|---|---|---|---|
+| titanic | mixed (891 rows) | bal-acc ↑ | 0.814 | 0.806 | −0.007 | undecided |
+
+**titanic corrects an early claim — the same lesson as M11, again.** The project's single-seed
+result ("LLM hurts": 0.793 vs 0.732, Δ −0.061) had stood since the first benchmark runs. Over 5
+seeds the per-seed deltas swing from −0.052 to +0.052 and the paired verdict is *undecided* with
+a small negative mean (−0.007). The original number was a downward-outlier seed. That is now the
+third time the multi-seed instrument has overturned a single-run conclusion (M11's REJECT, the
+3-fold framing flip, and now this) — single-seed verdicts on small data are anecdotes, and the
+battery treats them as such. Remaining rows pending competition joins (spaceship-titanic,
+bike-sharing, allstate).
 
 ## Where LLM judgment pays off — the whole map
 
