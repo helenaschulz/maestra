@@ -348,6 +348,32 @@ that log1p does not help *this metric on this engine*. (Implementation verified 
 trains in log space, inverts predictions via `expm1`, and rescores against the original-space truth
 held aside before transforming.)
 
+## M10 — free-text featurization: the FE thesis dies in its last lane (2026-07-04)
+
+The one FE lane the negative results did not yet cover: free text, where the LLM can *read* the
+column and write semantic extractors an n-gram model supposedly cannot represent. Evidence run:
+UCI SMS Spam (5 574 rows, one prose column), 3-fold stratified CV, `--text-features` isolated
+(`--no-fe`), every candidate judged by the paired counterfactual gate against AutoGluon's own
+n-gram handling of the raw text.
+
+| Candidate (all `source=text`) | Δcv (accuracy) | Verdict |
+|---|---|---|
+| informal_language_ratio | −0.0014 | drop |
+| exclamation_density | +0.0005 | drop |
+| question_density | −0.0014 | drop |
+| currency_mention_count | −0.0002 | drop |
+| time_mention_count | +0.0000 | drop |
+
+**0/5 kept.** The candidates are exactly the semantic features a domain expert would propose for
+spam — and none of them moves a 0.9864 ± 0.001 n-gram baseline beyond noise. The engine's n-grams
+already carry the same signal (a currency mention *is* an n-gram; register *is* a token
+distribution). With this, all three FE lanes are measured and closed: arithmetic (hybrid 0/5),
+ordinal (mean-negative), and now semantic text extraction (0/5). **Feature engineering against a
+strong engine is a wash even where the LLM can read prose** — the thesis' FE-null hypothesis
+survives its most favourable test. (The run also exercised the M4 intervention core end-to-end
+on real data: `cv_budget: {limit: null, trials_spent: 5}` in the ledger, and the framing agent
+correctly declined the classification target — a third precision data point for M11.)
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across every layer a conductor could touch:
@@ -357,7 +383,7 @@ The systematic answer to the project's question, across every layer a conductor 
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
 | Setup / target framing (M11) | The *judgment* is sound; the win depends on metric × engine | House Prices: LLM correctly proposed `log1p` (skew 1.88), arbiter correctly **rejected** it (plain RMSE + trees are transform-invariant); correctly silent on a symmetric target |
 | Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008) |
-| **Feature engineering** (arithmetic *and* ordinal) | **No — across the board** | hybrid kept 0/5; ordinal mean-negative |
+| **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work
 concentrates (CAAFE, MALMAS, LLM-FE) — is a wash against a strong engine. The LLM's value is
