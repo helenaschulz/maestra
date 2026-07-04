@@ -80,6 +80,34 @@ def call_structured(
             f"Text response was: {message.content!r}"
         )
     try:
-        return json.loads(tool_calls[0].function.arguments)
+        args = json.loads(tool_calls[0].function.arguments)
     except json.JSONDecodeError as exc:  # pragma: no cover - provider-dependent
         raise LLMError(f"Tool arguments were not valid JSON: {exc}") from exc
+    return _repair_stringified(args, parameters_schema)
+
+
+def _repair_stringified(args: dict, schema: dict) -> dict:
+    """Decode tool arguments a model double-encoded, guided by the schema.
+
+    Some models occasionally return a value that the schema declares as array/object as a
+    JSON *string* — sometimes re-wrapping the whole arguments object inside it (observed with
+    claude-sonnet-5: ``columns_to_drop`` arrived as ``'{"columns_to_drop": [...]}'``; iterating
+    that string char-by-char silently discarded every drop). Decode such values once; if the
+    decoded value is a re-wrap containing the key itself, unwrap it. Anything unparseable is
+    left untouched — downstream processors are total against malformed entries and log a skip.
+    """
+    if not isinstance(args, dict):
+        return args
+    for key, spec in schema.get("properties", {}).items():
+        val = args.get(key)
+        if not isinstance(val, str) or spec.get("type") not in ("array", "object"):
+            continue
+        try:
+            decoded = json.loads(val)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict) and key in decoded:  # whole-object re-wrap
+            decoded = decoded[key]
+        if isinstance(decoded, (list, dict)):
+            args[key] = decoded
+    return args
