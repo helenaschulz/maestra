@@ -437,27 +437,97 @@ survives its most favourable test. (The run also exercised the M4 intervention c
 on real data: `cv_budget: {limit: null, trials_spent: 5}` in the ledger, and the framing agent
 correctly declined the classification target — a third precision data point for M11.)
 
-## K1 — the Kaggle battery (started 2026-07-04; real competition data)
+## K1 — the Kaggle battery, complete (2026-07-04/05; real competition data)
 
 E2's instrument (5 seeds, paired three-way verdict) on REAL Kaggle competition data — messier
 columns, competition metrics, known leaks handled up front (bike's `casual`+`registered` sum to
-the target and are dropped in the loader: the diamonds lesson applied proactively). Catalog:
-rich (spaceship-titanic, house-prices ✓ M6), mixed/small (titanic), anonymized control
-(allstate), temporal (bike-sharing). `scripts/kaggle_battery.py`; `--make-submission` produces
-real leaderboard submissions with the CV estimate attached — the CV↔LB gap on live competitions.
+the target and are dropped in the loader: the diamonds lesson applied proactively).
+`scripts/kaggle_battery.py`; `--make-submission` produces real leaderboard submissions with the
+CV estimate attached — the CV↔LB gap on live competitions.
 
 | Task | Semantics | Metric | Baseline | Maestra | Δ | Verdict |
 |---|---|---|---|---|---|---|
 | titanic | mixed (891 rows) | bal-acc ↑ | 0.814 | 0.806 | −0.007 | undecided |
+| spaceship-titanic | rich | accuracy ↑ | 0.796 | 0.795 | −0.001 | undecided |
+| **bike-sharing** | rich + temporal | rmse ↓ | 124.03 | **36.06** | **−87.97 (−71%)** | **maestra** |
+| allstate | poor (anonymized) | mae ↓ | 1246.1 | 1255.2 | +9.1 | undecided |
 
 **titanic corrects an early claim — the same lesson as M11, again.** The project's single-seed
 result ("LLM hurts": 0.793 vs 0.732, Δ −0.061) had stood since the first benchmark runs. Over 5
 seeds the per-seed deltas swing from −0.052 to +0.052 and the paired verdict is *undecided* with
-a small negative mean (−0.007). The original number was a downward-outlier seed. That is now the
-third time the multi-seed instrument has overturned a single-run conclusion (M11's REJECT, the
-3-fold framing flip, and now this) — single-seed verdicts on small data are anecdotes, and the
-battery treats them as such. Remaining rows pending competition joins (spaceship-titanic,
-bike-sharing, allstate).
+a small negative mean (−0.007). The original number was a downward-outlier seed — the third time
+multi-seed has overturned a single-run conclusion (after M11's REJECT and the 3-fold framing
+flip). spaceship-titanic and the anonymized allstate control are both undecided, consistent with
+the thesis (rich-but-noisy, and no-semantics-to-exploit, respectively).
+
+### bike-sharing: a three-bug hunt, from a decided loss to a 3.4× win
+
+bike-sharing first returned a **decided LOSS** for Maestra (baseline 124.0 vs maestra 143.5 rmse)
+— scrutinised the same way the diamonds leak was, rather than reported as-is. Three separate,
+real defects were found and fixed in sequence, each verified before moving to the next:
+
+1. **Cleaning dropped the raw `datetime` column** as "unique per row" — correctly id-like, but
+   its own stated rationale said it "can be decomposed into more useful features", and never
+   acted on that: feature engineering runs *after* cleaning and never sees a column cleaning
+   already dropped. No agent in the pipeline could say "keep this, someone else will use it."
+   **Fix:** the cleaning prompt now distinguishes a genuine timestamp from a plain running id —
+   keep it, since `date_parts` parses raw strings itself and drops the raw column afterward, so
+   keeping it here has no downside.
+2. **Target framing said `none`** for `count` (822 distinct values, right-skewed) with a
+   self-contradicting rationale: "count is a small-range count variable". The prompt's caution
+   clause for small-range counts ("a handful of distinct integer values") was being misapplied to
+   a target with hundreds of values. **Fix:** the caution now explicitly contrasts "a handful
+   (under ~20-30)" against a wide-range count, which should be treated as continuous.
+3. **The `date_parts` vocabulary had no `hour`.** Even after fixes 1–2, Maestra still trailed the
+   baseline (debug CV rmse 136.7 vs 131.8): the baseline sees the *raw* datetime string directly
+   and AutoGluon's own datetime auto-feature-generation captures sub-day granularity, while our
+   fixed vocabulary (year/month/weekday) had no way to express hour-of-day at all — structurally
+   unavailable regardless of judgment. For hourly bike demand, the commute-peak hour is close to
+   the dominant signal. **Fix:** added `hour` to `_DATE_PARTS`.
+
+Each fix was verified cheaply (LLM-only calls, then a single debug seed) before spending a full
+5-seed receipt. The `hour` fix alone took the debug seed from rmse 136.7 to **38.8** — a result
+large enough that the full battery was rerun to confirm: **verdict flips from decided baseline
+(Δ +19.55) to decided maestra (Δ −87.97, ≈ −71%), consistent across all 5 seeds (−86 to −90).**
+This is the project's philosophy exercised on itself three times in one task: an unexpected
+decided result is a bug hunt, not a headline, and the fixes it produces (a cross-agent
+coordination gap, a misapplied caution clause, a missing vocabulary entry) are all now permanent,
+tested improvements to every future run — not just this one dataset.
+
+### The submissions: real leaderboard receipts
+
+`--make-submission` produced five files, each with the CV estimate attached for a CV↔LB
+comparison once submitted:
+
+| Task | CV estimate | Public LB | Gap |
+|---|---|---|---|
+| **house-prices** | 0.1307 RMSLE (OOF, log-space — same units as the LB) | **0.12544** | **+0.0053 (≈4%, CV pessimistic)** |
+| bike-sharing | 36.63 rmse (raw units; framing rejected in this single 3-fold run) | pending | — |
+| titanic | 0.8137 accuracy | pending | — |
+| spaceship-titanic | 0.7909 accuracy | pending | — |
+| allstate | 1897.06 mae | pending | — |
+
+**house-prices is the first real CV↔LB receipt, and it is a good one.** The public LB metric is
+RMSLE; the internal CV was trained/scored in raw RMSE, so the two are not directly comparable —
+comparing them naively would be a units error, not a finding. The honest number replays the same
+(logged, deterministic) cleaning/feature plan through `cross_validate` with the accepted log1p
+transform and rescoves the pooled out-of-fold predictions in log space: **0.1307 vs the LB's
+0.12544, a gap of +0.0053 (≈4%), in the pessimistic direction.** For comparison: the project's
+synthetic/Rdatasets CV↔LB gaps ran 5.7×–15.3× when the validation *structure* was wrong (Grunfeld,
+economics) and <0.001 when it was right (TPS). A 4% gap on an unclean, real, 3-fold Kaggle CV is
+squarely in "the CV can be trusted" territory — on Maestra's first live-leaderboard receipt.
+
+### A second robustness fix, found along the way
+
+`run_multi_seed` had no per-seed error handling: allstate's battery hit a rare AutoGluon-internal
+fragility (an inhomogeneous-shape error deep in AutoGluon's own ensemble code, not a maestra
+defect) on one of 5 seeds, and the unhandled exception discarded all 4 good results. Fixed:
+a per-seed exception is now caught, recorded in a new `failed_seeds` field (seed + error), and the
+remaining seeds still produce a verdict; if every seed fails, that raises rather than reporting a
+silent "undecided". Separately, spaceship-titanic's `Transported` column (native `bool`) exposed a
+pandas gotcha: `.loc[rows, [False, True]]` is read as a boolean column MASK, not labels, silently
+selecting the wrong shape — none of the curated E2/Rdatasets targets were ever native `bool`. Fixed
+with position-based assignment, immune to the label/mask ambiguity regardless of class dtype.
 
 ## Where LLM judgment pays off — the whole map
 
@@ -467,8 +537,9 @@ The systematic answer to the project's question, across every layer a conductor 
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
 | Setup / target framing (M11) | **Yes — the predicted setup win** | House Prices, 5 seeds: log1p improves rmse in **5/5** (mean +2 273, ≈ −8%), seed-level paired test unambiguous; agent correctly silent on symmetric and classification targets. Caveat: the per-run 3-fold gate under-accepts (1/5) — conservative in the safe direction |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend) |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend); real Kaggle data (K1): 1 decided win (bike-sharing), 3 undecided, 0 decided losses |
 | **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
+| Temporal decomposition (`date_parts`) — a distinct mechanism from arithmetic FE | **Yes, decisively, once the vocabulary could express it** | K1 bike-sharing: **rmse 124.0 → 36.1 (−71%)**, driven by keeping+decomposing a raw datetime column (year/month/weekday/**hour**). Not "clever domain feature invented from numerics" (the null FE story) — the engine cannot parse a raw timestamp string into hour-of-day itself; this is closer to a structural setup capability than to CAAFE-style FE |
 
 **The publishable conclusion:** the feature-engineering layer — where most LLM-for-AutoML work
 concentrates (CAAFE, MALMAS, LLM-FE) — is a wash against a strong engine. The LLM's value is

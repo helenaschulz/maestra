@@ -70,7 +70,9 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
 | **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | **Maestra, 5/5 seeds** — passes the paired 2-SEM test (narrowly) |
 | **10-task battery** (5 seeds each, paired verdict) | rich → anonymous | mixed | — | — | **2 decided wins (both rich: credit −39%, wage −1.1%), 8 undecided, 0 decided losses**; anonymous controls inert (Δ ≈ 0) |
+| **Kaggle battery** (4 real competitions, 5 seeds) | rich → anonymous, real data | mixed | — | — | **1 decided win** (bike-sharing rmse 124.0→**36.1**, −71%), 3 undecided, **0 decided losses** |
 | **Target framing** (House Prices, `--target-framing`) | setup decision | rmse ↓ | raw target | **log1p, 5/5 seeds** | **mean −2 273 rmse (≈ −8%)** — a setup win AutoGluon cannot make itself |
+| **House Prices submission** (real Kaggle leaderboard) | rmse ↓ (LB: RMSLE) | CV↔LB gap | CV 0.1307 (log-space) | **LB 0.12544** | **gap +0.0053 (≈4%), CV pessimistic — trustworthy on a live leaderboard** |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
 Four findings that shape the design:
