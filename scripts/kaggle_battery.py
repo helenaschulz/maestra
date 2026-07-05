@@ -1,4 +1,4 @@
-"""K1: the Kaggle battery — E2's verdict framework on real competition data.
+"""K1/K2: the Kaggle battery — E2's verdict framework on real competition data.
 
 The E2 battery spans the semantic spectrum on classic Rdatasets/UCI tables; this battery re-runs
 the same instrument (5 seeds, `run_multi_seed`, three-way paired verdict) on REAL Kaggle
@@ -7,14 +7,26 @@ the project's blind spots:
 
   * rich semantics (spaceship-titanic, house-prices) — where the thesis predicts wins,
   * mixed (titanic: semantic names but 891 rows),
-  * **anonymized control** (allstate: cat1..cat116/cont1..cont14, the Kaggle analogue of the
+  * **anonymized control** (allstate, santander-transaction: the Kaggle analogue of the
     friedman/twin controls — the thesis predicts inert),
-  * **temporal** (bike-sharing: a datetime axis; also a natural `--target-framing` candidate —
-    `count` is right-skewed, and the competition metric is RMSLE).
+  * **temporal** (bike-sharing, store-sales, rossmann, walmart, ieee-fraud) — a datetime axis;
+    several are also a natural `--target-framing` candidate (skewed sales/revenue targets),
+  * **group** (rossmann/walmart's Store, two-sigma's manager_id) — a repeating entity the
+    Validation Strategist can detect WITHOUT the N2 raw-timestamp gap (the group column already
+    exists in the raw profile, unlike a derived month).
+
+K2 (2026-07-05) extends K1 from 5 to 13 tasks, all real Kaggle competitions, to turn the
+setup-wins from single case (bike-sharing) to pattern — see docs/RESULTS.md's K2 section for the
+verdicts. Competition metrics that this harness doesn't natively support (RMSPE, NDCG@k, log
+loss on a >2-class label) are approximated with a supported label metric (rmse/balanced_accuracy)
+for the internal battery verdict; this is a deliberate simplification consistent with how K1
+already handled titanic/spaceship-titanic, and is noted per task below. It does not affect
+`--make-submission`, which always uses each task's real `eval_metric`.
 
 Kaggle data cannot be fetched anonymously: join each competition once in the web UI (accept the
-rules), then this script's printed `kaggle competitions download` command works. Local files are
-checked first, so already-downloaded tasks run offline.
+rules), then this script's printed `kaggle competitions download` command works — EXCEPT the
+"Getting Started" competitions (titanic, house-prices, spaceship-titanic, store-sales), which are
+open by default. Local files are checked first, so already-downloaded tasks run offline.
 
 Known-leak hygiene (the diamonds lesson, applied up front): bike-sharing's `casual`+`registered`
 sum exactly to the target `count` and are absent from the competition's test set — dropped in
@@ -83,6 +95,106 @@ CATALOG = [
          note="fully anonymized (cat1..cat116, cont1..cont14) — the Kaggle analogue of the "
               "friedman/anonymized-twin controls; thesis predicts inert. Subsampled to 8k rows; "
               "competition metric is MAE (natively supported)"),
+
+    # --- K2 (2026-07-05): temporal/group structure, real competitions, 8 new tasks ---
+    dict(name="store-sales", semantics="rich+time+group", target="sales", metric="rmse",
+         id_col="id", path="data/kaggle_store_sales/train.csv",
+         competition="store-sales-time-series-forecasting", sample=15000,
+         test_path="data/kaggle_store_sales/test.csv",
+         eval_metric="root_mean_squared_error", framing=True,  # sales is right-skewed
+         note="Getting-Started (open by default, no join needed). 3M rows -> subsampled to 15k. "
+              "store_nbr (54 stores) + family (33 categories) repeat densely — group AND time "
+              "axes both present in a single un-joined table (holidays_events.csv/oil.csv/"
+              "stores.csv/transactions.csv exist but are ignored: multi-table join is a "
+              "deliberate non-goal). Real metric is RMSLE; framing=True aligns it. Verified via "
+              "a live single-seed smoke run (2026-07-05): baseline 411.5, maestra 408.2."),
+    dict(name="rossmann", semantics="rich+time+group", target="Sales", metric="rmse",
+         id_col="row_id", path="data/kaggle_rossmann/train.csv",  # Store repeats -- NOT a valid
+         # row id for grade()'s merge; row_id doesn't exist in the raw columns, so _materialize
+         # auto-inserts a unique range index (the same pattern bike-sharing's "rowid" uses)
+         competition="rossmann-store-sales", sample=15000,
+         test_path="data/kaggle_rossmann/test.csv",
+         eval_metric="root_mean_squared_error", framing=True,  # sales right-skewed, many closed-day zeros
+         drop=["Customers"],  # leak: near-perfect proxy for Sales, absent from the real test set
+         note="1017209 rows -> subsampled to 15k. Store (1115 stores, ~942 days each) is a "
+              "genuine repeating GROUP entity -- unlike bike-sharing's raw datetime, this exists "
+              "as a column already, so the N2 timing gap (period not materialized before FE) "
+              "does not apply here; this tests whether --fold-advisor picks GROUP correctly on "
+              "real, messy data. Real competition metric is RMSPE (unsupported here); rmse used "
+              "internally, consistent with how this harness already treats other regression tasks."),
+    dict(name="walmart", semantics="rich+time+group", target="Weekly_Sales", metric="rmse",
+         id_col="row_id", path="data/kaggle_walmart/train.csv",  # Store/Dept both repeat -- same
+         # non-unique-id fix as rossmann above
+         competition="walmart-recruiting-store-sales-forecasting", sample=15000,
+         test_path="data/kaggle_walmart/test.csv",
+         eval_metric="root_mean_squared_error", framing=True,
+         note="421570 rows -> subsampled to 15k. Store x Dept (~3331 combinations) repeats "
+              "densely -- a second, independent group+time real task (different retailer/shape "
+              "than Rossmann/store-sales). Weekly_Sales can be genuinely NEGATIVE (returns > "
+              "sales) -- clip_nonneg correctly stays off since the training target's own min < 0. "
+              "Real metric is a weighted MAE (holiday weeks x5); rmse used internally."),
+    dict(name="ieee-fraud", semantics="poor+time", target="isFraud", metric="balanced_accuracy",
+         id_col="TransactionID", path="data/kaggle_ieee/train_transaction.csv",
+         competition="ieee-fraud-detection", sample=15000,
+         test_path="data/kaggle_ieee/test_transaction.csv",
+         eval_metric="accuracy", framing=False,
+         drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA-style columns: opaque noise,
+         # not semantic richness, and at full width they blow gpt-4o's 30k TPM rate limit in one
+         # profiling call (verified: FAILED live, RateLimitError, 31805 requested) -- dropping
+         # them is a column-width cost bound, the same spirit as `sample` bounding row count.
+         note="590540 rows, ~55 columns after dropping V1-V339 (see drop=) -> subsampled to 15k. "
+              "TransactionDT (time) + card1-6/addr1-2 (weak repeating group, not used as "
+              "--fold-advisor group_column here, left to the Strategist's own judgment) on real "
+              "fraud data -- a poor/mixed-semantics + time real task, distinct from "
+              "allstate/santander's plain anonymized controls. Uses train_transaction.csv ONLY "
+              "(train_identity.csv ignored -- multi-table join is a deliberate non-goal). Real "
+              "metric is AUC; balanced_accuracy used internally (label-based, like titanic)."),
+    dict(name="santander-transaction", semantics="poor", target="target",
+         metric="balanced_accuracy", id_col="ID_code",
+         path="data/kaggle_santander_transaction/train.csv",
+         competition="santander-customer-transaction-prediction", sample=15000,
+         test_path="data/kaggle_santander_transaction/test.csv",
+         eval_metric="accuracy", framing=False,
+         note="200000 rows, 200 fully anonymized numeric columns (var_0..var_199) -> subsampled "
+              "to 15k. A THIRD anonymized control (after friedman-synth/E2 and allstate/K1) on "
+              "modern Kaggle data -- the thesis predicts inert, same as the others. Real metric "
+              "is AUC; balanced_accuracy used internally."),
+    dict(name="restaurant-revenue", semantics="rich+time", target="revenue", metric="rmse",
+         id_col="Id", path="data/kaggle_restaurant/train.csv",
+         competition="restaurant-revenue-prediction",
+         test_path="data/kaggle_restaurant/test.csv",
+         eval_metric="root_mean_squared_error", framing=True,  # revenue is right-skewed
+         note="Only 137 rows -- no subsampling. 'Open Date' (temporal) + City/City Group/Type "
+              "(rich semantics) + P1-P37 (anonymized census-style features). Famous for being "
+              "small enough to overfit trivially -- a genuine small-n stress test, distinct from "
+              "titanic's 891 rows."),
+    dict(name="airbnb", semantics="rich+time", target="country_destination",
+         metric="balanced_accuracy", id_col="id",
+         path="data/kaggle_airbnb/train_users_2.csv",
+         competition="airbnb-recruiting-new-user-bookings", sample=15000,
+         test_path="data/kaggle_airbnb/test_users.csv",
+         eval_metric="accuracy", framing=False,
+         note="213451 rows -> subsampled to 15k. 12-class target (country_destination: NDF/US/"
+              "other/FR/CA/GB/ES/IT/PT/NL/DE/AU), rich semantics (gender/age/signup_method/"
+              "language/affiliate_channel/first_device_type) + weak time (date_account_created, "
+              "timestamp_first_active). sessions.csv/countries.csv/age_gender_bkts.csv ignored "
+              "(multi-table non-goal). Real metric is NDCG@5; balanced_accuracy on the top label "
+              "used internally, the same label-metric simplification as the 3-class rental case."),
+    dict(name="two-sigma-rental", semantics="rich+group", target="interest_level",
+         metric="balanced_accuracy", id_col="listing_id",
+         path="data/kaggle_twosigma/train_flat.csv",
+         competition="two-sigma-connect-rental-listing-inquiries", sample=15000,
+         eval_metric="accuracy", framing=False,
+         note="49352 rows. Ships as train.json with list-valued 'features'/'photos' columns -- "
+              "flattened once to a plain CSV (data/kaggle_twosigma/train_flat.csv), those two "
+              "columns dropped (not a leak, just an unsupported column type for this harness; "
+              "the remaining columns -- bathrooms/bedrooms/price/manager_id/created/description/"
+              "latitude/longitude -- stay). manager_id is a genuine repeating GROUP entity (a "
+              "landlord/agency posts many listings) on real semantic-rich data -- a second, "
+              "structurally different group test from Rossmann/Walmart's Store. 3-class target "
+              "(low/medium/high interest); real metric is multi-class log loss, balanced_accuracy "
+              "used internally (no test_path: --make-submission not wired for this task, battery "
+              "only)."),
 ]
 
 
@@ -117,7 +229,8 @@ def _download_help(spec: dict) -> str:
             f"  2) .venv311/bin/kaggle competitions download -c {spec['competition']} -p {folder}")
 
 
-def make_submission(spec: dict, *, model: str, time_limit: int, cv: int) -> None:
+def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
+                    fold_advisor: bool = False) -> None:
     """Train Maestra on the FULL train set and write a submittable prediction file.
 
     Uses the leakage-free CV for the honest estimate (that is the number the public LB gets
@@ -143,12 +256,13 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int) -> None
     test_df = pd.read_csv(test_path)
 
     print(f"\n=== {spec['name']}: full-train submission run "
-          f"(eval_metric={spec['eval_metric']}, framing={spec['framing']}) ===")
+          f"(eval_metric={spec['eval_metric']}, framing={spec['framing']}, "
+          f"fold_advisor={fold_advisor}) ===")
     result = run_pipeline(
         train, spec["target"], model=model, test_size=0.2, time_limit=time_limit,
         seed=42, model_dir=f"AutogluonModels/kaggle_{spec['name']}", cv_folds=cv,
         eval_metric=spec["eval_metric"], target_framing=spec["framing"],
-        test_df=test_df, id_col=submit_id)
+        fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id)
 
     out = f"data/submission_{spec['name']}.csv"
     result.submission.to_csv(out, index=False)
@@ -161,8 +275,13 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int) -> None
     if result.target_framing:
         framing_note = f" | framing: {result.target_framing['transform']}" \
                        f" accepted={result.target_framing['accepted']}"
+    if result.fold_strategy:
+        framing_note += f" | folds: {result.fold_strategy['strategy']}"
     print(f"\nsubmission written: {out}  ({len(result.submission)} rows)")
     print(f"CV estimate ({cv_est.eval_metric}): {cv_est.mean:.4f} ± {cv_est.std:.4f}{framing_note}")
+    if result.fold_strategy:
+        for line in result.fold_strategy["log"]:
+            print(f"  {line}")
     print("submit with:")
     print(f"  .venv311/bin/kaggle competitions submit -c {spec['competition']} "
           f"-f {out} -m 'maestra cv={cv_est.mean:.4f}'")
@@ -179,6 +298,9 @@ def main():
     p.add_argument("--model", default="gpt-4o")
     p.add_argument("--time-limit", type=int, default=60)
     p.add_argument("--cv", type=int, default=3)
+    p.add_argument("--fold-advisor", action="store_true",
+                   help="Validation Strategist on both arms (N2, 2026-07-05) — lets the "
+                        "bike-sharing temporal task pick up time_local instead of random folds.")
     args = p.parse_args()
     load_dotenv()
 
@@ -188,7 +310,8 @@ def main():
         if not todo:
             raise SystemExit(f"unknown task {args.make_submission!r} — see --list")
         for spec in todo:
-            make_submission(spec, model=args.model, time_limit=args.time_limit, cv=args.cv)
+            make_submission(spec, model=args.model, time_limit=args.time_limit, cv=args.cv,
+                            fold_advisor=args.fold_advisor)
         return
 
     if args.list or not args.task:
@@ -212,6 +335,7 @@ def main():
         ms = run_multi_seed(csv, spec["target"], metric=spec["metric"], seeds=_SEEDS,
                             id_col=spec["id_col"], model=args.model,
                             time_limit=args.time_limit, cv_folds=args.cv,
+                            fold_advisor=args.fold_advisor,
                             name=f"kaggle-{spec['name']}")
         ts = datetime.now().isoformat(timespec="seconds")
         for r in ms.per_seed:

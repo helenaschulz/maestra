@@ -96,7 +96,7 @@ def _plan_without_drop(plan: dict, column: str) -> dict:
 
 def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, model_dir, time_limit,
                        n_folds, seed, eval_metric=None, sigma_mult=2.0,
-                       group_column=None, time_column=None, budget=None):
+                       group_column=None, time_column=None, period_column=None, budget=None):
     """Put each high-risk drop to the arbiter and veto it if keeping the column helps.
 
     Returns ``(revised_plan, records)``. The revised plan keeps any column whose retention
@@ -112,7 +112,8 @@ def apply_skeptic_gate(df, target, *, cleaning_plan, feature_plan, reviews, mode
         return cleaning_plan, records
 
     cv_kwargs = dict(feature_plan=feature_plan, time_limit=time_limit, n_folds=n_folds, seed=seed,
-                     eval_metric=eval_metric, group_column=group_column, time_column=time_column)
+                     eval_metric=eval_metric, group_column=group_column, time_column=time_column,
+                     period_column=period_column)
     base = cross_validate(df, target, cleaning_plan=cleaning_plan,
                           model_dir=f"{model_dir}/base", **cv_kwargs)
     revised = cleaning_plan

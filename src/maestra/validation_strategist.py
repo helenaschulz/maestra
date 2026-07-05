@@ -22,7 +22,7 @@ FOLD_STRATEGY_SCHEMA = {
     "properties": {
         "strategy": {
             "type": "string",
-            "enum": ["random", "group", "time"],
+            "enum": ["random", "group", "time", "time_local"],
             "description": "How validation folds must be built for an honest estimate.",
         },
         "group_column": {
@@ -32,7 +32,12 @@ FOLD_STRATEGY_SCHEMA = {
         },
         "time_column": {
             "type": ["string", "null"],
-            "description": "For strategy=time: the column ordering past before future.",
+            "description": "For strategy=time or time_local: the column ordering past before future.",
+        },
+        "period_column": {
+            "type": ["string", "null"],
+            "description": "For strategy=time_local ONLY: the column naming the repeating period "
+                           "(e.g. month, patient visit number) within which the local split repeats.",
         },
         "rationale": {"type": "string", "description": "Why this strategy, in one or two sentences."},
         "leakage_warnings": {
@@ -56,17 +61,33 @@ _SYSTEM_PROMPT = (
     "  group  - an ENTITY appears in multiple rows (patient, customer, device, session ...). "
     "A random split would put the same entity in train and validation and the CV would lie "
     "optimistically. Name the entity column as group_column.\n"
-    "  time   - the task is to predict the FUTURE from the past (a timestamp/date/period "
-    "column orders the rows and the target evolves over it). Name it as time_column.\n"
+    "  time   - the task is to predict the FUTURE from the past with ONE global cut (a "
+    "timestamp/date/period column orders the rows and the target evolves over it, and the "
+    "deployment split is a single point in time — train on everything before it, predict "
+    "everything after). Name the ordering column as time_column.\n"
+    "  time_local - the task is ALSO temporal, but the real deployment split REPEATS within a "
+    "period instead of cutting the whole timeline once — e.g. predicting the last days of EVERY "
+    "month from the first days of that SAME month, repeated across many months; or predicting a "
+    "patient's later visits from their own earlier visits, repeated across many patients. "
+    "Evidence: the description or column semantics say the split recurs per period/entity, not "
+    "once globally, and there is a column naming that period (a month/period id, a per-entity "
+    "visit index). A plain global 'time' split on such data trains early folds on very little "
+    "of the timeline and validates on a large, distributionally different future block — it "
+    "OVERSHOOTS into an overly pessimistic estimate on data that is really a mild, repeated, "
+    "local extrapolation. Name the ordering column as time_column AND the repeating period as "
+    "period_column.\n"
     "Evidence for group: an id-like column with n_unique clearly BELOW n_rows (repeats!), or "
     "the description says several rows belong to one entity. CAUTION: a categorical with only a "
     "FEW balanced levels (control/treatment arms, A/B variants, product categories) is a design "
     "or feature column, NOT an entity — entities are typically numerous (many patients, many "
-    "firms). Evidence for time: a date/period column plus a forecasting-flavoured task; this "
-    "includes a NUMERIC time axis (e.g. decimal years, monotonically increasing) — a series "
-    "whose only ordering column is numeric 'time'/'year' is still temporal. Be conservative: "
-    "when in doubt, random — but missing a real group/time structure is the costlier error, so "
-    "weigh repeats seriously. "
+    "firms). Evidence for time/time_local: a date/period column plus a forecasting-flavoured "
+    "task; this includes a NUMERIC time axis (e.g. decimal years, monotonically increasing) — a "
+    "series whose only ordering column is numeric 'time'/'year' is still temporal. Between time "
+    "and time_local: default to plain 'time' unless there is a clear repeating-period signal — "
+    "time_local needs its own period_column to be verifiable, and misapplying it to data that is "
+    "really one global cut wastes CV structure for no reason. Be conservative: when in doubt, "
+    "random — but missing a real group/time structure is the costlier error, so weigh repeats "
+    "seriously. "
     "Only name columns that exist in the profile. Additionally flag columns that look like "
     "TARGET LEAKS (recorded after the outcome, or a near-proxy of the target) under "
     "leakage_warnings — flagging is advice, not an instruction to drop."
@@ -103,7 +124,7 @@ def validate_fold_strategy(proposal: dict, df: pd.DataFrame, target: str) -> tup
     rationale = proposal.get("rationale", "")
     warnings = proposal.get("leakage_warnings") or []
     verified = {"strategy": "random", "group_column": None, "time_column": None,
-                "rationale": rationale, "leakage_warnings": warnings}
+                "period_column": None, "rationale": rationale, "leakage_warnings": warnings}
 
     def fallback(reason: str):
         log.append(f"FOLDS random (fallback): {reason}")
@@ -139,6 +160,28 @@ def validate_fold_strategy(proposal: dict, df: pd.DataFrame, target: str) -> tup
             return fallback(f"time column {col!r} is not sortable (unparseable values)")
         verified.update(strategy="time", time_column=col)
         log.append(f"FOLDS time-ordered by {col!r} -- {rationale}")
+    elif strategy == "time_local":
+        col = proposal.get("time_column")
+        period_col = proposal.get("period_column")
+        if not col or col not in df.columns:
+            return fallback(f"proposed time column {col!r} does not exist")
+        if col == target:
+            return fallback("time column must not be the target")
+        if not period_col or period_col not in df.columns:
+            return fallback(f"proposed period column {period_col!r} does not exist")
+        if period_col == target:
+            return fallback("period column must not be the target")
+        values = df[col]
+        if values.dtype.kind not in "iufM":
+            values = pd.to_datetime(values, errors="coerce", format="mixed")
+        if values.isna().mean() > 0.05:
+            return fallback(f"time column {col!r} is not sortable (unparseable values)")
+        n_periods = df[period_col].nunique(dropna=True)
+        if n_periods < 2:
+            return fallback(f"period column {period_col!r} has fewer than 2 periods")
+        verified.update(strategy="time_local", time_column=col, period_column=period_col)
+        log.append(f"FOLDS time-local within {period_col!r} ({n_periods} periods), "
+                   f"ordered by {col!r} -- {rationale}")
     else:
         log.append(f"FOLDS random -- {rationale}" if rationale else "FOLDS random")
 

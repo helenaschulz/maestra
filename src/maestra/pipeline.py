@@ -30,6 +30,7 @@ from maestra.hybrid_features import apply_generated_features, propose_feature_co
 from maestra.text_features import detect_text_columns, propose_text_feature_code
 from maestra.encoding import fit_ordinal_encodings, propose_ordinal_encodings
 from maestra.profiling import description_context, profile_dataframe
+from maestra.run_memory import memory_context
 from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
 from maestra.target_framing import propose_target_framing, validate_target_framing
@@ -213,11 +214,12 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
     """
     # Validation Strategist (opt-in): decide the fold strategy before anything is fitted. Independent
     # of use_llm — it makes its own call and is useful even for a --no-llm baseline (smart validation).
-    fold_strategy, group_column, time_column = None, None, None
+    fold_strategy, group_column, time_column, period_column = None, None, None, None
     if fold_advisor:
         proposal = propose_fold_strategy(model, profile_dataframe(df, target), target, research_context)
         verified, strategy_log = validate_fold_strategy(proposal, df, target)
         group_column, time_column = verified["group_column"], verified["time_column"]
+        period_column = verified["period_column"]
         fold_strategy = {**verified, "log": strategy_log}
 
     # Ordinal encoding (opt-in): data-independent, so encode the full data up front — every fold,
@@ -251,7 +253,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             df, target, cleaning_plan=cleaning_plan, feature_plan=None, reviews=reviews,
             model_dir=f"{model_dir}/skeptic", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
             eval_metric=eval_metric, group_column=group_column, time_column=time_column,
-            budget=budget)
+            period_column=period_column, budget=budget)
         skeptic_records = [asdict(r) for r in recs]
 
     # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
@@ -291,13 +293,15 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             df, target, candidates, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
             sigma_mult=hybrid_threshold, eval_metric=eval_metric,
-            group_column=group_column, time_column=time_column, budget=budget)
+            group_column=group_column, time_column=time_column, period_column=period_column,
+            budget=budget)
         hybrid_records = [asdict(r) for r in records]
     else:
         cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                             model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
                             eval_metric=eval_metric,
-                            group_column=group_column, time_column=time_column)
+                            group_column=group_column, time_column=time_column,
+                            period_column=period_column)
 
     # Target framing (opt-in): the LLM proposes a log1p reframing of a skewed regression target;
     # a second CV on IDENTICAL folds, scored in ORIGINAL space, is the arbiter. Adopted only if
@@ -319,6 +323,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                     seed=seed, eval_metric=eval_metric,
                     generated_features=generated_features or None,
                     group_column=group_column, time_column=time_column,
+                    period_column=period_column,
                     target_transform=transform))
             if outcome.reason == "budget_exhausted":
                 tf_log.append(f"SKIP {transform.name} trial: cv budget exhausted "
@@ -412,6 +417,8 @@ def run_pipeline(
     target_framing: bool = False,
     text_features: bool = False,
     cv_budget: int | None = None,
+    run_memory: bool = False,
+    memory_path: str = "benchmark.jsonl",
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -454,6 +461,11 @@ def run_pipeline(
         dataset_description: Provider-written description of the dataset (e.g. Kaggle's
             ``data_description.txt``), fed verbatim (capped) to every judgment node — it
             carries the column semantics the statistical profile cannot.
+        run_memory: If ``True``, feed the project's own past DECIDED verdicts (N4) from
+            ``memory_path`` to every judgment node as non-binding context — the same channel
+            as ``dataset_description``/``research``. "Undecided" verdicts are never retrieved
+            (self-reinforcement risk); this run's own arbiter still re-measures regardless.
+        memory_path: Where past verdicts are read from (default: the shared ``benchmark.jsonl``).
 
     Raises:
         ValueError: If ``target`` is not a column of ``df``.
@@ -483,9 +495,11 @@ def run_pipeline(
         research_context, research_summary = _do_research(model, df, target, rules_mode)
 
     # The planners' shared context: the provider-written dataset description (column semantics
-    # the profile's statistics cannot carry) plus any research hypotheses. One channel, so every
-    # judgment node sees the same picture.
-    parts = [description_context(dataset_description), research_context]
+    # the profile's statistics cannot carry), any research hypotheses, and (opt-in) the
+    # project's own past DECIDED verdicts (N4) -- never "undecided" ones. One channel, so every
+    # judgment node sees the same picture; all three are non-binding, the arbiter still decides.
+    memory_ctx = memory_context(memory_path) if run_memory else None
+    parts = [description_context(dataset_description), research_context, memory_ctx]
     research_context = "\n\n".join(p for p in parts if p) or None
 
     if cv_folds is not None and cv_folds >= 2:

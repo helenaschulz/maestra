@@ -41,6 +41,40 @@ def test_time_folds_validate_strictly_later_than_train():
         assert df["ts"].iloc[train_idx].max() < df["ts"].iloc[val_idx].min()  # past -> future only
 
 
+def _repeating_period_df(n_periods=4, rows_per_period=12):
+    """Two months' worth of daily rows, repeated -- the bike-sharing shape: a within-period
+    time order (day) plus a repeating period (month)."""
+    rng = np.random.default_rng(2)
+    rows = []
+    for p in range(n_periods):
+        ts = pd.date_range(f"2024-{p + 1:02d}-01", periods=rows_per_period, freq="D")
+        order = rng.permutation(rows_per_period)  # rows arrive out of order, like real data
+        rows.append(pd.DataFrame({"month": p, "ts": ts[order], "y": range(rows_per_period)}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_time_local_folds_pool_every_period_and_validate_strictly_later_within_it():
+    df = _repeating_period_df()
+    folds = validation._make_folds(df, "y", 3, seed=0, stratified=False,
+                                   time_column="ts", period_column="month")
+    assert len(folds) == 3
+    for train_idx, val_idx in folds:
+        # every fold is exposed to every period (curing the global-time-split's expanding bias)
+        assert set(df["month"].iloc[train_idx]) == set(df["month"].iloc[val_idx]) == set(df["month"])
+        for p in df["month"].unique():
+            p_train = df[(df.index.isin(train_idx)) & (df["month"] == p)]
+            p_val = df[(df.index.isin(val_idx)) & (df["month"] == p)]
+            if len(p_train) and len(p_val):
+                assert p_train["ts"].max() < p_val["ts"].min()  # local past -> future, per period
+
+
+def test_time_local_folds_are_deterministic():
+    df = _repeating_period_df()
+    a = validation._make_folds(df, "y", 3, seed=0, stratified=False, time_column="ts", period_column="month")
+    b = validation._make_folds(df, "y", 3, seed=0, stratified=False, time_column="ts", period_column="month")
+    assert [v.tolist() for _, v in a] == [v.tolist() for _, v in b]
+
+
 # --- deterministic verification of proposals ----------------------------------------
 
 def test_group_proposal_verified(monkeypatch):
@@ -72,6 +106,45 @@ def test_unparseable_time_column_falls_back():
     df = pd.DataFrame({"when": ["yesterday", "??", "soon", "later"], "y": [0, 1, 0, 1]})
     verified, log = validate_fold_strategy(
         {"strategy": "time", "time_column": "when", "rationale": "r"}, df, "y")
+    assert verified["strategy"] == "random"
+    assert any("not sortable" in line for line in log)
+
+
+def test_time_local_proposal_verified():
+    df = _repeating_period_df()
+    proposal = {"strategy": "time_local", "time_column": "ts", "period_column": "month",
+                "rationale": "repeating within-month split"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "time_local"
+    assert verified["time_column"] == "ts" and verified["period_column"] == "month"
+    assert any("FOLDS time-local within 'month'" in line for line in log)
+
+
+def test_time_local_missing_period_column_falls_back_to_random():
+    df = _repeating_period_df()
+    proposal = {"strategy": "time_local", "time_column": "ts", "period_column": "quarter",
+                "rationale": "r"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "random" and verified["period_column"] is None
+    assert any("period column" in line and "fallback" in line for line in log)
+
+
+def test_time_local_too_few_periods_falls_back():
+    df = pd.DataFrame({"month": [0] * 10, "ts": pd.date_range("2024-01-01", periods=10),
+                       "y": range(10)})
+    proposal = {"strategy": "time_local", "time_column": "ts", "period_column": "month",
+                "rationale": "r"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "random"
+    assert any("fewer than 2 periods" in line for line in log)
+
+
+def test_time_local_unparseable_time_column_falls_back():
+    df = pd.DataFrame({"month": [0, 0, 1, 1], "when": ["yesterday", "??", "soon", "later"],
+                       "y": [0, 1, 0, 1]})
+    proposal = {"strategy": "time_local", "time_column": "when", "period_column": "month",
+                "rationale": "r"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
     assert verified["strategy"] == "random"
     assert any("not sortable" in line for line in log)
 
@@ -115,6 +188,36 @@ def test_pipeline_threads_group_column_into_cv(monkeypatch):
     assert captured["group_column"] == "customer_id"          # the verified strategy reached the CV
     assert result.fold_strategy["strategy"] == "group"        # and is reported for the log
     assert any("FOLDS group" in line for line in result.fold_strategy["log"])
+
+
+def test_pipeline_threads_period_column_into_cv(monkeypatch):
+    """time_local's period_column reaches cross_validate the same way group_column does."""
+    from maestra import pipeline
+    from maestra.validation import CVResult
+
+    df = _repeating_period_df()
+    captured = {}
+
+    def fake_cross_validate(df_, target, **kwargs):
+        captured.update(kwargs)
+        return CVResult("rmse", "regression", [0.8, 0.8], 0.8, 0.0, 2, False, False)
+
+    monkeypatch.setattr(pipeline, "propose_fold_strategy",
+                        lambda *a, **k: {"strategy": "time_local", "time_column": "ts",
+                                         "period_column": "month", "rationale": "repeats monthly"})
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "cross_validate", fake_cross_validate)
+    monkeypatch.setattr(pipeline, "fit_predictor",
+                        lambda *a, **k: __import__("maestra.engine", fromlist=["TrainingResult"]).TrainingResult(
+                            "regression", "root_mean_squared_error", pd.DataFrame(), {}))
+
+    result = pipeline.run_pipeline(df, "y", model="m", test_size=0.2, time_limit=1, seed=0,
+                                   model_dir="x", cv_folds=2, fold_advisor=True, use_fe=False)
+
+    assert captured["period_column"] == "month"                    # verified strategy reached the CV
+    assert result.fold_strategy["strategy"] == "time_local"
+    assert any("FOLDS time-local" in line for line in result.fold_strategy["log"])
 
 
 def test_fold_advisor_runs_without_llm_cleaning(monkeypatch):
