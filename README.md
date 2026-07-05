@@ -124,7 +124,12 @@ Four findings that shape the design:
    the boundary is *model-specific, not price-tier*: Haiku 4.5, a small cheap model, matches the
    flagships. The honest consulting takeaway is not "buy the biggest model" but **"verify this
    specific judgment on your specific model — the failure mode is invisible without a benchmark
-   like this one."**
+   like this one."** A real Kaggle leaderboard sharpened this further: on bike-sharing-demand the
+   Strategist correctly detected the temporal axis, but a plain global time-split *overshot* into
+   an overly pessimistic CV (expanding-window bias over 2 years of seasonality), because the
+   competition's actual test split is a repeating LOCAL window (last days of every month), not one
+   big future block — detecting "is it temporal" is necessary but not sufficient; the fold's
+   *granularity* has to match how the real split happens too.
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.

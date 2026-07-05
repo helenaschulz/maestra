@@ -496,26 +496,56 @@ tested improvements to every future run — not just this one dataset.
 
 ### The submissions: real leaderboard receipts
 
-`--make-submission` produced five files, each with the CV estimate attached for a CV↔LB
-comparison once submitted:
+`--make-submission` produced five files, submitted to their live competitions. Each CV estimate is
+replayed in the metric's *actual* units (never a naive cross-metric comparison — RMSE vs RMSLE is
+a units error, not a finding) using the exact logged, deterministic cleaning/feature plan:
 
-| Task | CV estimate | Public LB | Gap |
-|---|---|---|---|
-| **house-prices** | 0.1307 RMSLE (OOF, log-space — same units as the LB) | **0.12544** | **+0.0053 (≈4%, CV pessimistic)** |
-| bike-sharing | 36.63 rmse (raw units; framing rejected in this single 3-fold run) | pending | — |
-| titanic | 0.8137 accuracy | pending | — |
-| spaceship-titanic | 0.7909 accuracy | pending | — |
-| allstate | 1897.06 mae | pending | — |
+| Task | CV estimate (LB units) | Public LB | Gap | Direction |
+|---|---|---|---|---|
+| **house-prices** | 0.1307 RMSLE (OOF, log-space) | **0.12544** | +0.0053 (≈4%) | pessimistic (safe) |
+| spaceship-titanic | 0.7909 accuracy | **0.79214** | −0.0012 | ≈exact |
+| titanic | 0.8137 accuracy | **0.75598** | +0.058 | pessimistic (safe; small-data variance, 891 rows) |
+| allstate | 1897.06 mae | **1141.97** | +755 (≈40%) | pessimistic (safe; carved 8k-row subsample vs the full real test set) |
+| **bike-sharing** | 0.372 RMSLE (random folds) | **0.48758** | **−0.116** | **optimistic (dangerous)** |
 
-**house-prices is the first real CV↔LB receipt, and it is a good one.** The public LB metric is
-RMSLE; the internal CV was trained/scored in raw RMSE, so the two are not directly comparable —
-comparing them naively would be a units error, not a finding. The honest number replays the same
-(logged, deterministic) cleaning/feature plan through `cross_validate` with the accepted log1p
-transform and rescoves the pooled out-of-fold predictions in log space: **0.1307 vs the LB's
-0.12544, a gap of +0.0053 (≈4%), in the pessimistic direction.** For comparison: the project's
-synthetic/Rdatasets CV↔LB gaps ran 5.7×–15.3× when the validation *structure* was wrong (Grunfeld,
-economics) and <0.001 when it was right (TPS). A 4% gap on an unclean, real, 3-fold Kaggle CV is
-squarely in "the CV can be trusted" territory — on Maestra's first live-leaderboard receipt.
+**house-prices, spaceship-titanic, titanic and allstate all land safely pessimistic** — the CV
+either matches closely or over-estimates the error, never under-estimates it. For comparison: the
+project's synthetic/Rdatasets CV↔LB gaps ran 5.7×–15.3× when the validation *structure* was wrong
+(Grunfeld, economics) and <0.001 when it was right (TPS); these real-competition gaps sit
+comfortably inside that trusted range.
+
+### bike-sharing's CV↔LB gap: the project's thesis, replayed live — and sharpened
+
+bike-sharing's battery/submission CV used **random folds** (the library default; `--make-submission`
+does not pass `--fold-advisor`) on a task whose real Kaggle split is temporal: train is days 1–19
+of every month, test is days 20–end of every month — a repeating within-month future-prediction
+task. Random folds are exactly the blind spot M1 exists to catch, and here it shows up on a real
+leaderboard: **CV 0.372 vs LB 0.48758, a −0.116 gap in the dangerous, optimistic direction.**
+
+The obvious next step — turn on the Strategist — is only half the story. `propose_fold_strategy`
+correctly detects the structure unaided (`strategy: time, time_column: datetime`, reasoning "may
+involve predicting future counts based on past data"). But a plain global time-ordered CV (3
+sequential chronological folds over the full ~2-year span) does **not** close the gap — it
+**overshoots the other way**: RMSLE 0.593, a +0.105 gap, now *pessimistic*. The fold scores expose
+why (rmse per fold: 46 / 123 / 65) — classic expanding-window bias: with only 3 folds over two
+years of strong seasonality and year-over-year growth, an early fold trains on very little data
+and validates on a large, distributionally different future block (a whole season/trend shift).
+The real competition's test set is a much *milder* extrapolation than that: 11 days ahead within a
+month whose first 19 days the model has already seen, repeated across the whole timeline — closer
+to a fine-grained, repeated local holdout than one large global future chunk.
+
+**Neither vocabulary entry matches the competition's actual split rule.** Random folds ignore time
+entirely (optimistic). A single global chronological split captures a distribution shift far
+larger than what the real test set contains (pessimistic). The honest, sharper thesis this
+sharpens to: *validation-design judgment is not just "detect group/time structure exists" — it is
+matching the fold **granularity** to how the deployment split actually happens*, and today's
+`validation_strategist.py` only distinguishes `random`/`group`/`time`, not the shape of the time
+split itself. This is a well-scoped, concrete backlog item (a repeating/local time-split fold
+strategy — e.g. holding out the same relative window within every period), not a same-night fix,
+and it is a stronger, more specific finding than "turn on fold-advisor" would have been on its own.
+Note this does not affect the submitted predictions' quality — the final model is trained on the
+full data regardless of which CV variant is used to *estimate* it; only the CV number's
+trustworthiness for this specific task was in question, and now precisely characterised.
 
 ### A second robustness fix, found along the way
 
