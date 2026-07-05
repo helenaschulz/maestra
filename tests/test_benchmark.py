@@ -69,6 +69,27 @@ def test_run_task_grades_maestra_and_baseline(tmp_path, monkeypatch):
     assert benchmark._winner(r.delta, r.higher_is_better) == "maestra"
 
 
+def test_run_task_threads_fold_advisor_into_both_arms(tmp_path, monkeypatch):
+    """N2 (2026-07-05): fold_advisor must reach BOTH arms via run_task's `common` dict, or a
+    random-vs-advised comparison would be confounded with use_llm (the bug this closes: the K1
+    battery/--make-submission path never exercised the fold advisor at all)."""
+    df = pd.DataFrame({"id": range(8), "f": [0, 1, 0, 1, 0, 1, 0, 1], "y": [0, 1] * 4})
+    csv = tmp_path / "toy.csv"
+    df.to_csv(csv, index=False)
+    captured = []
+
+    def fake_run(work, target, *, use_llm, test_df, id_col, **kwargs):
+        captured.append(kwargs.get("fold_advisor"))
+        return SimpleNamespace(submission=pd.DataFrame(
+            {id_col: test_df[id_col].tolist(), target: [0] * len(test_df)}), hybrid=None)
+
+    monkeypatch.setattr(benchmark, "run_pipeline", fake_run)
+    run_task(str(csv), "y", metric="accuracy", id_col="id", time_limit=1, seed=0,
+            holdout_frac=0.5, cv_folds=3, fold_advisor=True)
+
+    assert captured == [True, True]      # both arms (maestra, baseline) got it
+
+
 def test_summary_renders_and_handles_missing(tmp_path):
     p = str(tmp_path / "b.jsonl")
     assert "No benchmark results" in summary(p)
@@ -146,6 +167,39 @@ def test_multi_seed_all_seeds_failing_raises_not_silent_undecided(monkeypatch):
     monkeypatch.setattr(B, "run_task", always_fails)
     with pytest.raises(RuntimeError, match="all 2 seeds failed"):
         B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2])
+
+
+def test_multi_seed_reports_mde_alongside_the_verdict(monkeypatch):
+    """N1 (2026-07-05): every multi-seed result carries the minimum detectable effect at this
+    seed count/spread, so 'undecided' is interpretable as 'no effect this large', not a bare
+    non-result."""
+    from maestra import benchmark as B
+    results = {1: _bench(1, 0.80, 0.805), 2: _bench(2, 0.80, 0.803), 3: _bench(3, 0.80, 0.76)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms = B.run_multi_seed("x.csv", "y", metric="m", seeds=[1, 2, 3])
+    assert ms.verdict == "undecided"
+    assert ms.mde > abs(ms.mean_delta)  # undecided: the mean fell short of the bar it needed
+
+
+def test_multi_seed_nb_correction_can_flip_a_marginal_win_to_undecided(monkeypatch):
+    """The Nadeau-Bengio inflation (test_train_ratio from holdout_frac) only raises the bar --
+    reproduces the real M6 finding (House Prices, 5 seeds) at benchmark scale: a delta that
+    passed the naive rule "narrowly" fails once the seed replications' shared training pool is
+    accounted for."""
+    from maestra import benchmark as B
+
+    deltas = [625.16, 1401.56, 376.93, 3653.06, 369.998]  # M6's logged per-seed rmse deltas
+    results = {i + 1: _bench(i + 1, 100000.0 + d, 100000.0, higher=False)
+              for i, d in enumerate(deltas)}
+    monkeypatch.setattr(B, "run_task", lambda csv, target, *, metric, seed, **k: results[seed])
+
+    ms_default = B.run_multi_seed("x.csv", "y", metric="rmse", seeds=[1, 2, 3, 4, 5])
+    assert ms_default.verdict == "undecided"  # holdout_frac defaults to 0.25 -> ratio 1/3
+
+    ms_naive = B.run_multi_seed("x.csv", "y", metric="rmse", seeds=[1, 2, 3, 4, 5],
+                                holdout_frac=0.0)  # ratio 0 == the pre-N1 naive rule
+    assert ms_naive.verdict == "maestra"  # the naive rule accepted this exact case (M6, logged)
 
 
 def test_multi_seed_aggregate_row_feeds_summary(monkeypatch, tmp_path):

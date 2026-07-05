@@ -49,20 +49,45 @@ class CVResult:
 
 
 def paired_delta_test(deltas: list[float], *, sigma_mult: float = 2.0,
-                      min_abs: float = 1e-4) -> bool:
+                      min_abs: float = 1e-4, test_train_ratio: float = 0.0) -> bool:
     """The arbiter's core accept rule on PAIRED differences (fold-wise or seed-wise).
 
     Passes only if the mean delta exceeds ``sigma_mult`` standard errors of the deltas AND a
     strict majority of the pairs improved. Pairing removes shared difficulty variance; the
     majority clause guards against a single outlier pair carrying the mean.
+
+    ``test_train_ratio`` (n_val / n_train per replication) applies the Nadeau-Bengio (2003)
+    variance inflation for comparisons built from overlapping-training-set replications (k-fold
+    CV, or repeated holdout carves over the same pool): SEM² = S² * (1/n + test_train_ratio)
+    instead of the naive S²/n, because replications sharing training data are not independent
+    and the naive i.i.d. estimate understates the true variance. This is a conservative
+    heuristic, not an unbiased correction (no unbiased estimator of k-fold CV variance exists —
+    Bengio & Grandvalet 2004); it only pushes the accept bar higher, i.e. further into the safe
+    (harder-to-accept) direction. Default 0.0 reproduces the original naive rule exactly.
     """
     n = len(deltas)
     if n < 2:
         return False
     mean = float(np.mean(deltas))
-    sem = float(np.std(deltas, ddof=1)) / (n ** 0.5)
+    variance_factor = 1.0 / n + test_train_ratio
+    sem = float(np.std(deltas, ddof=1)) * (variance_factor ** 0.5)
     majority = sum(1 for d in deltas if d > 0) > n / 2
     return mean > max(min_abs, sigma_mult * sem) and majority
+
+
+def paired_delta_mde(std: float, n: int, *, sigma_mult: float = 2.0,
+                     test_train_ratio: float = 0.0) -> float:
+    """The minimum mean paired delta that would clear ``paired_delta_test`` at this spread,
+    sample size and ``test_train_ratio`` — the threshold an "undecided" verdict fell short of.
+
+    Reported alongside a verdict so "undecided" reads as "no effect at least this large",
+    not an unlabeled non-result — the same ``std``/``n``/``test_train_ratio`` that produced
+    the verdict determine this number, so it is exactly the boundary the mean delta missed.
+    """
+    if n < 2:
+        return float("inf")
+    variance_factor = 1.0 / n + test_train_ratio
+    return sigma_mult * std * (variance_factor ** 0.5)
 
 
 def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: float = 2.0,
@@ -77,6 +102,13 @@ def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: fl
     3 correlated fold scores, ~1-in-6 false pass per candidate under the null, no correction for
     greedy multiple testing) far too permissive. Without per-fold scores (older records, mocks)
     it falls back to the mean-vs-std rule with the same ``sigma_mult``.
+
+    The paired branch additionally applies the Nadeau-Bengio variance inflation
+    (``test_train_ratio = 1/(k-1)`` for k folds — the standard per-fold test/train size ratio
+    of a k-fold split) via :func:`paired_delta_test`: k-fold replications share overlapping
+    training data, so the naive SEM across fold deltas understates the true variance (N1,
+    2026-07-05). Still no correction for greedy multiple testing across a candidate sequence
+    (hybrid/text-feature gates) — deferred, not fixed; those lanes are measured-null and frozen.
     """
     delta = (trial.mean - base.mean) if base.greater_is_better else (base.mean - trial.mean)
     paired_ok = (base.fold_scores and trial.fold_scores
@@ -84,7 +116,10 @@ def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: fl
     if paired_ok:
         sign = 1.0 if base.greater_is_better else -1.0
         d = [sign * (t - b) for b, t in zip(base.fold_scores, trial.fold_scores)]
-        return paired_delta_test(d, sigma_mult=sigma_mult, min_abs=min_abs), float(delta)
+        k = base.n_folds
+        ratio = 1.0 / (k - 1) if k > 1 else 0.0
+        return paired_delta_test(d, sigma_mult=sigma_mult, min_abs=min_abs,
+                                 test_train_ratio=ratio), float(delta)
     return delta > max(min_abs, sigma_mult * base.std), float(delta)
 
 
@@ -124,12 +159,16 @@ def _is_classification(y: pd.Series) -> bool:
 
 
 def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratified: bool,
-                group_column: str | None = None, time_column: str | None = None):
+                group_column: str | None = None, time_column: str | None = None,
+                period_column: str | None = None):
     """Yield ``(train_idx, val_idx)`` pairs (positional). The single place fold strategy is
     chosen. ``group_column`` keeps every entity's rows in ONE fold (GroupKFold);
     ``time_column`` yields expanding-window splits where validation is strictly later than
-    training (TimeSeriesSplit over the time-sorted order). Both override stratification —
-    they exist precisely because a random/stratified split would lie."""
+    training (TimeSeriesSplit over the time-sorted order); ``time_column`` + ``period_column``
+    together yield LOCAL within-period blocked folds (:func:`_time_local_folds`) for a
+    deployment split that repeats every period rather than cutting the whole timeline once.
+    All three override stratification — they exist precisely because a random/stratified
+    split would lie."""
     if group_column is not None:
         # Keep stratification when the target is a class label: StratifiedGroupKFold balances the
         # class mix across folds while still never splitting an entity.
@@ -138,6 +177,8 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
         else:
             splitter = GroupKFold(n_splits=n_folds)
         return list(splitter.split(df, df[target], groups=df[group_column]))
+    if time_column is not None and period_column is not None:
+        return _time_local_folds(df, time_column, period_column, n_folds)
     if time_column is not None:
         values = df[time_column]
         if values.dtype.kind not in "iufM":
@@ -153,6 +194,37 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
         return list(splitter.split(df, df[target]))
     splitter = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
     return list(splitter.split(df))
+
+
+def _time_local_folds(df: pd.DataFrame, time_column: str, period_column: str, n_folds: int):
+    """Blocked expanding folds WITHIN each period, pooled across periods.
+
+    A plain global ``time_column`` split cuts the whole timeline once — over many periods of
+    strong seasonality/trend, an early fold trains on very little data and validates on a large,
+    distributionally different future block (expanding-window bias, see :func:`_make_folds`'s
+    ``time_column``-only branch). Real deployment is often a REPEATING local split instead — the
+    last N days of every month, the last visits of every patient's history — where every period
+    contributes both train and validation rows in every fold.
+
+    Each period's rows are time-sorted and cut into ``n_folds + 1`` contiguous blocks; fold i
+    trains on blocks ``0..i`` and validates on block ``i + 1``, unioned over every period. Every
+    fold is exposed to every period (curing the global split's bias) while validation within
+    each period still comes strictly after that period's training rows (matching a local,
+    repeating deployment split). Positional indices, like every branch of :func:`_make_folds`.
+    """
+    values = df[time_column]
+    if values.dtype.kind not in "iufM":
+        values = pd.to_datetime(values, errors="coerce", format="mixed")
+    values = values.to_numpy()
+    train_parts: list[list] = [[] for _ in range(n_folds)]
+    val_parts: list[list] = [[] for _ in range(n_folds)]
+    for _, idx in df.groupby(period_column, sort=False).indices.items():
+        idx = idx[np.argsort(values[idx], kind="stable")]  # time-sorted, within this period only
+        blocks = np.array_split(idx, n_folds + 1)
+        for i in range(n_folds):
+            train_parts[i].append(np.concatenate(blocks[: i + 1]))
+            val_parts[i].append(blocks[i + 1])
+    return [(np.concatenate(train_parts[i]), np.concatenate(val_parts[i])) for i in range(n_folds)]
 
 
 def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan, generated_features=None):
@@ -190,6 +262,7 @@ def cross_validate(
     eval_metric: str | None = None,
     group_column: str | None = None,
     time_column: str | None = None,
+    period_column: str | None = None,
     target_transform=None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
@@ -214,7 +287,8 @@ def cross_validate(
     classification = _is_classification(df[target])
     use_stratified = classification if stratified is None else (stratified and classification)
     folds = _make_folds(df, target, n_folds, seed, use_stratified,
-                        group_column=group_column, time_column=time_column)
+                        group_column=group_column, time_column=time_column,
+                        period_column=period_column)
 
     fold_scores: list[float] = []
     eval_metric = problem_type = None

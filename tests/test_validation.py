@@ -212,6 +212,42 @@ def test_improves_beyond_noise_paired_rule():
     assert ok and delta == pytest.approx(0.09)
 
 
+def test_paired_delta_test_nb_correction_inflates_the_threshold():
+    """test_train_ratio > 0 (Nadeau-Bengio) only ever raises the bar -- a delta that clears
+    the naive rule can fail the corrected one, never the reverse."""
+    from maestra.validation import paired_delta_test
+
+    deltas = [0.10, 0.09, 0.02]  # mean 0.07, majority positive
+    assert paired_delta_test(deltas, test_train_ratio=0.0) is True   # naive rule: accept
+    assert paired_delta_test(deltas, test_train_ratio=0.5) is False  # k=3-fold ratio: reject
+    # default reproduces the naive rule exactly (backward compatible)
+    assert paired_delta_test(deltas) is True
+
+
+def test_improves_beyond_noise_applies_nb_correction_from_n_folds():
+    """The paired branch derives test_train_ratio = 1/(k-1) from base.n_folds (N1, 2026-07-05)
+    -- the same marginal case as the ratio test above, reached through the real CVResult path."""
+    from maestra.validation import improves_beyond_noise
+
+    def cv(mean, folds, gib=True):
+        return CVResult("m", "binary", folds, mean, float(np.std(folds)), len(folds), True, gib)
+
+    base = cv(0.80, [0.80, 0.80, 0.80])
+    trial = cv(0.87, [0.90, 0.89, 0.82])  # per-fold deltas [0.10, 0.09, 0.02], same as above
+    ok, delta = improves_beyond_noise(base, trial)
+    assert not ok and delta == pytest.approx(0.07)
+
+
+def test_paired_delta_mde_matches_the_accept_threshold():
+    from maestra.validation import paired_delta_mde
+
+    deltas = [0.10, 0.09, 0.02]
+    std = float(np.std(deltas, ddof=1))
+    mde = paired_delta_mde(std, n=3, test_train_ratio=0.5)
+    assert mde == pytest.approx(2.0 * std * (1.0 / 3 + 0.5) ** 0.5)
+    assert paired_delta_mde(std, n=1) == float("inf")
+
+
 def test_improves_beyond_noise_falls_back_without_fold_scores():
     from maestra.validation import improves_beyond_noise
 
