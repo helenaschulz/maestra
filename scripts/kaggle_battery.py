@@ -101,6 +101,7 @@ CATALOG = [
          id_col="id", path="data/kaggle_store_sales/train.csv",
          competition="store-sales-time-series-forecasting", sample=15000,
          test_path="data/kaggle_store_sales/test.csv",
+         submit_sample=50000,  # full train is 3M rows -> infeasible; cap for the submission run
          eval_metric="root_mean_squared_error", framing=True,  # sales is right-skewed
          note="Getting-Started (open by default, no join needed). 3M rows -> subsampled to 15k. "
               "store_nbr (54 stores) + family (33 categories) repeat densely — group AND time "
@@ -114,6 +115,8 @@ CATALOG = [
          # auto-inserts a unique range index (the same pattern bike-sharing's "rowid" uses)
          competition="rossmann-store-sales", sample=15000,
          test_path="data/kaggle_rossmann/test.csv",
+         submit_id="Id",  # the real test.csv keys on "Id" (row_id is battery-only, not in test)
+         submit_sample=50000,  # full train is 1M rows
          eval_metric="root_mean_squared_error", framing=True,  # sales right-skewed, many closed-day zeros
          drop=["Customers"],  # leak: near-perfect proxy for Sales, absent from the real test set
          note="1017209 rows -> subsampled to 15k. Store (1115 stores, ~942 days each) is a "
@@ -127,6 +130,8 @@ CATALOG = [
          # non-unique-id fix as rossmann above
          competition="walmart-recruiting-store-sales-forecasting", sample=15000,
          test_path="data/kaggle_walmart/test.csv",
+         submit_id="Id", submit_id_construct=["Store", "Dept", "Date"],  # LB id = "Store_Dept_Date"
+         submit_sample=50000,  # full train is 421k rows
          eval_metric="root_mean_squared_error", framing=True,
          note="421570 rows -> subsampled to 15k. Store x Dept (~3331 combinations) repeats "
               "densely -- a second, independent group+time real task (different retailer/shape "
@@ -138,6 +143,8 @@ CATALOG = [
          competition="ieee-fraud-detection", sample=15000,
          test_path="data/kaggle_ieee/test_transaction.csv",
          eval_metric="accuracy", framing=False,
+         submit_proba=True, submit_col="isFraud",  # LB metric is AUC -> submit P(fraud), not a label
+         submit_eval_metric="roc_auc", submit_sample=50000,  # full train is 590k rows
          drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA-style columns: opaque noise,
          # not semantic richness, and at full width they blow gpt-4o's 30k TPM rate limit in one
          # profiling call (verified: FAILED live, RateLimitError, 31805 requested) -- dropping
@@ -155,6 +162,8 @@ CATALOG = [
          competition="santander-customer-transaction-prediction", sample=15000,
          test_path="data/kaggle_santander_transaction/test.csv",
          eval_metric="accuracy", framing=False,
+         submit_proba=True, submit_col="target",  # LB metric is AUC -> submit P(target=1)
+         submit_eval_metric="roc_auc", submit_sample=50000,  # full train is 200k rows
          note="200000 rows, 200 fully anonymized numeric columns (var_0..var_199) -> subsampled "
               "to 15k. A THIRD anonymized control (after friedman-synth/E2 and allstate/K1) on "
               "modern Kaggle data -- the thesis predicts inert, same as the others. Real metric "
@@ -163,6 +172,7 @@ CATALOG = [
          id_col="Id", path="data/kaggle_restaurant/train.csv",
          competition="restaurant-revenue-prediction",
          test_path="data/kaggle_restaurant/test.csv",
+         submit_col="Prediction",  # sample submission column is "Prediction", not "revenue"
          eval_metric="root_mean_squared_error", framing=True,  # revenue is right-skewed
          note="Only 137 rows -- no subsampling. 'Open Date' (temporal) + City/City Group/Type "
               "(rich semantics) + P1-P37 (anonymized census-style features). Famous for being "
@@ -174,6 +184,8 @@ CATALOG = [
          competition="airbnb-recruiting-new-user-bookings", sample=15000,
          test_path="data/kaggle_airbnb/test_users.csv",
          eval_metric="accuracy", framing=False,
+         submit_col="country",  # sample column is "country"; we emit the top-1 label per user
+         submit_sample=50000,    # full train is 213k rows; NDCG@5 scored on our single-label guess
          note="213451 rows -> subsampled to 15k. 12-class target (country_destination: NDF/US/"
               "other/FR/CA/GB/ES/IT/PT/NL/DE/AU), rich semantics (gender/age/signup_method/"
               "language/affiliate_channel/first_device_type) + weak time (date_account_created, "
@@ -238,34 +250,67 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
     and target framing where enabled in the catalog (RMSLE comps: metric-aligned log1p; other
     regression: the arbiter decides). The competition's own test.csv is predicted through the
     same fitted transforms; the submission id is the competition's, not the battery's row id.
+
+    Submission-only spec fields (never touch the battery run, which grades on carved keys):
+      * ``submit_id`` — the id column of the competition's test.csv (default: the battery id_col).
+      * ``submit_col`` — the prediction column name the sample submission expects (default: the
+        target name; some competitions want e.g. ``Prediction`` not ``revenue``).
+      * ``submit_proba`` — True for probability metrics (AUC): output P(positive class) instead
+        of a hard label, in a column named ``submit_col``.
+      * ``submit_eval_metric`` — eval metric override for the submission run (e.g. ``roc_auc``
+        when the battery used a label proxy like ``accuracy``).
+      * ``submit_sample`` — cap the training rows (huge tables where full-train is infeasible);
+        a large capped sample, not the battery's tiny 15k.
     """
     from maestra.pipeline import run_pipeline
     from maestra.runlog import append_run
 
     train_csv = _materialize(spec)
-    test_path = spec["test_path"]
-    if train_csv is None or not os.path.exists(test_path):
-        print(f"\n=== {spec['name']}: competition data missing — to fetch:")
-        print(_download_help(spec))
+    test_path = spec.get("test_path")
+    if train_csv is None or not test_path or not os.path.exists(test_path):
+        print(f"\n=== {spec['name']}: not submittable "
+              f"({'no test_path wired' if not test_path else 'competition data missing'}) ===")
+        if test_path:
+            print(_download_help(spec))
         return
     submit_id = spec.get("submit_id", spec["id_col"])
+    submit_col = spec.get("submit_col", spec["target"])
+    submit_proba = spec.get("submit_proba", False)
+    submit_eval = spec.get("submit_eval_metric", spec["eval_metric"])
     train = pd.read_csv(spec["path"])          # FULL train (no battery subsample)
-    for col in spec.get("drop", []):
-        if col in train.columns:
-            train = train.drop(columns=[col])
     test_df = pd.read_csv(test_path)
+    for col in spec.get("drop", []):           # same columns dropped from train AND test
+        train = train.drop(columns=[col], errors="ignore")
+        test_df = test_df.drop(columns=[col], errors="ignore")
+    # Some competitions key the submission on a COMPOSITE id the test set does not carry as a
+    # column (Walmart: "Store_Dept_Date"). Build it by joining the named columns with "_".
+    construct = spec.get("submit_id_construct")
+    if construct:
+        test_df[submit_id] = test_df[construct[0]].astype(str)
+        for c in construct[1:]:
+            test_df[submit_id] = test_df[submit_id] + "_" + test_df[c].astype(str)
+    submit_sample = spec.get("submit_sample")
+    if submit_sample and len(train) > submit_sample:
+        train = train.sample(submit_sample, random_state=42).reset_index(drop=True)
+        print(f"  (train capped to {submit_sample} rows for a feasible submission run)")
 
-    print(f"\n=== {spec['name']}: full-train submission run "
-          f"(eval_metric={spec['eval_metric']}, framing={spec['framing']}, "
-          f"fold_advisor={fold_advisor}) ===")
+    print(f"\n=== {spec['name']}: submission run "
+          f"(eval_metric={submit_eval}, framing={spec['framing']}, proba={submit_proba}, "
+          f"fold_advisor={fold_advisor}, train_rows={len(train)}) ===")
     result = run_pipeline(
         train, spec["target"], model=model, test_size=0.2, time_limit=time_limit,
         seed=42, model_dir=f"AutogluonModels/kaggle_{spec['name']}", cv_folds=cv,
-        eval_metric=spec["eval_metric"], target_framing=spec["framing"],
-        fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id)
+        eval_metric=submit_eval, target_framing=spec["framing"],
+        fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id,
+        proba=submit_proba, proba_columns=[submit_col] if submit_proba else None)
 
+    submission = result.submission
+    # Label path names the prediction column after the target; rename to what the sample
+    # submission expects. (The proba path already emits submit_col directly.)
+    if not submit_proba and submit_col != spec["target"] and spec["target"] in submission.columns:
+        submission = submission.rename(columns={spec["target"]: submit_col})
     out = f"data/submission_{spec['name']}.csv"
-    result.submission.to_csv(out, index=False)
+    submission.to_csv(out, index=False)
     append_run("runs.jsonl", result, csv=spec["path"], target=spec["target"], model=model,
                no_llm=False, max_attempts=1,
                timestamp=datetime.now().isoformat(timespec="seconds"))
@@ -277,7 +322,7 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
                        f" accepted={result.target_framing['accepted']}"
     if result.fold_strategy:
         framing_note += f" | folds: {result.fold_strategy['strategy']}"
-    print(f"\nsubmission written: {out}  ({len(result.submission)} rows)")
+    print(f"\nsubmission written: {out}  ({len(submission)} rows, columns {list(submission.columns)})")
     print(f"CV estimate ({cv_est.eval_metric}): {cv_est.mean:.4f} ± {cv_est.std:.4f}{framing_note}")
     if result.fold_strategy:
         for line in result.fold_strategy["log"]:
