@@ -70,7 +70,11 @@ Propose log1p ONLY when ALL of these hold:
 
 CAUTION — these are NOT log1p cases:
 * classification targets of any kind, including integer class codes;
-* small-range counts or ratings (a handful of distinct integer values);
+* small-range counts or ratings — a HANDFUL of distinct integer values (roughly under 20-30),
+  e.g. a 1-5 star rating or a 0-10 count of rooms. Do NOT extend this caution to a count with
+  HUNDREDS of distinct values: a wide-range count (event counts, demand, visits) that is
+  right-skewed is effectively continuous for this decision and log1p is the standard, useful
+  move for it — being an integer/"count" by name does not exempt it once the range is wide;
 * targets that are already logs, rates, percentages, or roughly symmetric;
 * targets with negative values (log1p is undefined there — answer none).
 
