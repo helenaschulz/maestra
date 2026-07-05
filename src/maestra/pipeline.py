@@ -128,7 +128,7 @@ def _proba_submission(predictor, features, ids, id_col, proba_columns):
 
 def _build_submission(transforms, predictor, test_df, target, id_col,
                       generated_features=None, fit_df=None, proba=False, proba_columns=None,
-                      target_inverse=None):
+                      target_inverse=None, clip_nonneg=False):
     """Predict on the test set and return a Kaggle-style submission frame.
 
     The test set is run through the *same* fitted transforms as training (cleaning, then
@@ -137,7 +137,13 @@ def _build_submission(transforms, predictor, test_df, target, id_col,
 
     By default the frame is ``id`` + predicted *labels*. With ``proba=True`` it carries class
     *probabilities* shaped to ``proba_columns`` (the sample submission's non-id columns) — see
-    :func:`_proba_submission`.
+    :func:`_proba_submission`. ``clip_nonneg`` floors regression predictions at 0 when the
+    TRAINING target was itself non-negative: a boosted-tree regressor is not constrained to
+    the target's observed range and can extrapolate below zero for low rows (found on Kaggle
+    bike-sharing's `count` — a raw-space regressor, i.e. target framing not adopted, predicted
+    negative counts and Kaggle's own submission grader rejects them outright). ``log1p``-space
+    predictions are already non-negative after ``expm1`` by construction; the clip is a cheap,
+    always-safe floor for the raw-space case, not a modelling decision.
     """
     if id_col not in test_df.columns:
         raise PipelineError(f"id column {id_col!r} not in test set. Columns: {list(test_df.columns)}")
@@ -152,6 +158,8 @@ def _build_submission(transforms, predictor, test_df, target, id_col,
     preds = predict(predictor, features)
     if target_inverse is not None:  # model was trained on a transformed target — invert back
         preds = target_inverse(preds)
+    if clip_nonneg:
+        preds = preds.clip(lower=0)
     return pd.DataFrame({id_col: ids.to_numpy(), target: preds.to_numpy()})
 
 
@@ -347,7 +355,9 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                                        generated_features=generated_features or None, fit_df=full,
                                        proba=proba, proba_columns=proba_columns,
                                        target_inverse=(adopted_transform.inverse
-                                                       if adopted_transform else None))
+                                                       if adopted_transform else None),
+                                       clip_nonneg=(cv.problem_type == "regression"
+                                                    and float(df[target].min()) >= 0))
 
     return PipelineResult(
         n_cols_before=n_before, n_cols_after=len(full_for_fit.columns), n_cols_clean=n_clean,
@@ -572,7 +582,9 @@ def run_pipeline(
             submission = None
             if test_df is not None:
                 submission = _build_submission(transforms, training.predictor, test_df, target, id_col,
-                                               proba=proba, proba_columns=proba_columns)
+                                               proba=proba, proba_columns=proba_columns,
+                                               clip_nonneg=(training.problem_type == "regression"
+                                                            and float(df[target].min()) >= 0))
 
             return PipelineResult(
                 n_cols_before=n_before,

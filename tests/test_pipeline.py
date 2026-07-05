@@ -49,6 +49,45 @@ def test_submission_built_from_test_set(df, monkeypatch):
     assert sub["y"].tolist() == ["A", "A", "A"]
 
 
+class _FakeNegativePredictor:
+    """A regressor that (like a real boosted-tree model) is not constrained to a non-negative
+    target's observed range and predicts below zero for some rows."""
+
+    def predict(self, X):
+        return pd.Series([-1.5, 3.0, -0.2], index=X.index)
+
+
+def test_submission_clips_negative_predictions_for_nonneg_regression_target(monkeypatch):
+    """Regression: a Kaggle submission (bike-sharing `count`) was rejected outright by the
+    competition grader for containing negative predictions on a strictly non-negative target.
+    Training target min >= 0 + regression problem_type -> floor predictions at 0."""
+    df = pd.DataFrame({"id": [1, 2, 3, 4], "f": [1.0, 2.0, 3.0, 4.0], "y": [0.0, 5.0, 10.0, 2.0]})
+    training = TrainingResult("regression", "root_mean_squared_error", pd.DataFrame({"model": ["m"]}),
+                              {"root_mean_squared_error": 1.0}, predictor=_FakeNegativePredictor())
+    monkeypatch.setattr(pipeline, "train_and_evaluate", lambda *a, **k: training)
+    test_df = pd.DataFrame({"id": [101, 102, 103], "f": [9.0, 8.0, 7.0]})
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                          model_dir="x", use_llm=False, test_df=test_df, id_col="id")
+
+    assert result.submission["y"].tolist() == [0.0, 3.0, 0.0]   # negatives clipped, positives kept
+
+
+def test_submission_does_not_clip_a_target_that_is_genuinely_negative(monkeypatch):
+    """The floor is conditional on the TRAINING target being non-negative -- a target that can
+    legitimately go negative (temperature, profit/loss) must not be clipped."""
+    df = pd.DataFrame({"id": [1, 2, 3, 4], "f": [1.0, 2.0, 3.0, 4.0], "y": [-5.0, 5.0, -10.0, 2.0]})
+    training = TrainingResult("regression", "root_mean_squared_error", pd.DataFrame({"model": ["m"]}),
+                              {"root_mean_squared_error": 1.0}, predictor=_FakeNegativePredictor())
+    monkeypatch.setattr(pipeline, "train_and_evaluate", lambda *a, **k: training)
+    test_df = pd.DataFrame({"id": [101, 102, 103], "f": [9.0, 8.0, 7.0]})
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0,
+                          model_dir="x", use_llm=False, test_df=test_df, id_col="id")
+
+    assert result.submission["y"].tolist() == [-1.5, 3.0, -0.2]  # untouched
+
+
 class _FakeBinaryProbaPredictor:
     positive_class = 1  # AutoGluon's designated positive class
 
@@ -270,6 +309,28 @@ def test_hybrid_runs_gate_and_logs_provenance(df, fake_training, monkeypatch):
 
     assert result.cv is cv                          # the gated CV (with kept features) is reported
     assert result.hybrid == [asdict(rec)]           # provenance logged (kept, delta, reason, source)
+
+
+def test_cv_path_submission_also_clips_negative_predictions(monkeypatch):
+    """The CV path builds its final-fit submission separately from the holdout path (M11's
+    target-framing final fit lives there) -- the clip must apply on both call sites."""
+    from maestra.validation import CVResult
+
+    df = pd.DataFrame({"id": [1, 2, 3, 4], "f": [1.0, 2.0, 3.0, 4.0], "y": [0.0, 5.0, 10.0, 2.0]})
+    cv = CVResult("root_mean_squared_error", "regression", [1.0, 1.1], 1.05, 0.05, 2, False, False)
+    training = TrainingResult("regression", "root_mean_squared_error", pd.DataFrame({"model": ["m"]}),
+                              {}, predictor=_FakeNegativePredictor())
+
+    monkeypatch.setattr(pipeline, "propose_cleaning_plan",
+                        lambda *a, **k: {"columns_to_drop": [], "imputations": []})
+    monkeypatch.setattr(pipeline, "cross_validate", lambda *a, **k: cv)
+    monkeypatch.setattr(pipeline, "fit_predictor", lambda *a, **k: training)
+    test_df = pd.DataFrame({"id": [101, 102, 103], "f": [9.0, 8.0, 7.0]})
+
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                          cv_folds=2, use_fe=False, test_df=test_df, id_col="id")
+
+    assert result.submission["y"].tolist() == [0.0, 3.0, 0.0]
 
 
 def test_text_lane_feeds_the_shared_gate(df, fake_training, monkeypatch):
