@@ -55,6 +55,18 @@ def test_date_parts_extracts_and_drops_original(train):
     assert out["d_month"].tolist() == [1, 6, 3, 12]
 
 
+def test_date_parts_extracts_hour():
+    """Regression: hourly-granularity timestamps need `hour` -- found on Kaggle bike-sharing,
+    where intraday commute-peak patterns are the dominant signal and were entirely missing
+    from year/month/weekday alone."""
+    df = pd.DataFrame({
+        "ts": ["2021-01-05 08:00:00", "2021-01-05 17:30:00", "2021-01-06 03:15:00"],
+        "target": [1, 2, 3],
+    })
+    out, _ = _ft(df, [{"op": "date_parts", "column": "ts", "parts": ["hour"], "reason": "x"}])
+    assert out["ts_hour"].tolist() == [8, 17, 3]
+
+
 def test_bin_edges_fitted_on_train_only_no_leakage(train):
     """Regression: bin edges come from train; a holdout is binned with those edges, not
     re-binned on its own distribution."""

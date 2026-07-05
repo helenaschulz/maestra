@@ -18,7 +18,7 @@ import pandas as pd
 
 from maestra.llm import call_structured
 
-_DATE_PARTS = ["year", "month", "weekday"]
+_DATE_PARTS = ["year", "month", "weekday", "hour"]
 #: The fixed feature-engineering vocabulary. Mirrored in ``FE_SCHEMA``.
 OPS = ["date_parts", "bin", "log_transform", "ratio", "difference"]
 
@@ -52,7 +52,9 @@ _SYSTEM_PROMPT = (
     "You are an experienced data scientist proposing NEW features for an AutoML training "
     "run (AutoGluon). You are given a column profile of already-cleaned training data. "
     "Choose sensible transformations from the FIXED vocabulary: "
-    "date_parts (date -> year/month/weekday), bin (a numeric column into n_bins "
+    "date_parts (date -> year/month/weekday/hour -- for a TIMESTAMP with a time-of-day "
+    "component, e.g. hourly logs, extract hour too: intraday patterns like commute peaks are "
+    "often the single strongest signal in such data), bin (a numeric column into n_bins "
     "quantile-based classes), log_transform (log1p of a NON-NEGATIVE, skewed numeric "
     "column), ratio (ratio of two numeric columns), difference (difference of two numeric "
     "columns). Only numeric columns for bin/log/ratio/difference; date_parts only for date "
@@ -124,7 +126,8 @@ def _bin_edges(series: pd.Series, n_bins: int) -> list[float] | None:
 
 
 def _date_part(dt: pd.Series, part: str) -> pd.Series:
-    return {"year": dt.dt.year, "month": dt.dt.month, "weekday": dt.dt.weekday}[part]
+    return {"year": dt.dt.year, "month": dt.dt.month, "weekday": dt.dt.weekday,
+            "hour": dt.dt.hour}[part]
 
 
 def _apply_op(df: pd.DataFrame, op: dict) -> pd.DataFrame:
