@@ -672,15 +672,94 @@ bike-sharing needs one more piece, not attempted here: surfacing derived period 
 cleaning/FE ever runs. Scoped follow-up, gated the same way as this one: confirm on a second task
 before calling it done.
 
+## K2 — the structure battery, 8 real Kaggle tasks (2026-07-05/06)
+
+E2/K1's instrument (5 seeds, paired three-way verdict) extended from K1's 5 tasks to 13, adding
+8 real Kaggle competitions chosen for temporal/group structure — store-sales, rossmann, walmart
+(all Store-repeating retail forecasting), ieee-fraud (time + wide anonymized), santander-
+transaction (a third anonymized control), restaurant-revenue (137 rows, a small-n stress test),
+airbnb (rich semantics + weak time), two-sigma-rental (manager_id/building_id repeat). All 8
+completed 5/5 seeds, `failed_seeds: []` on every task — no crashes.
+
+| Task | Semantics | Metric | Baseline | Maestra | Δ | MDE | Verdict |
+|---|---|---|---|---|---|---|---|
+| rossmann | rich+time+group | rmse ↓ | 2395.02 | **2322.66** | **−72.36** | 31.20 | **maestra** |
+| walmart | rich+time+group | rmse ↓ | 11070.98 | **8447.11** | **−2623.87** | 2500.34 | **maestra** |
+| store-sales | rich+time+group | rmse ↓ | 438.79 | 441.91 | +3.12 | 8.44 | undecided |
+| ieee-fraud | poor+time | bal-acc ↑ | 0.6279 | 0.6287 | +0.0009 | 0.0434 | undecided |
+| santander-transaction | poor | bal-acc ↑ | 0.5623 | 0.5634 | +0.0011 | 0.0279 | undecided |
+| restaurant-revenue | rich+time (n=137) | rmse ↓ | 2 403 116 | 2 457 062 | +53 946 | 504 874 | undecided |
+| airbnb | rich+time | bal-acc ↑ | 0.1684 | 0.1653 | −0.0030 | 0.0073 | undecided |
+| two-sigma-rental | rich+group | bal-acc ↑ | 0.4593 | 0.4700 | +0.0107 | 0.0364 | undecided |
+
+**The pattern (8 tasks): 2 decided wins, 6 undecided, 0 decided losses** — both wins
+(rossmann, walmart) are 5/5-seeds-consistent retail-forecasting tasks; every other task lands
+honestly undecided, including the anonymized control and the tiny-n task, exactly as the
+thesis predicts. No decided loss anywhere in the battery.
+
+**santander-transaction confirms as inert, as predicted.** A third anonymized control (after
+friedman-synth/E2 and allstate/K1): Δ +0.0011, an order of magnitude below its own MDE
+(0.0279) — no effect, matching the mechanism-not-correlate thesis (E2) on modern Kaggle data.
+
+**restaurant-revenue confirms as underpowered, as predicted.** 137 rows, per-seed deltas swing
+from −309 306 to +615 910 — the MDE (504 874) is nearly 10× the mean delta; this is exactly what
+"undecided" should mean on a dataset this small, not a null result about the LLM's judgment.
+
+### The anomaly this battery was designed to catch: the advisor fires, but not always as expected
+
+The plan's stated purpose for rossmann/walmart/store-sales/two-sigma-rental was "the first real
+test of `--fold-advisor` on EXISTING group columns" (Store, manager_id) — unlike bike-sharing,
+these datasets carry a genuine repeating entity column already, so N2's raw-timestamp gap should
+not apply. **`benchmark.jsonl` does not log which fold strategy was chosen per run — this is
+itself a gap** (`BenchResult`/`MultiSeedResult` carry no `fold_strategy` field, and
+`kaggle_battery.py`'s battery loop never printed or persisted it either). To check what actually
+fired, `propose_fold_strategy`/`validate_fold_strategy` were re-run directly against the exact
+materialized, cached datasets (`data/kbattery_<task>.csv`, the same files the battery trained on;
+gpt-4o, same as the battery's default model) — the Strategist's proposal depends only on the
+static column profile, not the per-seed row sample, so this reproduces the decision the battery
+itself would have made without re-spending the full CV:
+
+| Task | Proposed | Verified | Note |
+|---|---|---|---|
+| store-sales | `time` | `time` on `date` | NOT `group` on `store_nbr`, despite it repeating 15000/54 ≈ 278× |
+| rossmann | `time` | `time` on `Date` | NOT `group` on `Store` (1115 stores, repeats densely) |
+| walmart | `time` | `time` on `Date` | NOT `group` on `Store`/`Dept` |
+| ieee-fraud | `time` | `time` on `TransactionDT` | expected — no group_column intended in the catalog design |
+| santander-transaction | `random` | `random` | correct — no structure exists, matches the control's design |
+| restaurant-revenue | `random` | `random` | correct — no repeat structure on 137 rows |
+| airbnb | `time` | `time` on `date_account_created` | matches the "weak time" catalog description |
+| two-sigma-rental | `group` | `group` on `building_id` (4079 entities) | **the only group pick** — chose `building_id`, not the `manager_id` anticipated in the catalog note; also correctly flagged `created` as a leakage warning (advisory, not acted on) |
+
+**The finding: `--fold-advisor` fired on every task (not a silent no-op — the K1-era bug this
+battery was explicitly built to re-check for did not recur), but it chose `group` only once out
+of four tasks that carry a real, dense repeating entity.** On store-sales/rossmann/walmart, a
+`Date` column sits next to an equally valid `Store`/`store_nbr` group column, and the Strategist
+picked time every time. This is a genuinely untested edge case: M1's synthetic/real-data
+experiments and E1's 17-dataset detection benchmark each tested group-only or time-only
+structure in isolation — none tested a column profile carrying BOTH a real group axis and a real
+time axis at once. The current `FOLD_STRATEGY_SCHEMA` is a single enum choice (no combined
+"group+time" / panel-CV strategy exists), so even a correct read of "both exist" cannot express
+the textbook-correct choice for repeated-panel forecasting data (group folds, or a nested
+group-then-time split). **Not fixed here, not silently worked around — flagged as a precise
+open question**: does the prompt need an explicit priority rule for competing structures, or
+does the vocabulary need a fifth strategy for panel data? Either answer needs its own gated
+experiment, not a same-session guess.
+
+**Does the `time`-over-`group` choice explain rossmann/walmart's wins?** Unknown, and not
+resolved here — the wins could come from cleaning/encoding judgment layered on top of a
+time-ordered (still non-random, still leakage-conscious) CV, independent of whether group would
+have scored differently. Answering this needs a controlled rerun with the fold strategy forced
+to `group` on the same data, which is future work, not part of this battery.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across every layer a conductor could touch:
 
 | Layer | Does LLM judgment beat the AutoGluon baseline? | Evidence |
 |---|---|---|
-| **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
+| **Setup / validation** (fold strategy, leakage) | **Yes — decisively, with one open edge case** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9). **Open (K2):** M1/E1's benchmark tested group-only or time-only structure in isolation; on real data carrying BOTH (rossmann/walmart/store-sales' Store + Date), the Strategist picked `time` over `group` in 3/4 cases — an untested competing-structure edge case, not yet resolved |
 | Setup / target framing (M11) | **Yes — the predicted setup win** | House Prices, 5 seeds: log1p improves rmse in **5/5** (mean +2 273, ≈ −8%), seed-level paired test unambiguous; agent correctly silent on symmetric and classification targets. Caveat: the per-run 3-fold gate under-accepts (1/5) — conservative in the safe direction |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices: ahead 5/5 seeds (+1 285 rmse) but **undecided** under the N1-corrected variance rule (was a narrow "decided" pass pre-correction); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%, both hold under N1), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend); real Kaggle data (K1): 1 decided win (bike-sharing, holds under N1), 3 undecided, 0 decided losses |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices: ahead 5/5 seeds (+1 285 rmse) but **undecided** under the N1-corrected variance rule (was a narrow "decided" pass pre-correction); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%, both hold under N1), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend); real Kaggle data (K1): 1 decided win (bike-sharing, holds under N1), 3 undecided, 0 decided losses; **K2 (8 more real competitions): 2 decided wins (rossmann, walmart — both retail forecasting), 6 undecided, 0 decided losses**, including a third anonymized control confirmed inert (santander-transaction) and a 137-row task confirmed underpowered (restaurant-revenue) — but the group-column detection anomaly (below) means the wins' mechanism isn't fully attributed |
 | **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
 | Temporal decomposition (`date_parts`) — a distinct mechanism from arithmetic FE | **Yes, decisively, once the vocabulary could express it** | K1 bike-sharing: **rmse 124.0 → 36.1 (−71%)**, driven by keeping+decomposing a raw datetime column (year/month/weekday/**hour**). Not "clever domain feature invented from numerics" (the null FE story) — the engine cannot parse a raw timestamp string into hour-of-day itself; this is closer to a structural setup capability than to CAAFE-style FE |
 
