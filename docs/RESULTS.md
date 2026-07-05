@@ -186,6 +186,12 @@ difficulty varies between seeds (baseline 25 640 → 44 222): exactly why the co
 paired per seed, and why single-seed results were never trustworthy. The claim upgrades from
 "directional (n=2)" to supported under the pipeline's own strict arbiter rule.
 
+**Superseded 2026-07-05 by N1 (see below): under the Nadeau-Bengio-corrected accept rule, this
+verdict flips to *undecided*** (corrected threshold 2 029 > mean 1 285). The "narrowly" above was
+the honest tell — this is exactly the kind of narrow pass a harder, more defensible variance
+estimate was expected to catch. The directional fact (5/5 seeds ahead) stands; the aggregate
+statistical claim does not, and the README/STRATEGY tables are corrected accordingly.
+
 ## E1 — Strategist detection benchmark (2026-07-03, gpt-4o, v1 prompt)
 
 17 classic datasets with known structure truth (6 grouped, 5 temporal, 6 iid incl. a deliberate
@@ -543,6 +549,8 @@ matching the fold **granularity** to how the deployment split actually happens*,
 split itself. This is a well-scoped, concrete backlog item (a repeating/local time-split fold
 strategy — e.g. holding out the same relative window within every period), not a same-night fix,
 and it is a stronger, more specific finding than "turn on fold-advisor" would have been on its own.
+**Addressed in N2 below** (`time_local`) — mechanism shipped and confirmed on a second task, though
+closing the loop on bike-sharing's own raw-timestamp shape surfaced a further, still-open gap.
 Note this does not affect the submitted predictions' quality — the final model is trained on the
 full data regardless of which CV variant is used to *estimate* it; only the CV number's
 trustworthiness for this specific task was in question, and now precisely characterised.
@@ -559,6 +567,111 @@ pandas gotcha: `.loc[rows, [False, True]]` is read as a boolean column MASK, not
 selecting the wrong shape — none of the curated E2/Rdatasets targets were ever native `bool`. Fixed
 with position-based assignment, immune to the label/mask ambiguity regardless of class dtype.
 
+## N1 — arbiter hardening: the Nadeau-Bengio variance correction (2026-07-05)
+
+Every decided verdict in this document rests on `paired_delta_test` (validation.py):
+mean paired delta beyond `sigma_mult` standard errors AND a strict majority of pairs improving.
+The naive SEM (`std(deltas, ddof=1) / sqrt(n)`) treats the n paired replications — folds of the
+same k-fold split, or seeds re-carving the same pool — as i.i.d. samples. They are not: adjacent
+folds/seeds share overlapping training data, so the true variance is higher than the naive
+estimate reports (Nadeau & Bengio 2003, "Inference for the generalization error"; no unbiased
+estimator of k-fold CV variance exists — Bengio & Grandvalet 2004 — so this is a conservative
+heuristic, not an unbiased fix). `paired_delta_test` and `improves_beyond_noise` now inflate the
+variance by `1/n + test_train_ratio` instead of the naive `1/n`: `test_train_ratio = 1/(k-1)` for
+the per-fold gate (derived from `CVResult.n_folds`, always known), and
+`holdout_frac / (1 - holdout_frac)` for the per-seed (M8) verdict (derived from the answer-key
+carve fraction). A new `paired_delta_mde` reports the minimum mean delta that would have cleared
+the bar at a given n/spread, so an "undecided" `MultiSeedResult` is now interpretable as "no
+effect at least this large" rather than a bare non-result (revision point 3). The correction only
+ever raises the bar — it cannot turn a rejection into an acceptance.
+
+**Every existing decided verdict was recomputed against the corrected rule** (script over the
+committed `benchmark.jsonl`; per-seed rows matched positionally/by-seed, M6 hand-matched since it
+predates the `seed` field):
+
+| Task | Old verdict | New (NB) verdict | Mean Δ | Old threshold | New threshold |
+|---|---|---|---|---|---|
+| **House Prices, plain cleaning (M6, 5 seeds)** | **maestra** | **undecided** | 1 285 | 1 242 | **2 029** |
+| House Prices, target framing (M11, 5 seeds) | maestra | maestra | 2 273 | 1 004 | 1 639 |
+| E2 credit (5 seeds) | maestra | maestra | 28.5 | 13.6 | 22.2 |
+| E2 wage (5 seeds) | maestra | maestra | 0.374 | 0.149 | 0.244 |
+| E2 diamonds, leak-affected (5 seeds, superseded) | baseline | baseline | −385 | 40.5 | 66.1 |
+| E2 diamonds, leak-free rerun (5 seeds) | undecided | undecided | 0.31 | 10.3 | 16.9 |
+| K1 bike-sharing, final (5 seeds) | maestra | maestra | 88.0 | 1.40 | 2.29 |
+| K1 bike-sharing, pre-fix runs (5 seeds, superseded) | baseline | baseline | −8.6 to −19.6 | 0.57–0.62 | 0.94–1.01 |
+| All other E2/K1 tasks (7: heart, insurance, loan-grade, abalone, wine-quality ×2, friedman-synth, titanic, spaceship-titanic, allstate) | undecided | undecided | — | — | — |
+
+**One real flip, and it is the honest headline: M6 (House Prices, plain LLM cleaning/encoding,
+no target framing) goes from a narrow "maestra" pass to undecided.** It was the one verdict in
+the whole ledger that passed the old rule "narrowly" (mean 1 285 vs. threshold 1 242, a 3.5%
+margin) — exactly the kind of narrow pass a harder, more defensible variance estimate exists to
+catch. The directional fact stands (5/5 seeds ahead) and is kept in RESULTS/README as such; the
+statistical "decided win" claim does not survive and is marked superseded above, not deleted.
+**Every other currently-live decided claim holds comfortably** under the corrected rule — target
+framing (M11), credit and wage (E2), and bike-sharing (K1) all clear the harder bar with room to
+spare, so the thesis's substantive claims (setup wins, semantics-gated cleaning wins, FE null)
+are unaffected. README and STRATEGY.md updated to match; `docs/RESULTS.md`'s M6 section carries
+the superseded note in place rather than rewriting history.
+
+**Deferred, not fixed:** the docstring's other admitted gap — no correction for greedy multiple
+testing across a candidate sequence (the `--hybrid`/`--text-features` gates test several
+candidates against the same base CV in turn) — is left open. Those FE lanes are measured-null and
+frozen (no further development), so the engineering cost of a proper alpha-spending correction is
+not worth spending there; it would matter again if run memory (N4) or a wider candidate pool ever
+reopens that lane.
+
+## N2 — the fold-granularity fix, and the integration gap it surfaced (2026-07-05)
+
+The backlog item from K1's bike-sharing gap: `--fold-advisor`'s vocabulary gains a fourth
+strategy, `time_local` (`validation_strategist.py`, `validation.py::_time_local_folds`) — blocked,
+within-period folds (fold i trains on early time-blocks and validates on the next block, WITHIN
+every period, unioned across all periods) for a deployment split that repeats locally rather than
+cutting the timeline once globally. Fully offline-tested (fold construction, verify branch,
+pipeline wiring — 7 new tests, `test_validation_strategist.py`).
+
+**Gate: a second repeating-period task, to confirm the mechanism isn't a one-off** — met, cleanly:
+
+`scripts/time_local_experiment.py` (synthetic, no LLM calls — this isolates the FOLD CONSTRUCTION
+mechanism from the Strategist's separately-tested detection capability, M1/E1/M9). A monthly-demand
+series with a strong across-period trend (mirroring bike-sharing's year-over-year growth) plus a
+smooth within-period ramp; truth = the real local deployment shape (last third of every period
+from the first two-thirds, repeated across all 10 periods):
+
+| Arm | CV rmse | Truth rmse | Gap | Direction |
+|---|---|---|---|---|
+| random folds | 5.008 | 5.631 | −0.623 | optimistic (dangerous) |
+| global time split | 10.385 | 5.631 | +4.755 | pessimistic (overshoot) |
+| **time_local** | 6.142 | 5.631 | **+0.511** | pessimistic (mild) |
+
+**time_local cuts the global-split gap by >9× (4.755 → 0.511)** and lands on the same (safe) side
+as bike-sharing's own result — the mechanism is confirmed on independent data, not a fit to one
+dataset's noise.
+
+**Rerunning bike-sharing itself did NOT close cleanly — and the reason is itself a finding.**
+`scripts/kaggle_battery.py --make-submission bike-sharing --fold-advisor` logged:
+`FOLDS time-ordered by 'datetime' -- ...`, i.e. the Strategist proposed plain `time`, not
+`time_local`. This is not a prompt failure: `propose_fold_strategy` runs on the RAW column
+profile, *before* cleaning/feature engineering. Bike-sharing's only period-shaped signal is a raw
+`datetime` string; the month it would need to name as `period_column` does not exist as a column
+at that point (`season` exists but is far too coarse — 4 values spanning 2 years). The Strategist
+correctly refused to name a column that isn't there yet (its own instruction: "only name columns
+that exist in the profile") and fell back to `time`. **This is the same "decided before
+decomposed" timing gap the original bike-sharing bug hunt already found once** (cleaning dropped
+the raw `datetime` column before FE could decompose it) — now recurring one layer up, at fold-
+strategy time instead of cleaning time. (This run also flushed out a real harness gap:
+`maestra-bench`'s `run_task`/`run_multi_seed` and `kaggle_battery.py`'s `main()`/`make_submission`
+never threaded `fold_advisor` through at all — the K1 battery/submission runs never exercised the
+Strategist on either arm. Fixed: `fold_advisor` is now a first-class parameter on `run_task`,
+`maestra-bench --fold-advisor`, and `kaggle_battery.py --fold-advisor`.)
+
+**Honest scope: shipped vs. open.** `time_local` is real, tested, and production-ready for any
+task whose period is already a materialized column (a patient-visit index, a pre-existing
+month/week field) — not a hypothetical. Closing the loop for raw-timestamp tasks like
+bike-sharing needs one more piece, not attempted here: surfacing derived period candidates
+(month-of/week-of a timestamp) during *profiling*, so the Strategist has something to name before
+cleaning/FE ever runs. Scoped follow-up, gated the same way as this one: confirm on a second task
+before calling it done.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across every layer a conductor could touch:
@@ -567,7 +680,7 @@ The systematic answer to the project's question, across every layer a conductor 
 |---|---|---|
 | **Setup / validation** (fold strategy, leakage) | **Yes — decisively** | M1: removed a **+0.499** CV lie (synthetic); real data: cut a **5.7×** (Grunfeld, group) and a **15.3×** (economics, time) optimism roughly in half or better; detection 17/17 with 0 false alarms, provider-robust (M9) |
 | Setup / target framing (M11) | **Yes — the predicted setup win** | House Prices, 5 seeds: log1p improves rmse in **5/5** (mean +2 273, ≈ −8%), seed-level paired test unambiguous; agent correctly silent on symmetric and classification targets. Caveat: the per-run 3-fold gate under-accepts (1/5) — conservative in the safe direction |
-| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices 5/5 seeds (+1 285 rmse); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend); real Kaggle data (K1): 1 decided win (bike-sharing), 3 undecided, 0 decided losses |
+| Cleaning / encoding | Yes, modestly — on semantic-rich data, and **only** there; and **provider-robust** | House Prices: ahead 5/5 seeds (+1 285 rmse) but **undecided** under the N1-corrected variance rule (was a narrow "decided" pass pre-correction); E2 battery (10 tasks): 2 decided wins, both rich-semantics (credit −39%, wage −1.1%, both hold under N1), 8 undecided, 0 decided losses; poor-semantics controls **inert** (Δ −0.001 / +0.008); drop judgment 0/10 dangerous trap-drops across 5 models (M9-extend); real Kaggle data (K1): 1 decided win (bike-sharing, holds under N1), 3 undecided, 0 decided losses |
 | **Feature engineering** (arithmetic, ordinal *and* free-text) | **No — across the board, all three lanes** | hybrid kept 0/5; ordinal mean-negative; text extractors 0/5 vs the engine's own n-grams (M10) |
 | Temporal decomposition (`date_parts`) — a distinct mechanism from arithmetic FE | **Yes, decisively, once the vocabulary could express it** | K1 bike-sharing: **rmse 124.0 → 36.1 (−71%)**, driven by keeping+decomposing a raw datetime column (year/month/weekday/**hour**). Not "clever domain feature invented from numerics" (the null FE story) — the engine cannot parse a raw timestamp string into hour-of-day itself; this is closer to a structural setup capability than to CAAFE-style FE |
 

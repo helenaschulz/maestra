@@ -2,10 +2,11 @@
 
 # 🎼 Maestra
 
-### Agentic AutoML for tabular data — with honest measurement built in.
+### Trustworthy validation design and a measured, empirical arbiter — for tabular ML that doesn't lie to itself.
 
-*An LLM conductor over AutoGluon: the LLM decides, the engine computes,
-and every "smart" decision has to beat doing nothing.*
+*AutoGluon assumes rows are exchangeable and fits the target as given. Maestra's LLM judges
+exactly where that assumption breaks — grouped/temporal data, leakage, a skewed target — and a
+deterministic arbiter, never another model's opinion, decides whether the judgment holds.*
 
 ![Python](https://img.shields.io/badge/python-3.9–3.12-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -17,16 +18,23 @@ and every "smart" decision has to beat doing nothing.*
 
 ---
 
-**Maestra** points a large language model at a CSV and lets it *conduct* an AutoML run:
-it reads a profile of your data, decides how to clean it, writes a structured plan, and hands
-the numbers to [AutoGluon](https://auto.gluon.ai/). When something breaks, it reads the
-traceback and tries again. It never does arithmetic — and any code it *does* write runs in a
-sandbox and survives only if it measurably improves cross-validation.
+**Maestra** is a pre-modeling data-risk audit plus a set of LLM judgment agents over
+[AutoGluon](https://auto.gluon.ai/), each aimed at a decision AutoML cannot make for itself:
+how validation folds must be built (random / grouped / temporal — and, for a *repeating* local
+deployment split, `time_local`), whether a column is leakage, whether a regression target should
+be reframed. It also conducts a full run end to end — profiling, cleaning, feature engineering,
+training — but that layer is the *smaller* finding, not the pitch: measured over a strong engine,
+LLM feature engineering is a wash (below).
 
-What makes Maestra different is not the agent — it's the **measurement discipline around it**:
-every LLM intervention is compared against a `--no-llm` baseline, graded against real answer
-keys, and validated with a leakage-free CV whose trustworthiness is itself measured (the
-**CV↔LB gap**). The findings below, including the negative ones, come from that harness.
+What makes Maestra different is not the agent — it's the **empirical arbiter around it**. Every
+LLM proposal is compared against a `--no-llm` baseline, graded against real answer keys, and
+validated with a leakage-free CV whose own trustworthiness is measured (the **CV↔LB gap**).
+Conflicts are settled by measurement, never by one model judging another — the differentiator
+from most LLM-for-AutoML work, which resolves disagreement with an LLM judge. The findings below,
+including the negative ones, come from that harness.
+
+**Start here:** `maestra-audit --csv data.csv --target y` — a client-ready, pre-modeling data-risk
+report (validation-design recommendation, leakage scan, structural traps). Trains no model.
 
 ```bash
 pip install -e ".[dev]"
@@ -68,19 +76,55 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | Titanic | mixed (891 rows) | balanced_acc | 0.814 | 0.806 | undecided over 5 seeds (an earlier single-seed "LLM hurts" was an outlier — corrected) |
 | TPS Dec-2021 (MLE-bench, 3.6M rows) | none (anonymous) | accuracy | 0.9592 | **0.9607** | marginal win, CV↔LB gap < 0.001 |
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
-| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | **Maestra, 5/5 seeds** — passes the paired 2-SEM test (narrowly) |
-| **10-task battery** (5 seeds each, paired verdict) | rich → anonymous | mixed | — | — | **2 decided wins (both rich: credit −39%, wage −1.1%), 8 undecided, 0 decided losses**; anonymous controls inert (Δ ≈ 0) |
-| **Kaggle battery** (4 real competitions, 5 seeds) | rich → anonymous, real data | mixed | — | — | **1 decided win** (bike-sharing rmse 124.0→**36.1**, −71%), 3 undecided, **0 decided losses** |
+| **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | ahead in 5/5 seeds, mean −1 285 rmse — **undecided** under the corrected variance rule (N1, 2026-07-05; passed narrowly before the correction — see RESULTS.md) |
+| **10-task battery** (5 seeds each, paired verdict) | rich → anonymous | mixed | — | — | **2 decided wins (both rich: credit −39%, wage −1.1%), 8 undecided, 0 decided losses**; anonymous controls inert (Δ ≈ 0); both wins hold under the N1-corrected rule |
+| **Kaggle battery** (4 real competitions, 5 seeds) | rich → anonymous, real data | mixed | — | — | **1 decided win** (bike-sharing rmse 124.0→**36.1**, −71% — driven by fixing 3 of Maestra's own bugs, not a clean baseline comparison; see the case study below), 3 undecided, **0 decided losses** |
 | **Target framing** (House Prices, `--target-framing`) | setup decision | rmse ↓ | raw target | **log1p, 5/5 seeds** | **mean −2 273 rmse (≈ −8%)** — a setup win AutoGluon cannot make itself |
 | **House Prices submission** (real Kaggle leaderboard) | rmse ↓ (LB: RMSLE) | CV↔LB gap | CV 0.1307 (log-space) | **LB 0.12544** | **gap +0.0053 (≈4%), CV pessimistic — trustworthy on a live leaderboard** |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
 
-Four findings that shape the design:
+Four findings that shape the design — in the order the thesis is argued, not the order they were
+found:
 
-1. **The LLM pays off where column *semantics* exist, and nowhere else — now shown causally.**
+1. **Where AutoML is structurally blind, the LLM's contribution is two orders of magnitude
+   larger than anything else it does.** On grouped data (several rows per customer, per-entity
+   labels) a random-fold CV reported **0.99** against a true score of **0.49** — the classic
+   silent killer of deployed models. The Validation Strategist (`--fold-advisor`) read the column
+   semantics, detected the entity column, switched to group folds, and reported **0.488 vs 0.493
+   truth** (gap −0.006). Cleaning/FE judgment moves scores by ~0.005; fixing the validation design
+   moved it by ~0.5. **Replicated on real data, for both blind spots:** on Grunfeld (10 firms) the
+   random-fold CV was **5.7× too optimistic** (rmse 41.5 vs 236.1 truth); the Strategist detected
+   `firm` unaided and cut the lie in half (group-CV 143.0) — likewise on MathAchieve (160
+   schools). On the `economics` time series it was **15.3× too optimistic** (rmse 282 vs 4 304
+   future truth); the Strategist detected `date`, switched to time-ordered folds, and cut it to
+   2.4×. Reproduce: `scripts/group_leakage_experiment.py`,
+   `scripts/real_group_leakage_experiment.py`, `scripts/time_leakage_experiment.py`.
+   **Detection quantified** on a 17-dataset benchmark with ground truth
+   (`scripts/strategist_detection_benchmark.py`), including iid datasets and a deliberate trap
+   column: first run 14/17 — the benchmark exposed two weaknesses, one targeted prompt iteration
+   later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). The judgment is
+   **provider-robust**: claude-opus-4-8, claude-sonnet-4-5, claude-haiku-4-5 and gpt-4o all score
+   17/17 on the same catalog. Only gpt-4o-mini degrades (group recall **4/6, misses in the
+   dangerous direction** — a missed group means a silently optimistic CV). Notably the boundary is
+   *model-specific, not price-tier*: Haiku 4.5, a small cheap model, matches the flagships. The
+   honest consulting takeaway is not "buy the biggest model" but **"verify this specific judgment
+   on your specific model — the failure mode is invisible without a benchmark like this one."**
+   A real Kaggle leaderboard sharpened this further: on bike-sharing-demand the Strategist
+   correctly detected the temporal axis, but a plain global time-split *overshot* into an overly
+   pessimistic CV (expanding-window bias over 2 years of seasonality), because the competition's
+   actual test split is a repeating LOCAL window (last days of every month), not one big future
+   block — detecting "is it temporal" is necessary but not sufficient; the fold's *granularity*
+   has to match how the real split happens too. **`--fold-advisor`'s vocabulary now includes
+   `time_local`** (blocked, within-period folds pooled across every period) for exactly this
+   shape — confirmed on independent synthetic data, but rerunning bike-sharing itself surfaced a
+   further, precisely-scoped gap rather than a clean close: see
+   [N2 below](#n2--the-fold-granularity-fix-and-the-integration-gap-it-surfaced-2026-07-05).
+2. **The LLM pays off where column *semantics* exist, and nowhere else — now shown causally.**
    On House Prices (`Neighborhood`, `KitchenQual`, `YearBuilt`, …) its cleaning/encoding judgment
-   beat the baseline on **all 5 seeds**; over a 10-task battery both decided wins are
-   rich-semantics tasks (credit −39%, wage −1.1% rmse) with zero decided losses. The causal half:
+   was ahead of the baseline on **all 5 seeds** (mean −1 285 rmse) — directionally consistent,
+   though the aggregate verdict is **undecided** under the harder, variance-corrected accept rule
+   (N1). Over a 10-task battery both decided wins are rich-semantics tasks (credit −39%, wage
+   −1.1% rmse) with zero decided losses, and both hold under the corrected rule. The causal half:
    an **anonymized-twin control** (identical bytes, names stripped to `x1..xn`) and a synthetic
    control show the effect *vanishes* (Δ −0.001/+0.008) when semantics are removed — semantics is
    the mechanism, not a correlate. This independently reproduces what
@@ -89,50 +133,57 @@ Four findings that shape the design:
    outcome made the baseline look 3× better on one task — the anomaly-shaped verdict flagged it,
    and the leak-free rerun landed on *undecided*. Honest cleaning looks like losing until the
    leak is found.)
-2. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal, not even
-   free-text.** The `--hybrid` layer let the LLM write real feature code (sandboxed, CV-gated);
+3. **The feature-engineering layer doesn't beat AutoGluon — not arithmetic, not ordinal, not even
+   free-text. Measured null, and frozen: the flags stay for reproducibility, but get no further
+   development.** The `--hybrid` layer let the LLM write real feature code (sandboxed, CV-gated);
    it proposed exactly the right domain features (`age_of_house = YrSold − YearBuilt`, …) and the
    gate rejected **all of them** — trees already extract that from raw columns. `--ordinal`
    encoding was mean-negative across seeds. And on free text (SMS spam), five textbook semantic
    extractors — currency mentions, exclamation density, informality — all failed to move a 0.986
    n-gram baseline beyond noise (`--text-features`, 0/5 kept): a currency mention *is* an n-gram.
    Where CAAFE/MALMAS/LLM-FE concentrate their effort, a strong engine has already closed the
-   gap. The one FE-adjacent decision that **does** pay is one level up, in *setup*: training on
-   `log1p` of a skewed target (`--target-framing`) improved House-Prices rmse in **5/5 seeds
-   (mean ≈ −8%)** — a reframing AutoGluon never performs on its own.
-3. **The CV↔LB gap works as a trust meta-signal.** Near zero on TPS (trust the CV), huge on
+   gap — an independent finding LATTEArena also reports. The null is itself an asset: it is what
+   turns "the LLM's value is in setup/validation" from a slogan into a measured claim. The one
+   FE-adjacent decision that **does** pay is one level up, in *setup*: training on `log1p` of a
+   skewed target (`--target-framing`) improved House-Prices rmse in **5/5 seeds (mean ≈ −8%)** —
+   a reframing AutoGluon never performs on its own.
+4. **The CV↔LB gap works as a trust meta-signal.** Near zero on TPS (trust the CV), huge on
    leaf-classification, where 3-fold log-loss over 99 classes is an unstable estimator (don't).
-4. **Where AutoML is structurally blind, the LLM's contribution is two orders of magnitude
-   larger.** On grouped data (several rows per customer, per-entity labels) a random-fold CV
-   reported **0.99** against a true score of **0.49** — the classic silent killer of deployed
-   models. The Validation Strategist (`--fold-advisor`) read the column semantics, detected the
-   entity column, switched to group folds, and reported **0.488 vs 0.493 truth** (gap −0.006).
-   Cleaning/FE judgment moves scores by ~0.005; fixing the validation design moved it by ~0.5.
-   **Replicated on real data, for both blind spots:** on Grunfeld (10 firms) the random-fold CV
-   was **5.7× too optimistic** (rmse 41.5 vs 236.1 truth); the Strategist detected `firm` unaided
-   and cut the lie in half (group-CV 143.0) — likewise on MathAchieve (160 schools). On the
-   `economics` time series it was **15.3× too optimistic** (rmse 282 vs 4 304 future truth); the
-   Strategist detected `date`, switched to time-ordered folds, and cut it to 2.4×. Reproduce:
-   `scripts/group_leakage_experiment.py`, `scripts/real_group_leakage_experiment.py`,
-   `scripts/time_leakage_experiment.py`. **Detection quantified** on a 17-dataset benchmark
-   with ground truth (`scripts/strategist_detection_benchmark.py`), including iid datasets and a
-   deliberate trap column: first run 14/17 — the benchmark exposed two weaknesses, one targeted
-   prompt iteration later it scores **17/17** (group 6/6, time 5/5, **0/6 false alarms**). The
-   judgment is **provider-robust**: claude-opus-4-8, claude-sonnet-4-5, claude-haiku-4-5 and
-   gpt-4o all score 17/17 on the same catalog. Only gpt-4o-mini degrades (group recall **4/6,
-   misses in the dangerous direction** — a missed group means a silently optimistic CV). Notably
-   the boundary is *model-specific, not price-tier*: Haiku 4.5, a small cheap model, matches the
-   flagships. The honest consulting takeaway is not "buy the biggest model" but **"verify this
-   specific judgment on your specific model — the failure mode is invisible without a benchmark
-   like this one."** A real Kaggle leaderboard sharpened this further: on bike-sharing-demand the
-   Strategist correctly detected the temporal axis, but a plain global time-split *overshot* into
-   an overly pessimistic CV (expanding-window bias over 2 years of seasonality), because the
-   competition's actual test split is a repeating LOCAL window (last days of every month), not one
-   big future block — detecting "is it temporal" is necessary but not sufficient; the fold's
-   *granularity* has to match how the real split happens too.
 
 > **The lesson, baked into the design:** never trust an LLM's judgment blind — make it beat a
 > baseline, and make the validation's own trustworthiness measurable.
+
+### N2 — the fold-granularity fix, and the integration gap it surfaced (2026-07-05)
+
+`--fold-advisor` has a fourth vocabulary entry, `time_local` — blocked, within-period folds (each
+fold trains on early blocks and validates on the next block, *within every period*, pooled across
+all periods) for a deployment split that **repeats locally** rather than cutting the timeline
+once. Status: the mechanism is built, tested, and confirmed on independent data — but closing the
+loop on bike-sharing itself surfaced a real, precisely-scoped gap rather than a clean win.
+
+- **The mechanism is confirmed on a second, independent, synthetic repeating-period task**
+  (`scripts/time_local_experiment.py`, no LLM involved — this isolates fold construction from the
+  Strategist's separately-tested detection capability): a monthly-demand series with a strong
+  across-period trend plus a local within-period ramp, truth = the real deployment shape (last
+  third of every period from the first two-thirds, repeated). Random folds: gap **−0.62**
+  (optimistic/dangerous). Global time split: gap **+4.76** (pessimistic overshoot). **`time_local`:
+  gap +0.51 — a >9× reduction** versus the global split.
+- **The bike-sharing rerun did NOT pick up `time_local`** — and the reason is structural, not a
+  prompt bug: the Validation Strategist decides fold strategy from the RAW column profile, before
+  cleaning/feature engineering runs. Bike-sharing's only time signal is a raw `datetime` string;
+  the month it would need as `period_column` doesn't exist as a column yet at that point (`season`
+  exists but is far too coarse — 4 values over 2 years). The Strategist correctly named only
+  `time_column=datetime` and fell back to plain `time`, per its own instruction not to name columns
+  that don't exist — the same **"decided before decomposed"** timing gap the K1 bug hunt already
+  hit once (cleaning dropping a timestamp before FE could decompose it). Rerunning with the same
+  `--fold-advisor` flag confirmed the log line: `FOLDS time-ordered by 'datetime'`, no
+  `period_column` proposed.
+- **Honest scope of what's shipped vs. what's next:** `time_local` is production-ready for data
+  that already carries an explicit period column (patient visit index, a pre-existing month/week
+  field) — this is a real, tested capability, not vaporware. Closing the loop for raw-timestamp
+  tasks like bike-sharing needs one more piece: surfacing derived period candidates (month/week
+  from a timestamp) during *profiling*, before the Strategist decides — a well-scoped follow-up,
+  not a same-session fix, and not yet attempted.
 
 ### Case study: Maestra caught its own mistake
 
