@@ -134,6 +134,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Path to a provider-written dataset description (e.g. Kaggle's data_description.txt); "
              "fed to every judgment node so the LLM knows what columns MEAN.",
     )
+    p.add_argument(
+        "--run-memory",
+        action="store_true",
+        help="Feed the project's own past DECIDED verdicts (never 'undecided' ones) from "
+             "--memory-path to every judgment node as non-binding context (N4). This run's "
+             "own arbiter still re-measures regardless. Off by default.",
+    )
+    p.add_argument("--memory-path", default="benchmark.jsonl",
+                   help="Where past verdicts are read from for --run-memory (default benchmark.jsonl).")
     p.add_argument("--test", help="Unlabeled test CSV to predict on (for a Kaggle submission).")
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
@@ -327,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
             test_df=test_df,
             id_col=args.id_col,
             dataset_description=dataset_description,
+            run_memory=args.run_memory,
+            memory_path=args.memory_path,
         )
     except ValueError as exc:  # bad target column
         print(f"Error: {exc}", file=sys.stderr)
