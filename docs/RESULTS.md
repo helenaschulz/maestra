@@ -769,7 +769,7 @@ metric's direction. LB scores are Helena's, read from Kaggle 2026-07-06 (verbati
 | restaurant-revenue\* | RMSE ↓ | standard (NOT bq) | 2 627 861 | **1 869 510** | 1 891 848 | −758 350 | pessimistic (safe) |
 | store-sales | RMSLE ↓ | best_quality | — (see note) | **0.79002** | pending | — | not comparable |
 | airbnb | NDCG@5 ↑ | best_quality | — (see note) | **0.85354** | 0.85671 | — | not comparable |
-| ieee-fraud | AUC ↑ | high_quality\*\* | 0.8965 | **0.91427** | 0.89402 | **+0.0178** | pessimistic (safe) |
+| ieee-fraud | AUC ↑ | high_quality, 50k\*\* | 0.8965 | **0.91427** | 0.89402 | **+0.0178** | pessimistic (safe) |
 | two-sigma-rental | multi-class log loss ↓ | — | — | — | — | — | no submission (now wired, below) |
 
 \* restaurant-revenue is the **standard** (non-best_quality) run from the first submission pass
