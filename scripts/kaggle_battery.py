@@ -194,7 +194,11 @@ CATALOG = [
          test_path="data/kaggle_ieee/test_transaction.csv",
          eval_metric="accuracy", framing=False,
          submit_proba=True, submit_col="isFraud",  # LB metric is AUC -> submit P(fraud), not a label
-         submit_eval_metric="roc_auc", submit_sample=200000,  # full train is 590k rows
+         submit_eval_metric="roc_auc",
+         submit_sample=50000,   # 393 wide columns kept -> rows are the memory lever; best_quality
+         submit_presets="high_quality",  # bagging at 200k×393 OOMs on ~10GB (verified: the run
+         # failed silently). high_quality bags lighter; 50k rows × 393 cols fits. Keeping the V
+         # signal (below) matters more than best_quality here -- an honest memory/quality trade.
          submit_use_llm=False,  # keep all V1-V339 for the submission (real AUC signal); with the
          # LLM off there is no profiling call to blow the token limit, so nothing needs dropping
          llm_only_drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA columns: dropped
@@ -325,6 +329,8 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
         leak); kept when ``submit_use_llm`` is False so their signal reaches the engine.
       * ``submit_sample`` — cap the training rows (huge tables where full-train is infeasible);
         a large capped sample, not the battery's tiny 15k.
+      * ``submit_presets`` — per-task override of the CLI ``--presets``. Set a lighter preset for
+        a memory-heavy task (ieee-fraud: 393 wide columns × bagging OOMs at best_quality).
     """
     from maestra.pipeline import run_pipeline
     from maestra.runlog import append_run
@@ -365,6 +371,7 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
     if submit_sample and len(train) > submit_sample:
         train = train.sample(submit_sample, random_state=42).reset_index(drop=True)
         print(f"  (train capped to {submit_sample} rows for a feasible submission run)")
+    presets = spec.get("submit_presets", presets)  # per-task override (memory-heavy tasks)
     # best_quality (and other bagging presets) do ~8-fold bagging + stacking; on very few rows
     # that overfits and AutoGluon can crash ("Learner is already fit"). Below ~2k rows a bagging
     # preset is worse, not "higher" -- fall back to the plain preset. Only tiny tasks hit this.
