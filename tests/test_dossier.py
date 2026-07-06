@@ -98,6 +98,40 @@ def test_write_dossier_writes_the_file(tmp_path):
     assert p.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
 
 
+def _audit(**over):
+    from maestra.audit import AuditReport
+    base = dict(csv="x.csv", n_rows=1000, n_cols=8, target="y",
+                fold_strategy={"strategy": "random"}, fold_log=[], leakage_warnings=[])
+    base.update(over)
+    return AuditReport(**base)
+
+
+def test_render_audit_high_risk_leak_is_red():
+    from maestra.dossier import render_audit
+    html = render_audit(_audit(target_leaks=[("snapshot", 0.98)]))
+    assert "RED" in html and "near-copy of the target" in html and "snapshot" in html
+
+
+def test_render_audit_group_folds_verdict_is_elevated_yellow():
+    from maestra.dossier import render_audit
+    html = render_audit(_audit(fold_strategy={"strategy": "group", "group_column": "customer_id",
+                                              "rationale": "rows repeat per customer"}))
+    assert "YELLOW" in html and "group the folds" in html and "customer_id" in html
+    assert "rows repeat per customer" in html            # strategist reasoning surfaced
+
+
+def test_render_audit_clean_is_green():
+    from maestra.dossier import render_audit
+    html = render_audit(_audit(adversarial_auc=0.51))
+    assert "GREEN" in html and "standard validation applies" in html
+
+
+def test_render_audit_uses_the_shared_html_shell():
+    from maestra.dossier import render_audit
+    html = render_audit(_audit())
+    assert html.startswith("<!DOCTYPE html>") and "<summary>Leakage risks</summary>" in html
+
+
 def test_dossier_narrative_calls_the_llm_and_feeds_the_renderer(monkeypatch):
     """The LLM produces ONLY the prose; the parsed dict drops straight into render_dossier."""
     from maestra import dossier

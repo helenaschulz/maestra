@@ -309,6 +309,15 @@ def _load_table(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def write_audit_html(report: AuditReport, path: str, *, verdict_sentence: str | None = None) -> None:
+    """Render the audit on the shared HTML layer (:func:`maestra.dossier.render_audit`) and write
+    it to ``path`` — a verdict-first, dependency-free static file, the clickable twin of the
+    Markdown report."""
+    from maestra.dossier import render_audit
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_audit(report, verdict_sentence=verdict_sentence))
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="maestra-audit",
                                 description="Data-risk report (validation strategy, leakage, "
@@ -321,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lang", choices=["en", "de"], default="en", help="Report language.")
     p.add_argument("--time-limit", type=int, default=30, help="Budget for the adversarial classifier.")
     p.add_argument("--out", help="Write the Markdown report here (default: stdout).")
+    p.add_argument("--html", metavar="PATH", help="Also write a clickable HTML audit to PATH.")
     args = p.parse_args(argv)
     load_dotenv()
 
@@ -337,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Audit written to {args.out}")
     else:
         print(text)
+    if args.html:
+        write_audit_html(report, args.html)
+        print(f"HTML audit written to {args.html}")
     return 0
 
 

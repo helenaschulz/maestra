@@ -147,6 +147,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--submission", help="Where to write the submission CSV (requires --test).")
     p.add_argument("--id-col", default="id", help="Identifier column for the submission (default id).")
     p.add_argument("--report", help="Write an LLM-generated Markdown report of the run to this path.")
+    p.add_argument("--dossier", metavar="PATH", help="Write a clickable HTML evidence dossier of "
+                   "the run to PATH (verdict-first, rejected interventions shown, single static file).")
     p.add_argument("--runs-log", default="runs.jsonl", help="Append-only run log path (default runs.jsonl).")
     p.add_argument(
         "--compare",
@@ -378,6 +380,16 @@ def main(argv: list[str] | None = None) -> int:
             with open(args.report, "w") as fh:
                 fh.write(report_md)
             print(f"Report written: {args.report}")
+
+    if args.dossier:
+        from maestra.dossier import dossier_narrative, write_dossier
+        narrative = {}
+        try:  # the LLM writes only the prose; on failure the dossier still renders deterministically
+            narrative = dossier_narrative(args.model, result)
+        except LLMError as exc:
+            print(f"Dossier narrative skipped (LLM error): {exc}", file=sys.stderr)
+        write_dossier(result, args.dossier, **narrative)
+        print(f"Dossier written: {args.dossier}")
 
     return 0
 

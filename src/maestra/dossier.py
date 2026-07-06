@@ -242,6 +242,89 @@ def write_dossier(result, path: str, **kwargs) -> None:
         fh.write(render_dossier(result, **kwargs))
 
 
+_RISK_LIGHT = {"high": "red", "elevated": "yellow", "low": "green"}
+
+
+def _audit_verdict(r) -> str:
+    """A deterministic stakeholder sentence for the pre-modelling audit, from its worst finding —
+    the same 'your number is probably a lie, and here's the mechanism' framing the project sells."""
+    fs = getattr(r, "fold_strategy", {}) or {}
+    if getattr(r, "target_leaks", None):
+        col = r.target_leaks[0][0]
+        return (f"A column (<code>{_esc(col)}</code>) is a near-copy of the target — any score from "
+                "a naive split is fiction until it is removed.")
+    if getattr(r, "leakage_warnings", None):
+        return ("A flagged column may be recorded at or after the outcome — the model can likely "
+                "see the answer, so validate only after removing it.")
+    if fs.get("strategy") == "group":
+        return (f"Your CV is probably optimistic: the same entity "
+                f"(<code>{_esc(fs.get('group_column'))}</code>) appears in both train and "
+                "validation — group the folds so it cannot leak across them.")
+    if fs.get("strategy") in ("time", "time_local"):
+        return (f"Your CV is probably optimistic: it must predict the future from the past "
+                f"(<code>{_esc(fs.get('time_column'))}</code>) — split by time, not at random.")
+    auc = getattr(r, "adversarial_auc", None)
+    if auc is not None and auc >= 0.8:
+        return (f"Train and test are easily told apart (adversarial AUC {auc:.2f}) — a random "
+                "split will not represent how the model is actually used.")
+    return "No leak evidence and a random split is representative — standard validation applies."
+
+
+def _findings_list(items: list[str]) -> str:
+    return f"<ul>{''.join(f'<li>{x}</li>' for x in items)}</ul>" if items else \
+        "<p class='muted'>None.</p>"
+
+
+def render_audit(r, *, verdict_sentence: str | None = None) -> str:
+    """Render a pre-modelling data-risk :class:`~maestra.audit.AuditReport` on the SAME HTML layer
+    as the run dossier: verdict-first (risk → traffic light), evidence collapsible below. Duck-typed
+    on the report; ``verdict_sentence`` overrides the deterministic default (never the colour)."""
+    colour = _RISK_LIGHT.get(r.risk_level, "yellow")
+    bg, label = _LIGHT[colour]
+    sentence = verdict_sentence or _audit_verdict(r)
+    verdict_html = (f"<div class='verdict'><span class='light' style='background:{bg}'>{label}"
+                    f"</span><p>{sentence}</p></div>")
+
+    fs = getattr(r, "fold_strategy", {}) or {}
+    setup = [("Rows × columns", _esc(f"{r.n_rows} × {r.n_cols}")),
+             ("Target", _esc(r.target)),
+             ("Recommended folds", _esc(fs.get("strategy", "random")))]
+    if fs.get("rationale"):
+        setup.append(("Strategist reasoning", f"<span class='note'>{_esc(fs['rationale'])}</span>"))
+
+    leaks = [f"<code>{_esc(c)}</code> — |corr| {v} with the target (deterministic scan)"
+             for c, v in getattr(r, "target_leaks", [])]
+    leaks += [f"<code>{_esc(w.get('column'))}</code> — {_esc(w.get('reason'))} (LLM-flagged)"
+              for w in getattr(r, "leakage_warnings", [])]
+
+    structural = []
+    if getattr(r, "id_like", None):
+        structural.append("id-like: " + ", ".join(f"<code>{_esc(c)}</code>" for c in r.id_like))
+    if getattr(r, "constant", None):
+        structural.append("constant: " + ", ".join(f"<code>{_esc(c)}</code>" for c in r.constant))
+    if getattr(r, "high_missing", None):
+        structural.append("high-missing: " + ", ".join(f"<code>{_esc(c)}</code> ({f:.0%})"
+                                                        for c, f in r.high_missing))
+    if getattr(r, "high_card_text", None):
+        structural.append("high-cardinality text: "
+                          + ", ".join(f"<code>{_esc(c)}</code>" for c in r.high_card_text))
+
+    auc = getattr(r, "adversarial_auc", None)
+    shift = ("Not checked (no test set supplied)." if auc is None else
+             f"Adversarial AUC <b>{auc:.3f}</b> — "
+             + ("no meaningful train/test shift." if auc < 0.6 else
+                "a mild shift; validation may read optimistic." if auc < 0.8 else
+                "a STRONG shift; a random split will not represent the test set."))
+
+    sections = [
+        _section("Validation design", _kv_table(setup), open_=True),
+        _section("Leakage risks", _findings_list(leaks), open_=True),
+        _section("Structural flags", _findings_list(structural)),
+        _section("Train/test distribution shift", f"<p>{shift}</p>"),
+    ]
+    return _page("Maestra data-risk audit", verdict_html, "".join(sections))
+
+
 _NARRATIVE_SCHEMA: dict = {
     "type": "object",
     "properties": {
