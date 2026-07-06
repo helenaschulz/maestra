@@ -282,6 +282,7 @@ def select_features(
     group_column: str | None = None,
     time_column: str | None = None,
     period_column: str | None = None,
+    presets: str | None = None,
     budget=None,
 ):
     """Greedy CV gate: keep a candidate only if it improves the CV mean beyond fold noise.
@@ -294,7 +295,7 @@ def select_features(
     cross-validation is the arbiter; a plausible-but-useless feature is dropped.
     """
     folds = dict(group_column=group_column, time_column=time_column,
-                period_column=period_column)  # same strategy as the reported CV
+                period_column=period_column, presets=presets)  # same strategy/config as reported CV
     base = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                           model_dir=f"{model_dir}/base", time_limit=time_limit, n_folds=n_folds, seed=seed,
                           eval_metric=eval_metric, **folds)

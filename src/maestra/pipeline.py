@@ -200,7 +200,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False,
-                 target_framing=False, text_features=False, cv_budget=None) -> PipelineResult:
+                 target_framing=False, text_features=False, cv_budget=None,
+                 presets=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -253,7 +254,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             df, target, cleaning_plan=cleaning_plan, feature_plan=None, reviews=reviews,
             model_dir=f"{model_dir}/skeptic", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
             eval_metric=eval_metric, group_column=group_column, time_column=time_column,
-            period_column=period_column, budget=budget)
+            period_column=period_column, presets=presets, budget=budget)
         skeptic_records = [asdict(r) for r in recs]
 
     # Build the cleaned + feature-engineered full dataset (also the profile for code-gen).
@@ -294,12 +295,12 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
             model_dir=f"{model_dir}/hybrid", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
             sigma_mult=hybrid_threshold, eval_metric=eval_metric,
             group_column=group_column, time_column=time_column, period_column=period_column,
-            budget=budget)
+            presets=presets, budget=budget)
         hybrid_records = [asdict(r) for r in records]
     else:
         cv = cross_validate(df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                             model_dir=f"{model_dir}/cv", time_limit=cv_time_limit, n_folds=n_folds, seed=seed,
-                            eval_metric=eval_metric,
+                            eval_metric=eval_metric, presets=presets,
                             group_column=group_column, time_column=time_column,
                             period_column=period_column)
 
@@ -320,7 +321,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                 trial_fn=lambda: cross_validate(
                     df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                     model_dir=f"{model_dir}/framing", time_limit=cv_time_limit, n_folds=n_folds,
-                    seed=seed, eval_metric=eval_metric,
+                    seed=seed, eval_metric=eval_metric, presets=presets,
                     generated_features=generated_features or None,
                     group_column=group_column, time_column=time_column,
                     period_column=period_column,
@@ -349,7 +350,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         full_for_fit = full_for_fit.assign(
             **{target: adopted_transform.forward(full_for_fit[target])})
     _validate_trainable(full_for_fit, target)
-    training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final", eval_metric)
+    training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final", eval_metric,
+                             presets=presets)
 
     adversarial_auc = None
     submission = None
@@ -419,6 +421,7 @@ def run_pipeline(
     cv_budget: int | None = None,
     run_memory: bool = False,
     memory_path: str = "benchmark.jsonl",
+    presets: str | None = None,
 ) -> PipelineResult:
     """Run the conductor loop on ``df`` and return a :class:`PipelineResult`.
 
@@ -466,6 +469,10 @@ def run_pipeline(
             as ``dataset_description``/``research``. "Undecided" verdicts are never retrieved
             (self-reinforcement risk); this run's own arbiter still re-measures regardless.
         memory_path: Where past verdicts are read from (default: the shared ``benchmark.jsonl``).
+        presets: AutoGluon quality preset applied to EVERY model fit in the run — the CV folds
+            AND the final model (so the CV↔LB gap keeps comparing like with like). ``None`` uses
+            AutoGluon's fast default; ``"best_quality"`` enables multi-layer stacking + bagging
+            (much stronger, much slower). Set for submission runs where prediction quality matters.
 
     Raises:
         ValueError: If ``target`` is not a column of ``df``.
@@ -512,6 +519,7 @@ def run_pipeline(
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
             target_framing=target_framing, text_features=text_features, cv_budget=cv_budget,
+            presets=presets,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics
@@ -562,7 +570,8 @@ def run_pipeline(
                 transforms.append(ftransform)
 
             _validate_trainable(train, target)
-            training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir, eval_metric)
+            training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir,
+                                          eval_metric, presets=presets)
 
             # Quality gate (Point 3): if the run is essentially degenerate, let the LLM
             # revise the plan ONCE and retrain. The decision uses AutoGluon's internal

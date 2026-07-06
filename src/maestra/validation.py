@@ -263,6 +263,7 @@ def cross_validate(
     group_column: str | None = None,
     time_column: str | None = None,
     period_column: str | None = None,
+    presets: str | None = None,
     target_transform=None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
@@ -312,7 +313,8 @@ def cross_validate(
             val_true = proc_val[target]
             proc_train = proc_train.assign(**{target: target_transform.forward(proc_train[target])})
             proc_val = proc_val.assign(**{target: target_transform.forward(proc_val[target])})
-        result = train_and_evaluate(proc_train, proc_val, target, time_limit, f"{model_dir}/fold_{i}", eval_metric)
+        result = train_and_evaluate(proc_train, proc_val, target, time_limit,
+                                    f"{model_dir}/fold_{i}", eval_metric, presets=presets)
         eval_metric, problem_type = result.eval_metric, result.problem_type
         preds_orig = None
         if result.predictor is not None:

@@ -97,7 +97,7 @@ def test_cross_validate_with_transform_scores_in_original_space(monkeypatch):
     A log-space rmse here would be tiny (<1); the original-space score is orders larger."""
     df = _skewed_df(30)
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         assert train[target].max() < 10  # proof the fold actually trained on log1p(y)
         return TrainingResult("regression", "root_mean_squared_error", pd.DataFrame(),
                               {"root_mean_squared_error": -0.001},  # log-space metric: a decoy
@@ -117,7 +117,7 @@ def test_cross_validate_with_transform_scores_in_original_space(monkeypatch):
 
 
 def test_cross_validate_transform_requires_predictor(monkeypatch):
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         return TrainingResult("regression", "root_mean_squared_error", pd.DataFrame(), {})
 
     monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)

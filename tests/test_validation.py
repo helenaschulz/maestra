@@ -25,7 +25,7 @@ def test_cross_validate_aggregates_fold_scores(monkeypatch):
     df = pd.DataFrame({"x": list(range(12)), "y": [0, 1] * 6})
     scores = iter([0.7, 0.8, 0.9])
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         return TrainingResult("binary", "accuracy", pd.DataFrame(), {"accuracy": next(scores)})
 
     monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
@@ -67,7 +67,7 @@ def test_cross_validate_collects_oof_probabilities(monkeypatch):
 
     df = pd.DataFrame({"x": [float(i) for i in range(12)], "y": [0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1]})
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         return TrainingResult("binary", "roc_auc", pd.DataFrame(), {"roc_auc": 0.5},
                               predictor=_FakeProbaPredictor())
 
@@ -110,7 +110,7 @@ def test_cross_validate_handles_boolean_target_classes(monkeypatch):
     df = pd.DataFrame({"x": [float(i) for i in range(12)],
                        "y": [False, False, False, True, True, True] * 2})
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         return TrainingResult("binary", "roc_auc", pd.DataFrame(), {"roc_auc": 0.5},
                               predictor=_BoolProbaPredictor())
 
@@ -145,7 +145,7 @@ def test_oof_proba_reindexes_to_full_class_set(monkeypatch):
     df = pd.DataFrame({"x": [float(i) for i in range(12)],
                        "y": ["A", "B", "C"] * 4})  # 'C' is a real class in the data
 
-    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None):
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None, presets=None):
         return TrainingResult("multiclass", "log_loss", pd.DataFrame(), {"log_loss": 0.5},
                               predictor=_MissingClassPredictor())
 

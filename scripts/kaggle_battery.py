@@ -101,7 +101,7 @@ CATALOG = [
          id_col="id", path="data/kaggle_store_sales/train.csv",
          competition="store-sales-time-series-forecasting", sample=15000,
          test_path="data/kaggle_store_sales/test.csv",
-         submit_sample=50000,  # full train is 3M rows -> infeasible; cap for the submission run
+         submit_sample=200000,  # full train is 3M rows -> infeasible; cap for the submission run
          eval_metric="root_mean_squared_error", framing=True,  # sales is right-skewed
          note="Getting-Started (open by default, no join needed). 3M rows -> subsampled to 15k. "
               "store_nbr (54 stores) + family (33 categories) repeat densely — group AND time "
@@ -116,7 +116,7 @@ CATALOG = [
          competition="rossmann-store-sales", sample=15000,
          test_path="data/kaggle_rossmann/test.csv",
          submit_id="Id",  # the real test.csv keys on "Id" (row_id is battery-only, not in test)
-         submit_sample=50000,  # full train is 1M rows
+         submit_sample=200000,  # full train is 1M rows
          eval_metric="root_mean_squared_error", framing=True,  # sales right-skewed, many closed-day zeros
          drop=["Customers"],  # leak: near-perfect proxy for Sales, absent from the real test set
          note="1017209 rows -> subsampled to 15k. Store (1115 stores, ~942 days each) is a "
@@ -131,7 +131,7 @@ CATALOG = [
          competition="walmart-recruiting-store-sales-forecasting", sample=15000,
          test_path="data/kaggle_walmart/test.csv",
          submit_id="Id", submit_id_construct=["Store", "Dept", "Date"],  # LB id = "Store_Dept_Date"
-         submit_sample=50000,  # full train is 421k rows
+         submit_sample=200000,  # full train is 421k rows
          eval_metric="root_mean_squared_error", framing=True,
          note="421570 rows -> subsampled to 15k. Store x Dept (~3331 combinations) repeats "
               "densely -- a second, independent group+time real task (different retailer/shape "
@@ -144,7 +144,7 @@ CATALOG = [
          test_path="data/kaggle_ieee/test_transaction.csv",
          eval_metric="accuracy", framing=False,
          submit_proba=True, submit_col="isFraud",  # LB metric is AUC -> submit P(fraud), not a label
-         submit_eval_metric="roc_auc", submit_sample=50000,  # full train is 590k rows
+         submit_eval_metric="roc_auc", submit_sample=200000,  # full train is 590k rows
          drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA-style columns: opaque noise,
          # not semantic richness, and at full width they blow gpt-4o's 30k TPM rate limit in one
          # profiling call (verified: FAILED live, RateLimitError, 31805 requested) -- dropping
@@ -163,7 +163,7 @@ CATALOG = [
          test_path="data/kaggle_santander_transaction/test.csv",
          eval_metric="accuracy", framing=False,
          submit_proba=True, submit_col="target",  # LB metric is AUC -> submit P(target=1)
-         submit_eval_metric="roc_auc", submit_sample=50000,  # full train is 200k rows
+         submit_eval_metric="roc_auc", submit_sample=200000,  # full train is 200k rows
          note="200000 rows, 200 fully anonymized numeric columns (var_0..var_199) -> subsampled "
               "to 15k. A THIRD anonymized control (after friedman-synth/E2 and allstate/K1) on "
               "modern Kaggle data -- the thesis predicts inert, same as the others. Real metric "
@@ -185,7 +185,7 @@ CATALOG = [
          test_path="data/kaggle_airbnb/test_users.csv",
          eval_metric="accuracy", framing=False,
          submit_col="country",  # sample column is "country"; we emit the top-1 label per user
-         submit_sample=50000,    # full train is 213k rows; NDCG@5 scored on our single-label guess
+         submit_sample=200000,    # full train is 213k rows; NDCG@5 scored on our single-label guess
          note="213451 rows -> subsampled to 15k. 12-class target (country_destination: NDF/US/"
               "other/FR/CA/GB/ES/IT/PT/NL/DE/AU), rich semantics (gender/age/signup_method/"
               "language/affiliate_channel/first_device_type) + weak time (date_account_created, "
@@ -242,7 +242,7 @@ def _download_help(spec: dict) -> str:
 
 
 def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
-                    fold_advisor: bool = False) -> None:
+                    fold_advisor: bool = False, presets: str | None = "best_quality") -> None:
     """Train Maestra on the FULL train set and write a submittable prediction file.
 
     Uses the leakage-free CV for the honest estimate (that is the number the public LB gets
@@ -293,16 +293,23 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
     if submit_sample and len(train) > submit_sample:
         train = train.sample(submit_sample, random_state=42).reset_index(drop=True)
         print(f"  (train capped to {submit_sample} rows for a feasible submission run)")
+    # best_quality (and other bagging presets) do ~8-fold bagging + stacking; on very few rows
+    # that overfits and AutoGluon can crash ("Learner is already fit"). Below ~2k rows a bagging
+    # preset is worse, not "higher" -- fall back to the plain preset. Only tiny tasks hit this.
+    if presets and presets != "medium_quality" and len(train) < 2000:
+        print(f"  ({len(train)} rows is too few for '{presets}' bagging -> using medium_quality)")
+        presets = "medium_quality"
 
     print(f"\n=== {spec['name']}: submission run "
           f"(eval_metric={submit_eval}, framing={spec['framing']}, proba={submit_proba}, "
-          f"fold_advisor={fold_advisor}, train_rows={len(train)}) ===")
+          f"fold_advisor={fold_advisor}, presets={presets}, train_rows={len(train)}) ===")
     result = run_pipeline(
         train, spec["target"], model=model, test_size=0.2, time_limit=time_limit,
         seed=42, model_dir=f"AutogluonModels/kaggle_{spec['name']}", cv_folds=cv,
         eval_metric=submit_eval, target_framing=spec["framing"],
         fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id,
-        proba=submit_proba, proba_columns=[submit_col] if submit_proba else None)
+        proba=submit_proba, proba_columns=[submit_col] if submit_proba else None,
+        presets=presets)
 
     submission = result.submission
     # Label path names the prediction column after the target; rename to what the sample
@@ -346,6 +353,10 @@ def main():
     p.add_argument("--fold-advisor", action="store_true",
                    help="Validation Strategist on both arms (N2, 2026-07-05) — lets the "
                         "bike-sharing temporal task pick up time_local instead of random folds.")
+    p.add_argument("--presets", default="best_quality",
+                   help="AutoGluon quality preset for --make-submission runs (default "
+                        "best_quality: multi-layer stacking + bagging, strong but slow). Pass "
+                        "'medium_quality' for a fast draft, or '' to use AutoGluon's own default.")
     args = p.parse_args()
     load_dotenv()
 
@@ -356,7 +367,7 @@ def main():
             raise SystemExit(f"unknown task {args.make_submission!r} — see --list")
         for spec in todo:
             make_submission(spec, model=args.model, time_limit=args.time_limit, cv=args.cv,
-                            fold_advisor=args.fold_advisor)
+                            fold_advisor=args.fold_advisor, presets=args.presets or None)
         return
 
     if args.list or not args.task:
