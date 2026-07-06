@@ -260,7 +260,13 @@ def _audit_verdict(r) -> str:
         return (f"Your CV is probably optimistic: the same entity "
                 f"(<code>{_esc(fs.get('group_column'))}</code>) appears in both train and "
                 "validation — group the folds so it cannot leak across them.")
-    if fs.get("strategy") in ("time", "time_local"):
+    if fs.get("strategy") == "time_local":
+        return (f"Your CV is probably wrong in either direction: the task predicts the future "
+                f"WITHIN each <code>{_esc(fs.get('period_column'))}</code> from "
+                f"<code>{_esc(fs.get('time_column'))}</code>, repeating — neither a random split "
+                "(optimistic) nor one global time cut (overshoots pessimistic) matches that; fold "
+                "locally within each period instead.")
+    if fs.get("strategy") == "time":
         return (f"Your CV is probably optimistic: it must predict the future from the past "
                 f"(<code>{_esc(fs.get('time_column'))}</code>) — split by time, not at random.")
     auc = getattr(r, "adversarial_auc", None)

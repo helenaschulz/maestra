@@ -112,6 +112,18 @@ def test_render_audit_high_risk_leak_is_red():
     assert "RED" in html and "near-copy of the target" in html and "snapshot" in html
 
 
+def test_render_audit_time_local_names_the_period_column():
+    """Found via the real Grunfeld example (2026-07-06): time_local was rendered with the same
+    sentence as plain time, silently dropping the repeating-period nuance the strategy exists
+    for. time_local now names BOTH the time and the period column."""
+    from maestra.dossier import render_audit
+    html = render_audit(_audit(fold_strategy={"strategy": "time_local", "time_column": "year",
+                                              "period_column": "firm",
+                                              "rationale": "repeats per firm"}))
+    assert "YELLOW" in html and "year" in html and "firm" in html
+    assert "repeating" in html.lower() and "within each" in html.lower()
+
+
 def test_render_audit_group_folds_verdict_is_elevated_yellow():
     from maestra.dossier import render_audit
     html = render_audit(_audit(fold_strategy={"strategy": "group", "group_column": "customer_id",
