@@ -251,17 +251,20 @@ CATALOG = [
          metric="balanced_accuracy", id_col="listing_id",
          path="data/kaggle_twosigma/train_flat.csv",
          competition="two-sigma-connect-rental-listing-inquiries", sample=15000,
+         test_path="data/kaggle_twosigma/test_flat.csv",  # test.json flattened once, like train
+         submit_id="listing_id", submit_proba=True,
+         submit_proba_columns=["high", "medium", "low"],  # sample: listing_id,high,medium,low
+         submit_eval_metric="log_loss",  # the competition's real multi-class log loss
          eval_metric="accuracy", framing=False,
          note="49352 rows. Ships as train.json with list-valued 'features'/'photos' columns -- "
-              "flattened once to a plain CSV (data/kaggle_twosigma/train_flat.csv), those two "
-              "columns dropped (not a leak, just an unsupported column type for this harness; "
-              "the remaining columns -- bathrooms/bedrooms/price/manager_id/created/description/"
-              "latitude/longitude -- stay). manager_id is a genuine repeating GROUP entity (a "
-              "landlord/agency posts many listings) on real semantic-rich data -- a second, "
-              "structurally different group test from Rossmann/Walmart's Store. 3-class target "
-              "(low/medium/high interest); real metric is multi-class log loss, balanced_accuracy "
-              "used internally (no test_path: --make-submission not wired for this task, battery "
-              "only)."),
+              "flattened once to a plain CSV (train_flat.csv / test_flat.csv), those two columns "
+              "dropped (not a leak, just an unsupported column type for this harness; the "
+              "remaining bathrooms/bedrooms/price/manager_id/created/description/lat/long stay). "
+              "manager_id is a genuine repeating GROUP entity (a landlord/agency posts many "
+              "listings) on real semantic-rich data -- a second, structurally different group "
+              "test from Rossmann/Walmart's Store. 3-class target (low/medium/high); real metric "
+              "is multi-class log loss. Battery verdict uses balanced_accuracy; the submission "
+              "emits the 3-class probability matrix (submit_proba_columns)."),
 ]
 
 
@@ -391,11 +394,16 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
         print(f"  (sample weights from {weight_from!r}: {int(heavy.sum())} heavy rows ×"
               f"{spec.get('submit_weight', 5.0)})")
 
-    # For a top-k ranking submission, get the full class-probability matrix (multiclass wide),
-    # then reshape to the long top-k format below. proba_columns must be the exact class set.
+    # Probability-submission column plan:
+    #  * submit_topk        -> full class matrix (wide), reshaped to long top-k below;
+    #  * submit_proba_columns -> an EXPLICIT multiclass wide format the sample dictates, in its
+    #    exact column order (two-sigma: listing_id,high,medium,low);
+    #  * submit_proba       -> single positive-class probability (binary AUC).
     proba_columns = None
     if submit_topk:
         proba_columns = [str(c) for c in sorted(train[spec["target"]].dropna().unique())]
+    elif spec.get("submit_proba_columns"):
+        proba_columns = list(spec["submit_proba_columns"])
     elif submit_proba:
         proba_columns = [submit_col]
 
