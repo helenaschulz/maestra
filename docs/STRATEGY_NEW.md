@@ -168,35 +168,34 @@ und warum) wird ein klickbares Artefakt. Gleiches Rendering für den Audit-Repor
 - Ein einziges statisches HTML-File pro Report, keine externen Assets, kein
   JS-Framework (inline CSS; `<details>` reicht fürs Aufklappen).
 
-- [ ] Neues Modul `src/maestra/dossier.py`: `render_dossier(result: PipelineResult,
-      run_record: dict | None = None) -> str` (HTML-String) und
-      `write_dossier(result, path)`. Datenquellen: `PipelineResult` (cv, hybrid,
-      fold_strategy, skeptic, target_framing, cv_budget), InterventionOutcome-Records,
-      `runlog.py`-Record. Template-Ansatz: f-Strings oder `string.Template`, KEINE
-      neue Pflicht-Dependency.
-- [ ] Abschnitte des Dossiers: (1) Verdikt-Kopf, (2) Setup (Datensatz, Target, Metrik,
-      Fold-Strategie inkl. Advisor-Begründung), (3) Interventionen-Tabelle (Name,
-      Kind, proposed_by, Delta, MDE, reason, angenommen ja/nein), (4) CV-Ergebnis mit
-      per-Fold-Scores, (5) CV-Budget, (6) Limitierungen (automatisch: was war
-      deaktiviert, was ist underpowered).
-- [ ] `audit.py` auf dieselbe Rendering-Schicht heben: `write_audit_html(...)`.
-      Stakeholder-Satz oben (Beispiel-Ton: "Eure CV-Schätzung ist vermutlich ~5x zu
-      optimistisch, weil Gruppen über Folds leaken"), Evidenz darunter.
-- [ ] CLI: `--report html [pfad]` für `maestra`, `--html [pfad]` für `maestra-audit`.
-- [ ] Offline-Tests: Rendering aus einem fixen, synthetischen `PipelineResult` (LLM
-      gemockt); Assertions auf Schlüsselinhalte (Verdikt-Satz vorhanden, abgelehnte
-      Intervention gelistet, kein roher Metrikname ohne Übersetzungssatz).
-- [ ] Skript `scripts/build_example_reports.py`: erzeugt Beispiel-Reports für
-      bike-sharing (K1-Setup), House Prices (M6/M11) und einen Group-Leakage-Fall
-      (Grunfeld aus M1-Real), Ablage unter `docs/examples/reports/`. Die Läufe
-      brauchen echte LLM/AutoGluon-Ausführung — Skript bereitstellen und testen;
-      die eigentliche Generierung führt Helena mit API-Keys aus.
-- [ ] GitHub-Pages-Workflow (`.github/workflows/pages.yml`), der `docs/examples/`
-      publiziert. README bekommt die drei Links (Platzhalter, bis P4 das README
-      umbaut).
+- [x] **`src/maestra/dossier.py`** — `render_dossier(result, *, run_record, verdict_sentence,
+      metric_notes) -> str` + `write_dossier`. Pur, duck-typed auf `result` (kein Import-Zyklus),
+      f-Strings + `html`-Escaping, keine neue Dependency. Die Interventionen kommen aus
+      `hybrid`/`skeptic`/`target_framing` (via `collect_interventions`); MDE ist ein
+      Multi-Seed-Konzept und wird — ehrlich — nur auf Run-/Verdikt-Ebene aus `run_record` gezeigt,
+      nicht pro Intervention erfunden.
+- [x] **Die sechs Dossier-Abschnitte** — Verdikt-Kopf (Ampel, deterministisch), Setup (inkl.
+      Advisor-Begründung), Interventionen-Tabelle (abgelehnte gleichrangig sichtbar), CV mit
+      per-Fold-Scores (+ MDE aus run_record), CV-Budget, auto-abgeleitete Limitierungen.
+- [x] **`audit.py` auf dieselbe HTML-Schicht** — `render_audit` (in dossier.py) + `write_audit_html`;
+      Risk-Level → Ampel, deterministischer Stakeholder-Satz aus dem schlimmsten Befund.
+- [x] **CLI** — `maestra --dossier PATH` (LLM schreibt nur die Prosa via `dossier_narrative`,
+      Fallback deterministisch), `maestra-audit --html PATH`. (Wortlaut leicht abweichend von
+      "--report html": `--dossier`/`--html` sind additiv und brechen den bestehenden
+      `--report`-Markdown-Vertrag nicht.)
+- [x] **Offline-Tests** (`test_dossier.py`, `test_build_example_reports.py`): Verdikt-Satz da,
+      abgelehnte Intervention gelistet, kein roher Metrikname ohne Übersetzung, Ampel-Farbe
+      deterministisch trotz LLM-Satz. 12 Dossier- + 2 Builder-Tests.
+- [x] **`scripts/build_example_reports.py`** — bike-sharing/House-Prices-Dossier + Grunfeld-Audit
+      nach `docs/examples/reports/`; `--dry-run` (offline, synthetisch, getestet). Die echte
+      Generierung braucht LLM/AutoGluon → **Helena führt sie mit API-Keys aus.**
+- [x] **`.github/workflows/pages.yml`** (publiziert `docs/examples/`, nur committetes HTML, keine
+      Secrets) + README-Platzhalterlinks.
 
-**P1 Done:** drei klickbare Beispiel-Reports; mindestens einer zeigt eine abgelehnte
-Intervention mit Begründung; Tests grün.
+**P1 Done — bis auf den letzten manuellen Schritt:** Code + Tests grün (Suite 251). Offen für die
+formale P1-Done-Definition: **Helena generiert die drei echten Beispiel-Reports** mit API-Keys
+(`scripts/build_example_reports.py`) und committet die HTML unter `docs/examples/reports/`; mind.
+einer zeigt dann eine abgelehnte Intervention mit Begründung live (die Mechanik ist getestet).
 
 ---
 
