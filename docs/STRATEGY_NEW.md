@@ -126,10 +126,23 @@ läuft gerade in einem separaten Terminal.
       Submission/LB-Tabelle (best_quality, getrennt von den Battery-Verdikten), die
       two-sigma-Diagnose+Wiring, und eine Anomalien/offene-Fragen-Liste. Verdikt-
       Tabelle aus der letzten Session unangetastet.
-- [ ] **Jetzt erst `runs.jsonl`/`benchmark.jsonl` committen** — GESPERRT (Schritt 6):
-      ieee-fraud-Lauf schreibt gerade in runs.jsonl; wartet auf Helenas Go + die
-      ieee-LB-Zeile. JSONL-Umzug-Entscheidung (Pfade schon gegreppt: 7+ Code/Skript/
-      Doc-Referenzen) danach.
+- [ ] **Schritt 6 (freigegeben 2026-07-06):** ieee-fraud-LB-Zeile ergänzen
+      (Public 0.914271 / Private 0.894022, AUC, best_quality) + CV↔LB-Gap aus
+      runs.jsonl; dann `runs.jsonl` + `benchmark.jsonl` + finale RESULTS-Ergänzung
+      in EINEM Commit. **JSONL-Umzug: GESTRICHEN** (Entscheidung 2026-07-06: 7+
+      Code/Skript/Doc-Referenzen, Kosten > Nutzen; die JSONL bleiben Wurzel-Ledger,
+      Ablage wird in P4/ARCHITECTURE.md dokumentiert).
+- [x] **Follow-up A: `fold_strategy`-Feld in `benchmark.jsonl`-Records** — erledigt:
+      `BenchResult`/`MultiSeedResult` tragen `fold_strategy` (z. B. `"time:Date"`,
+      `"group:building_id"`, `None` wenn Advisor aus), `_fold_strategy_label` +
+      Logging in beiden append-Funktionen, 2 neue Tests. Nur vorwärts wirksam; die
+      K2-Unverifizierbarkeit bleibt ehrlich im Ledger, keine Rekonstruktion.
+- [x] **Follow-up B: Fold-Advisor in `--make-submission` durchreichen** — erledigt:
+      `--fold-advisor` ist jetzt tri-state (`BooleanOptionalAction`), **default-ON für
+      Submissions** (ehrliche CV↔LB-Gap), default-OFF für die Battery (unverändert),
+      beides via `--fold-advisor`/`--no-fold-advisor` überschreibbar. KEIN teurer
+      Re-Run gestartet — der walmart-Gap-schließt-sich-Receipt ist Helenas separate
+      Entscheidung.
 - [x] **`STRATEGY.md`:** N3-Zeile als done markiert (Verweis auf K2 in RESULTS.md);
       Datei ist gitignored, daher lokal.
 

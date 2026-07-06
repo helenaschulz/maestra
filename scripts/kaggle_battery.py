@@ -303,7 +303,7 @@ def _download_help(spec: dict) -> str:
 
 
 def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
-                    fold_advisor: bool = False, presets: str | None = "best_quality") -> None:
+                    fold_advisor: bool = True, presets: str | None = "best_quality") -> None:
     """Train Maestra on the FULL train set and write a submittable prediction file.
 
     Uses the leakage-free CV for the honest estimate (that is the number the public LB gets
@@ -460,9 +460,12 @@ def main():
     p.add_argument("--model", default="gpt-4o")
     p.add_argument("--time-limit", type=int, default=60)
     p.add_argument("--cv", type=int, default=3)
-    p.add_argument("--fold-advisor", action="store_true",
-                   help="Validation Strategist on both arms (N2, 2026-07-05) — lets the "
-                        "bike-sharing temporal task pick up time_local instead of random folds.")
+    p.add_argument("--fold-advisor", action=argparse.BooleanOptionalAction, default=None,
+                   help="Validation Strategist on the CV. DEFAULT-ON for --make-submission (the "
+                        "submission's CV estimate should reflect the real deployment split — "
+                        "Walmart's ~2× optimistic CV↔LB gap came from random-fold submission CV on "
+                        "temporal data); DEFAULT-OFF for the battery (unchanged). Override either "
+                        "way with --fold-advisor / --no-fold-advisor.")
     p.add_argument("--presets", default="best_quality",
                    help="AutoGluon quality preset for --make-submission runs (default "
                         "best_quality: multi-layer stacking + bagging, strong but slow). Pass "
@@ -475,9 +478,12 @@ def main():
             else [s for s in CATALOG if s["name"] == args.make_submission]
         if not todo:
             raise SystemExit(f"unknown task {args.make_submission!r} — see --list")
+        # Submissions default the advisor ON (None -> True): the CV estimate the LB is compared
+        # against must use the deployment-shaped folds, or the CV↔LB gap is a random-fold lie.
+        submit_fold_advisor = True if args.fold_advisor is None else args.fold_advisor
         for spec in todo:
             make_submission(spec, model=args.model, time_limit=args.time_limit, cv=args.cv,
-                            fold_advisor=args.fold_advisor, presets=args.presets or None)
+                            fold_advisor=submit_fold_advisor, presets=args.presets or None)
         return
 
     if args.list or not args.task:
@@ -491,6 +497,7 @@ def main():
     if not todo:
         raise SystemExit(f"unknown task {args.task!r} — see --list")
 
+    battery_fold_advisor = bool(args.fold_advisor)  # None -> False: battery default unchanged (OFF)
     for spec in todo:
         csv = _materialize(spec)
         if csv is None:
@@ -501,7 +508,7 @@ def main():
         ms = run_multi_seed(csv, spec["target"], metric=spec["metric"], seeds=_SEEDS,
                             id_col=spec["id_col"], model=args.model,
                             time_limit=args.time_limit, cv_folds=args.cv,
-                            fold_advisor=args.fold_advisor,
+                            fold_advisor=battery_fold_advisor,
                             name=f"kaggle-{spec['name']}")
         ts = datetime.now().isoformat(timespec="seconds")
         for r in ms.per_seed:

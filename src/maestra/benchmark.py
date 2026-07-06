@@ -95,6 +95,10 @@ class BenchResult:
     n_grade: int
     hybrid: list | None = None  # generated-feature provenance (kept/delta/reason), when --hybrid ran
     seed: int | None = None  # the run's seed (carve + folds), for multi-seed provenance
+    fold_strategy: str | None = None  # the CV fold strategy actually used (e.g. "time:Date",
+    # "group:building_id", "random"); None means the Validation Strategist did not run
+    # (fold_advisor off) -> plain random/stratified folds. Logged so a verdict's fold design is
+    # never a post-hoc reconstruction (K2 had to re-derive it because the record lacked this).
 
 
 def grade(submission: pd.DataFrame, answer: pd.DataFrame, *, metric: str, id_col: str, target: str) -> float:
@@ -174,7 +178,20 @@ def run_task(
         n_train=len(work), n_grade=len(answer),
         hybrid=res_m.hybrid,  # provenance, so a --hybrid run is interpretable after the fact
         seed=seed,
+        fold_strategy=_fold_strategy_label(res_m.fold_strategy),
     )
+
+
+def _fold_strategy_label(fold_strategy: dict | None) -> str | None:
+    """A compact string for the CV fold strategy an arm actually used, for the run record.
+    ``None`` -> the Validation Strategist did not run (fold_advisor off). Otherwise
+    ``"<strategy>"`` or ``"<strategy>:<column>"`` (e.g. ``"time:Date"``, ``"group:building_id"``)."""
+    if not fold_strategy:
+        return None
+    strat = fold_strategy.get("strategy", "random")
+    col = (fold_strategy.get("group_column") or fold_strategy.get("time_column")
+           or fold_strategy.get("period_column"))
+    return f"{strat}:{col}" if col else strat
 
 
 @dataclass
@@ -191,6 +208,8 @@ class MultiSeedResult:
     higher_is_better: bool
     verdict: str               # "maestra" | "baseline" | "undecided"
     mde: float                 # minimum |mean_delta| that would have cleared the accept bar (N1)
+    fold_strategy: str | None = None  # the fold strategy the seeds used (profile-driven, so the
+    # same across seeds); None = Validation Strategist did not run (fold_advisor off)
     failed_seeds: list[dict] = field(default_factory=list)  # [{"seed", "error"}], visibly recorded
 
 
@@ -246,7 +265,8 @@ def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kw
         baseline_mean=float(np.mean([r.baseline for r in per_seed])),
         maestra_mean=float(np.mean([r.maestra for r in per_seed])),
         mean_delta=float(np.mean([r.delta for r in per_seed])),
-        higher_is_better=higher, verdict=verdict, mde=mde, failed_seeds=failed,
+        higher_is_better=higher, verdict=verdict, mde=mde,
+        fold_strategy=per_seed[0].fold_strategy, failed_seeds=failed,
     )
 
 
@@ -264,6 +284,7 @@ def append_multi_seed(path: str, result: MultiSeedResult, *, timestamp: str) -> 
         "baseline": result.baseline_mean, "maestra": result.maestra_mean,
         "delta": result.mean_delta, "higher_is_better": result.higher_is_better,
         "seeds": result.seeds, "verdict": result.verdict, "mde": result.mde,
+        "fold_strategy": result.fold_strategy,
         "n_train": result.per_seed[0].n_train, "n_grade": result.per_seed[0].n_grade,
         "failed_seeds": result.failed_seeds,
     }

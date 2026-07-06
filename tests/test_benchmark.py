@@ -58,7 +58,8 @@ def test_run_task_grades_maestra_and_baseline(tmp_path, monkeypatch):
     def fake_run(work, target, *, use_llm, test_df, id_col, **kwargs):
         ids = test_df[id_col].tolist()
         preds = [truth[i] for i in ids] if use_llm else [0] * len(ids)  # maestra perfect, baseline all-0
-        return SimpleNamespace(submission=pd.DataFrame({id_col: ids, target: preds}), hybrid=None)
+        return SimpleNamespace(submission=pd.DataFrame({id_col: ids, target: preds}),
+                               hybrid=None, fold_strategy=None)
 
     monkeypatch.setattr(benchmark, "run_pipeline", fake_run)
     r = run_task(str(csv), "y", metric="accuracy", id_col="id", time_limit=1, seed=0, holdout_frac=0.5)
@@ -81,13 +82,43 @@ def test_run_task_threads_fold_advisor_into_both_arms(tmp_path, monkeypatch):
     def fake_run(work, target, *, use_llm, test_df, id_col, **kwargs):
         captured.append(kwargs.get("fold_advisor"))
         return SimpleNamespace(submission=pd.DataFrame(
-            {id_col: test_df[id_col].tolist(), target: [0] * len(test_df)}), hybrid=None)
+            {id_col: test_df[id_col].tolist(), target: [0] * len(test_df)}),
+            hybrid=None, fold_strategy=None)
 
     monkeypatch.setattr(benchmark, "run_pipeline", fake_run)
     run_task(str(csv), "y", metric="accuracy", id_col="id", time_limit=1, seed=0,
             holdout_frac=0.5, cv_folds=3, fold_advisor=True)
 
     assert captured == [True, True]      # both arms (maestra, baseline) got it
+
+
+def test_fold_strategy_label_summarizes_the_used_strategy():
+    """The record's fold_strategy label (Follow-up A, 2026-07-06): so a verdict's fold design is
+    never a post-hoc reconstruction again (K2 had to re-derive it)."""
+    from maestra.benchmark import _fold_strategy_label
+    assert _fold_strategy_label(None) is None                                   # advisor off
+    assert _fold_strategy_label({"strategy": "random"}) == "random"
+    assert _fold_strategy_label({"strategy": "time", "time_column": "Date"}) == "time:Date"
+    assert _fold_strategy_label(
+        {"strategy": "group", "group_column": "building_id"}) == "group:building_id"
+
+
+def test_run_task_records_the_maestra_arm_fold_strategy(tmp_path, monkeypatch):
+    df = pd.DataFrame({"id": range(8), "f": [0, 1] * 4, "y": [0, 1] * 4})
+    csv = tmp_path / "toy.csv"
+    df.to_csv(csv, index=False)
+
+    def fake_run(work, target, *, use_llm, test_df, id_col, **kwargs):
+        ids = test_df[id_col].tolist()
+        # only the maestra arm (use_llm=True) carries a fold strategy in this fake
+        fs = {"strategy": "time", "time_column": "f"} if use_llm else None
+        return SimpleNamespace(submission=pd.DataFrame({id_col: ids, target: [0] * len(ids)}),
+                               hybrid=None, fold_strategy=fs)
+
+    monkeypatch.setattr(benchmark, "run_pipeline", fake_run)
+    r = run_task(str(csv), "y", metric="accuracy", id_col="id", time_limit=1, seed=0,
+                holdout_frac=0.5, cv_folds=2, fold_advisor=True)
+    assert r.fold_strategy == "time:f"     # captured from the maestra arm, in the record
 
 
 def test_summary_renders_and_handles_missing(tmp_path):
