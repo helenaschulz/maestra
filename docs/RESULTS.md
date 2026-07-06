@@ -751,6 +751,92 @@ time-ordered (still non-random, still leakage-conscious) CV, independent of whet
 have scored differently. Answering this needs a controlled rerun with the fold strategy forced
 to `group` on the same data, which is future work, not part of this battery.
 
+### K2 submissions — real leaderboard receipts (2026-07-06)
+
+Two SEPARATE claims, do not conflate them: the **verdict table above** is the battery
+(battery presets: `--time-limit 60 --cv 3`, per-seed N1 rule, answer key carved from train).
+The table below is the **real-competition submissions**, a different pipeline configuration —
+AutoGluon `best_quality` (multi-layer stacking + bagging, `--time-limit 900 --cv 2`), each task's
+own real metric, and the competition's own test set graded on the public/private leaderboard.
+CV estimate = the submission run's logged CV in the LB metric; gap = `public LB − CV` in the
+metric's direction. LB scores are Helena's, read from Kaggle 2026-07-06 (verbatim).
+
+| Task | LB metric | Preset | CV estimate | Public LB | Private LB | Gap (LB−CV) | Direction |
+|---|---|---|---|---|---|---|---|
+| rossmann | RMSPE ↓ | best_quality | 0.3586 | **0.20860** | 0.22002 | **−0.150** | pessimistic (safe) |
+| santander-transaction | AUC ↑ | best_quality | 0.8928 | **0.89657** | 0.89436 | **+0.0038** | pessimistic (safe, ≈exact) |
+| walmart | WMAE ↓ | best_quality | 1441.6 | **2958.56** | 3057.83 | **+1516.9** | **optimistic (dangerous)** |
+| restaurant-revenue\* | RMSE ↓ | standard (NOT bq) | 2 627 861 | **1 869 510** | 1 891 848 | −758 350 | pessimistic (safe) |
+| store-sales | RMSLE ↓ | best_quality | — (see note) | **0.79002** | pending | — | not comparable |
+| airbnb | NDCG@5 ↑ | best_quality | — (see note) | **0.85354** | 0.85671 | — | not comparable |
+| ieee-fraud | AUC ↑ | high_quality\*\* | pending | pending | pending | — | run in progress |
+| two-sigma-rental | multi-class log loss ↓ | — | — | — | — | — | no submission (now wired, below) |
+
+\* restaurant-revenue is the **standard** (non-best_quality) run from the first submission pass
+(its own printed CV −2 627 861), and it was submitted **twice** — so it is NOT a like-for-like
+best_quality receipt; kept here for completeness, labelled as such.
+\*\* ieee-fraud's best_quality run OOM'd (393 kept columns × 200k rows × bagging on ~10 GB);
+made memory-safe (`submit_sample` 200k→50k, `high_quality`) and is re-running as this is written —
+its LB row is deferred to the gated final commit.
+
+**Three clean, comparable receipts, and one of them is the dangerous kind.**
+- **rossmann (RMSPE) and santander (AUC) land safely pessimistic** — the CV over-estimated the
+  error / under-estimated the score, the safe direction, comfortably inside the project's trusted
+  CV↔LB range (cf. K1: house-prices +4%, spaceship ≈exact).
+- **walmart is the one optimistic, dangerous gap: CV WMAE 1441.6 vs LB 2958.6, ≈2× too
+  optimistic.** The most likely cause is the same blind spot the whole project exists to catch:
+  `--make-submission` does NOT pass `--fold-advisor`, so the submission CV used **random folds**
+  on a temporal retail-forecast task, interpolating within the training window while the real
+  test set is a future block. This is bike-sharing's K1 lesson replayed on a second temporal
+  competition — a live, real-leaderboard instance of "a random CV lies optimistically on time
+  data". (Not fixed here: turning on the Strategist for submissions is a scoped follow-up.)
+- **store-sales and airbnb have no computable gap — a metric-units mismatch, left empty, not
+  guessed.** store-sales' CV is logged in RMSE of original sales units (~310, framing scores in
+  original space) while the LB is RMSLE (0.79) — not comparable without a log-space OOF replay
+  (the K1 house-prices manoeuvre; not run here). airbnb's CV is top-1 accuracy (0.873) while the
+  LB is NDCG@5 (0.854) — different metrics, different scales; the CV never scored the ranked top-5
+  the submission actually emits.
+
+### two-sigma-rental produced no submission — diagnosed and wired (not run)
+
+`--make-submission two-sigma-rental` wrote no file because the catalog spec had **`test_path:
+None`** — deliberately battery-only last session — so `make_submission` returned early with "not
+submittable (no test_path wired)". Not a crash. Making it submittable needed three pieces, all
+now in place (the expensive submission run itself is Helena's call, deliberately NOT started):
+1. the competition test ships as `test.json` with the same list-valued `features`/`photos`
+   columns as train — flattened once to `data/kaggle_twosigma/test_flat.csv` (74 659 rows);
+2. a **3-class probability** submission (`listing_id,high,medium,low`, the sample's exact column
+   order) — a new `submit_proba_columns` spec field routes through the existing, already-tested
+   multiclass-wide proba path (`test_multiclass_proba_submission_per_class_in_order`);
+3. `test_path` + `submit_id="listing_id"` + `submit_eval_metric="log_loss"` wired in the spec.
+Offline-verified (catalog loads, columns resolve to `[high, medium, low]`, suite green); the
+real submission awaits Helena's go.
+
+### K2 anomalies & open questions (for Helena, not silently resolved)
+
+1. **The battery's actual fold strategy is unverifiable from the record.** `benchmark.jsonl`
+   carries no `fold_strategy` field (schema checked: `BenchResult`/`MultiSeedResult` have none),
+   and the battery loop neither prints nor persists it. The verdict-table §'s proposal re-check
+   shows what the Strategist *proposes* on the cached data, but whether the K2 **battery run
+   itself passed `--fold-advisor`** (vs. plain random folds) cannot be confirmed from records or
+   any surviving log. Open: add a `fold_strategy` field to the logged record so this is never a
+   post-hoc reconstruction again.
+2. **walmart's submission CV↔LB gap is optimistic/dangerous (≈2×).** Almost certainly random-fold
+   submission CV on temporal data (`--make-submission` doesn't pass `--fold-advisor`) — the K1
+   bike-sharing lesson on a second competition. Open: should `--make-submission` default the
+   Strategist on for temporal tasks?
+3. **store-sales & airbnb have no CV↔LB gap** — CV logged in a different metric/units than the LB
+   (rmse-original vs RMSLE; top-1 accuracy vs NDCG@5). Left empty per instruction. Open: replay
+   store-sales OOF in log space (K1 house-prices method) and score an NDCG@5 CV for airbnb, if a
+   real gap number is wanted.
+4. **ieee-fraud** best_quality OOM'd; memory-safe re-run (`high_quality`, 50k rows) in progress —
+   LB row deferred to the gated commit.
+5. **restaurant-revenue** is a standard (non-best_quality) run and was submitted twice — not a
+   clean best_quality receipt; kept labelled.
+6. **The group-vs-time competing-structure edge case** (verdict-table § above) stands: on the 3
+   Store-repeating tasks the Strategist proposed `time`, not `group`, and whether that changed the
+   wins is unresolved — a controlled forced-`group` rerun is future work.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across every layer a conductor could touch:
