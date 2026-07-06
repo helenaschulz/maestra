@@ -192,10 +192,19 @@ und warum) wird ein klickbares Artefakt. Gleiches Rendering für den Audit-Repor
 - [x] **`.github/workflows/pages.yml`** (publiziert `docs/examples/`, nur committetes HTML, keine
       Secrets) + README-Platzhalterlinks.
 
-**P1 Done — bis auf den letzten manuellen Schritt:** Code + Tests grün (Suite 251). Offen für die
-formale P1-Done-Definition: **Helena generiert die drei echten Beispiel-Reports** mit API-Keys
-(`scripts/build_example_reports.py`) und committet die HTML unter `docs/examples/reports/`; mind.
-einer zeigt dann eine abgelehnte Intervention mit Begründung live (die Mechanik ist getestet).
+**P1 Done — abgeschlossen (2026-07-06/07).** Helena hat die drei echten Beispiel-Reports generiert
+und committet (`aca898a`): bike-sharing (GREEN, `target:log1p` abgelehnt mit Δ+Begründung sichtbar),
+House Prices (GREEN, ebenfalls ein abgelehntes `target:log1p`), Grunfeld-Audit (YELLOW). Die
+P1-Done-Bedingung ("mind. ein Report zeigt eine abgelehnte Intervention mit Begründung") ist damit
+live erfüllt, nicht nur getestet.
+
+**Nebenbefund beim Sichten der echten Reports, gefixt:** Grunfeld zeigte nicht den ursprünglich
+geplanten reinen Group-Fall — der Strategist wählte real `time_local` (`year` + wiederkehrend pro
+`firm`), ein weiterer, dritter Beleg für den K2-"competing structure"-Befund (Strategist zieht bei
+gleichzeitig vorhandener Group- UND Time-Achse eine zeitbasierte Strategie vor). Kein Bug, aber
+`_audit_verdict`'s Top-Zeile behandelte `time_local` wie simples `time` und unterschlug die
+Perioden-Spalte — gefixt (eigener Satz, nennt beide Spalten), das bereits generierte
+`grunfeld.html` NICHT überschrieben (echter bezahlter Lauf).
 
 ---
 
