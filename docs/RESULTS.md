@@ -769,20 +769,22 @@ metric's direction. LB scores are Helena's, read from Kaggle 2026-07-06 (verbati
 | restaurant-revenue\* | RMSE ↓ | standard (NOT bq) | 2 627 861 | **1 869 510** | 1 891 848 | −758 350 | pessimistic (safe) |
 | store-sales | RMSLE ↓ | best_quality | — (see note) | **0.79002** | pending | — | not comparable |
 | airbnb | NDCG@5 ↑ | best_quality | — (see note) | **0.85354** | 0.85671 | — | not comparable |
-| ieee-fraud | AUC ↑ | high_quality\*\* | pending | pending | pending | — | run in progress |
+| ieee-fraud | AUC ↑ | high_quality\*\* | 0.8965 | **0.91427** | 0.89402 | **+0.0178** | pessimistic (safe) |
 | two-sigma-rental | multi-class log loss ↓ | — | — | — | — | — | no submission (now wired, below) |
 
 \* restaurant-revenue is the **standard** (non-best_quality) run from the first submission pass
 (its own printed CV −2 627 861), and it was submitted **twice** — so it is NOT a like-for-like
 best_quality receipt; kept here for completeness, labelled as such.
-\*\* ieee-fraud's best_quality run OOM'd (393 kept columns × 200k rows × bagging on ~10 GB);
-made memory-safe (`submit_sample` 200k→50k, `high_quality`) and is re-running as this is written —
-its LB row is deferred to the gated final commit.
+\*\* ieee-fraud's best_quality run OOM'd (393 kept columns × 200k rows × bagging on ~10 GB); made
+memory-safe (`submit_sample` 200k→50k, `high_quality`) and re-run 2026-07-06 — completed, graded,
+row above.
 
-**Three clean, comparable receipts, and one of them is the dangerous kind.**
-- **rossmann (RMSPE) and santander (AUC) land safely pessimistic** — the CV over-estimated the
-  error / under-estimated the score, the safe direction, comfortably inside the project's trusted
-  CV↔LB range (cf. K1: house-prices +4%, spaceship ≈exact).
+**Four clean, comparable receipts, and one of them is the dangerous kind.**
+- **rossmann (RMSPE), santander (AUC) and ieee-fraud (AUC) land safely pessimistic** — the CV
+  over-estimated the error / under-estimated the score, the safe direction, comfortably inside the
+  project's trusted CV↔LB range (cf. K1: house-prices +4%, spaceship ≈exact). ieee-fraud's
+  +0.0178 AUC is the receipt that the kept 393-column table (V-block for signal, LLM off) plus a
+  memory-safe `high_quality` still produces a trustworthy CV.
 - **walmart is the one optimistic, dangerous gap: CV WMAE 1441.6 vs LB 2958.6, ≈2× too
   optimistic.** The most likely cause is the same blind spot the whole project exists to catch:
   `--make-submission` does NOT pass `--fold-advisor`, so the submission CV used **random folds**
@@ -819,18 +821,23 @@ real submission awaits Helena's go.
    and the battery loop neither prints nor persists it. The verdict-table §'s proposal re-check
    shows what the Strategist *proposes* on the cached data, but whether the K2 **battery run
    itself passed `--fold-advisor`** (vs. plain random folds) cannot be confirmed from records or
-   any surviving log. Open: add a `fold_strategy` field to the logged record so this is never a
-   post-hoc reconstruction again.
+   any surviving log. **Resolved forward (2026-07-06, Follow-up A):** `BenchResult`/
+   `MultiSeedResult` now carry a `fold_strategy` field, logged in every record — so this is never
+   a post-hoc reconstruction again. K2 itself stays honestly unverifiable (the field is
+   forward-only; the existing records are not back-filled).
 2. **walmart's submission CV↔LB gap is optimistic/dangerous (≈2×).** Almost certainly random-fold
-   submission CV on temporal data (`--make-submission` doesn't pass `--fold-advisor`) — the K1
-   bike-sharing lesson on a second competition. Open: should `--make-submission` default the
-   Strategist on for temporal tasks?
+   submission CV on temporal data (`--make-submission` didn't pass `--fold-advisor`) — the K1
+   bike-sharing lesson on a second competition. **Addressed forward (2026-07-06, Follow-up B):**
+   `--make-submission` now defaults the Validation Strategist ON (tri-state `--fold-advisor`), so
+   a future submission CV reflects the deployment split. Still open — the confirming measurement:
+   re-run walmart with the advisor and check the ≈2× gap closes (a best_quality run; Helena's call).
 3. **store-sales & airbnb have no CV↔LB gap** — CV logged in a different metric/units than the LB
    (rmse-original vs RMSLE; top-1 accuracy vs NDCG@5). Left empty per instruction. Open: replay
    store-sales OOF in log space (K1 house-prices method) and score an NDCG@5 CV for airbnb, if a
    real gap number is wanted.
-4. **ieee-fraud** best_quality OOM'd; memory-safe re-run (`high_quality`, 50k rows) in progress —
-   LB row deferred to the gated commit.
+4. **ieee-fraud — resolved.** best_quality OOM'd; the memory-safe re-run (`high_quality`, 50k
+   rows, all 393 columns kept, LLM off) completed and graded: CV AUC 0.8965 vs LB 0.91427,
+   **+0.0178 pessimistic (safe)** — row in the submission table above.
 5. **restaurant-revenue** is a standard (non-best_quality) run and was submitted twice — not a
    clean best_quality receipt; kept labelled.
 6. **The group-vs-time competing-structure edge case** (verdict-table § above) stands: on the 3

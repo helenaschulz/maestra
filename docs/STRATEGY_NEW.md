@@ -126,12 +126,13 @@ läuft gerade in einem separaten Terminal.
       Submission/LB-Tabelle (best_quality, getrennt von den Battery-Verdikten), die
       two-sigma-Diagnose+Wiring, und eine Anomalien/offene-Fragen-Liste. Verdikt-
       Tabelle aus der letzten Session unangetastet.
-- [ ] **Schritt 6 (freigegeben 2026-07-06):** ieee-fraud-LB-Zeile ergänzen
-      (Public 0.914271 / Private 0.894022, AUC, best_quality) + CV↔LB-Gap aus
-      runs.jsonl; dann `runs.jsonl` + `benchmark.jsonl` + finale RESULTS-Ergänzung
-      in EINEM Commit. **JSONL-Umzug: GESTRICHEN** (Entscheidung 2026-07-06: 7+
-      Code/Skript/Doc-Referenzen, Kosten > Nutzen; die JSONL bleiben Wurzel-Ledger,
-      Ablage wird in P4/ARCHITECTURE.md dokumentiert).
+- [x] **Schritt 6 (freigegeben 2026-07-06):** ieee-fraud-LB-Zeile ergänzt
+      (Public 0.914271 / Private 0.894022, AUC, high_quality memory-safe; CV 0.8965
+      aus runs.jsonl → Gap +0.0178 pessimistisch/sicher); `runs.jsonl` +
+      `benchmark.jsonl` + finale RESULTS-Ergänzung in EINEM Commit. **JSONL-Umzug:
+      GESTRICHEN** (Entscheidung 2026-07-06: 7+ Code/Skript/Doc-Referenzen, Kosten >
+      Nutzen; die JSONL bleiben Wurzel-Ledger, Ablage wird in P4/ARCHITECTURE.md
+      dokumentiert).
 - [x] **Follow-up A: `fold_strategy`-Feld in `benchmark.jsonl`-Records** — erledigt:
       `BenchResult`/`MultiSeedResult` tragen `fold_strategy` (z. B. `"time:Date"`,
       `"group:building_id"`, `None` wenn Advisor aus), `_fold_strategy_label` +
