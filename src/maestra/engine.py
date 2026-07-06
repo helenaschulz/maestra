@@ -43,6 +43,7 @@ def train_and_evaluate(
     model_dir: str,
     eval_metric: str | None = None,
     presets: str | None = None,
+    sample_weight: str | None = None,
 ) -> TrainingResult:
     """Fit an AutoGluon predictor and evaluate it on the holdout set.
 
@@ -56,12 +57,16 @@ def train_and_evaluate(
             stacking + bagging). ``None`` uses AutoGluon's default (``"medium_quality"``,
             fast). Whatever is chosen must be identical on the CV folds and the final model,
             or the CV↔LB gap compares two different model configurations.
+        sample_weight: Name of a per-row weight column (excluded from features by AutoGluon)
+            used in BOTH training and metric evaluation — e.g. Walmart's holiday-week ×5
+            weighting. Must be present in ``train``/``holdout``. ``None`` = unweighted.
 
     Returns:
         A :class:`TrainingResult`. The problem type and evaluation metric are inferred
         by AutoGluon from the target column.
     """
-    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric).fit(
+    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
+                                 sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
     leaderboard = predictor.leaderboard(holdout, silent=True)
     # Best internal validation score (AutoGluon's own train/val split) — used by the
@@ -94,15 +99,17 @@ def predict_proba(predictor, X: pd.DataFrame) -> pd.DataFrame:
 
 
 def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str,
-                  eval_metric: str | None = None, presets: str | None = None) -> TrainingResult:
+                  eval_metric: str | None = None, presets: str | None = None,
+                  sample_weight: str | None = None) -> TrainingResult:
     """Fit a predictor on ALL labeled rows, with no holdout evaluation.
 
     Used by the cross-validation path, where the honest estimate is the CV score and this
     final model exists only for prediction (submission/report). ``metrics`` is therefore
-    empty; ``val_score`` is AutoGluon's internal validation score. ``presets`` — see
-    :func:`train_and_evaluate` (must match what the CV folds used).
+    empty; ``val_score`` is AutoGluon's internal validation score. ``presets`` /
+    ``sample_weight`` — see :func:`train_and_evaluate` (must match what the CV folds used).
     """
-    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric).fit(
+    predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
+                                 sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
     leaderboard = predictor.leaderboard(silent=True)
     val_score = float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None

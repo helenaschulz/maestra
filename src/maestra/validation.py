@@ -264,6 +264,7 @@ def cross_validate(
     time_column: str | None = None,
     period_column: str | None = None,
     presets: str | None = None,
+    sample_weight: str | None = None,
     target_transform=None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
@@ -292,7 +293,15 @@ def cross_validate(
                         period_column=period_column)
 
     fold_scores: list[float] = []
-    eval_metric = problem_type = None
+    # ``eval_metric`` (a metric string OR a custom AutoGluon Scorer object) is passed UNCHANGED
+    # to every fold, so the CV estimate uses the same metric as the final model — required for
+    # the CV↔LB gap to compare like with like. ``metric_name`` is AutoGluon's resolved name,
+    # captured from the first fold, for scoring the folds and labelling the CVResult. (Before
+    # 2026-07-06 this argument was silently overwritten with None, so the CV always used
+    # AutoGluon's default metric — harmless while every task's metric equalled the default, wrong
+    # for a task that asks for mae/roc_auc/a custom scorer.)
+    metric_arg = eval_metric
+    metric_name = problem_type = None
     greater_is_better = True
     oof_pred = pd.Series([None] * len(df), index=df.index, dtype=object)
     # Fixed, complete column set for OOF probabilities: EVERY class in the data, stable order.
@@ -314,8 +323,9 @@ def cross_validate(
             proc_train = proc_train.assign(**{target: target_transform.forward(proc_train[target])})
             proc_val = proc_val.assign(**{target: target_transform.forward(proc_val[target])})
         result = train_and_evaluate(proc_train, proc_val, target, time_limit,
-                                    f"{model_dir}/fold_{i}", eval_metric, presets=presets)
-        eval_metric, problem_type = result.eval_metric, result.problem_type
+                                    f"{model_dir}/fold_{i}", metric_arg, presets=presets,
+                                    sample_weight=sample_weight)
+        metric_name, problem_type = result.eval_metric, result.problem_type
         preds_orig = None
         if result.predictor is not None:
             greater_is_better = getattr(result.predictor.eval_metric, "greater_is_better", True)
@@ -342,15 +352,15 @@ def cross_validate(
             # untransformed base CV — rescore in original space, same sign convention.
             if preds_orig is None:
                 raise ValueError("target_transform requires a fitted predictor to score folds")
-            score = _ag_score(val_true, preds_orig, eval_metric)
+            score = _ag_score(val_true, preds_orig, metric_name)
         else:
-            score = result.metrics.get(eval_metric)
+            score = result.metrics.get(metric_name)
             if score is None:  # fall back to any reported value
                 score = next(iter(result.metrics.values()))
         fold_scores.append(float(score))
 
     return CVResult(
-        eval_metric=eval_metric,
+        eval_metric=metric_name,
         problem_type=problem_type,
         fold_scores=fold_scores,
         mean=float(np.mean(fold_scores)),

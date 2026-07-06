@@ -52,12 +52,54 @@ import os
 import zipfile
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from maestra.benchmark import append_multi_seed, append_result, run_multi_seed
 from maestra.config import load_dotenv
 
 _SEEDS = [42, 7, 1, 2, 3]
+
+
+def _rmspe(y_true, y_pred):
+    """Root Mean Square Percentage Error — Rossmann's real metric. Zero-sales (closed-store)
+    rows are ignored, exactly as the competition scores them."""
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    mask = y_true != 0
+    if not mask.any():
+        return 0.0
+    return float(np.sqrt(np.mean(((y_true[mask] - y_pred[mask]) / y_true[mask]) ** 2)))
+
+
+def _custom_scorers() -> dict:
+    """AutoGluon Scorer objects for competition metrics with no native AutoGluon scorer.
+    Built lazily so importing this module never needs AutoGluon."""
+    from autogluon.core.metrics import make_scorer
+    return {
+        "rmspe": make_scorer("rmspe", _rmspe, optimum=0.0, greater_is_better=False),
+    }
+
+
+def _resolve_metric(metric):
+    """A plain metric string passes through; a key of :func:`_custom_scorers` becomes its
+    AutoGluon Scorer object (which ``run_pipeline`` accepts as ``eval_metric``)."""
+    if isinstance(metric, str) and metric in _custom_scorers():
+        return _custom_scorers()[metric]
+    return metric
+
+
+def _topk_long(wide: pd.DataFrame, id_col: str, out_col: str, k: int) -> pd.DataFrame:
+    """Reshape a wide class-probability frame (id + one column per class) into the LONG top-k
+    ranking format (id repeated k times, one class per row, best first) that NDCG@k competitions
+    like airbnb expect."""
+    class_cols = [c for c in wide.columns if c != id_col]
+    classes = np.array(class_cols)
+    probs = wide[class_cols].to_numpy()
+    topk_idx = np.argsort(-probs, axis=1)[:, :k]          # k highest-prob classes per row, desc
+    ids = np.repeat(wide[id_col].to_numpy(), topk_idx.shape[1])
+    picks = classes[topk_idx].reshape(-1)
+    return pd.DataFrame({id_col: ids, out_col: picks})
 
 CATALOG = [
     dict(name="titanic", semantics="mixed", target="Survived", metric="balanced_accuracy",
@@ -117,14 +159,16 @@ CATALOG = [
          test_path="data/kaggle_rossmann/test.csv",
          submit_id="Id",  # the real test.csv keys on "Id" (row_id is battery-only, not in test)
          submit_sample=200000,  # full train is 1M rows
+         submit_eval_metric="rmspe",  # the competition's real metric (custom AutoGluon scorer)
+         submit_framing=False,  # a custom RMSPE scorer works in ORIGINAL space -> no log1p
          eval_metric="root_mean_squared_error", framing=True,  # sales right-skewed, many closed-day zeros
          drop=["Customers"],  # leak: near-perfect proxy for Sales, absent from the real test set
          note="1017209 rows -> subsampled to 15k. Store (1115 stores, ~942 days each) is a "
               "genuine repeating GROUP entity -- unlike bike-sharing's raw datetime, this exists "
               "as a column already, so the N2 timing gap (period not materialized before FE) "
               "does not apply here; this tests whether --fold-advisor picks GROUP correctly on "
-              "real, messy data. Real competition metric is RMSPE (unsupported here); rmse used "
-              "internally, consistent with how this harness already treats other regression tasks."),
+              "real, messy data. The submission now trains on the competition's real RMSPE metric "
+              "(custom scorer, closed-day zeros ignored); the battery verdict still uses rmse."),
     dict(name="walmart", semantics="rich+time+group", target="Weekly_Sales", metric="rmse",
          id_col="row_id", path="data/kaggle_walmart/train.csv",  # Store/Dept both repeat -- same
          # non-unique-id fix as rossmann above
@@ -132,12 +176,18 @@ CATALOG = [
          test_path="data/kaggle_walmart/test.csv",
          submit_id="Id", submit_id_construct=["Store", "Dept", "Date"],  # LB id = "Store_Dept_Date"
          submit_sample=200000,  # full train is 421k rows
+         submit_eval_metric="mean_absolute_error",  # + sample weights below => the LB's WMAE
+         submit_weight_from="IsHoliday", submit_weight=5.0,  # holiday weeks count ×5
+         submit_use_llm=False,  # keep the weight column safe from cleaning (walmart's 4 columns
+         # gain little from LLM judgment anyway) and let AutoGluon weight the metric directly
+         submit_framing=False,  # weighted MAE is defined in original space -> no log1p
          eval_metric="root_mean_squared_error", framing=True,
          note="421570 rows -> subsampled to 15k. Store x Dept (~3331 combinations) repeats "
-              "densely -- a second, independent group+time real task (different retailer/shape "
-              "than Rossmann/store-sales). Weekly_Sales can be genuinely NEGATIVE (returns > "
-              "sales) -- clip_nonneg correctly stays off since the training target's own min < 0. "
-              "Real metric is a weighted MAE (holiday weeks x5); rmse used internally."),
+              "densely -- a second, independent group+time real task. Weekly_Sales can be "
+              "genuinely NEGATIVE (returns > sales) -- clip_nonneg correctly stays off. The "
+              "submission now optimises the competition's real weighted MAE (holiday weeks ×5 "
+              "via AutoGluon sample weights, LLM off to protect the weight column); the battery "
+              "verdict still uses plain rmse."),
     dict(name="ieee-fraud", semantics="poor+time", target="isFraud", metric="balanced_accuracy",
          id_col="TransactionID", path="data/kaggle_ieee/train_transaction.csv",
          competition="ieee-fraud-detection", sample=15000,
@@ -145,17 +195,17 @@ CATALOG = [
          eval_metric="accuracy", framing=False,
          submit_proba=True, submit_col="isFraud",  # LB metric is AUC -> submit P(fraud), not a label
          submit_eval_metric="roc_auc", submit_sample=200000,  # full train is 590k rows
-         drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA-style columns: opaque noise,
-         # not semantic richness, and at full width they blow gpt-4o's 30k TPM rate limit in one
-         # profiling call (verified: FAILED live, RateLimitError, 31805 requested) -- dropping
-         # them is a column-width cost bound, the same spirit as `sample` bounding row count.
-         note="590540 rows, ~55 columns after dropping V1-V339 (see drop=) -> subsampled to 15k. "
-              "TransactionDT (time) + card1-6/addr1-2 (weak repeating group, not used as "
-              "--fold-advisor group_column here, left to the Strategist's own judgment) on real "
-              "fraud data -- a poor/mixed-semantics + time real task, distinct from "
-              "allstate/santander's plain anonymized controls. Uses train_transaction.csv ONLY "
-              "(train_identity.csv ignored -- multi-table join is a deliberate non-goal). Real "
-              "metric is AUC; balanced_accuracy used internally (label-based, like titanic)."),
+         submit_use_llm=False,  # keep all V1-V339 for the submission (real AUC signal); with the
+         # LLM off there is no profiling call to blow the token limit, so nothing needs dropping
+         llm_only_drop=[f"V{i}" for i in range(1, 340)],  # 339 anonymized PCA columns: dropped
+         # ONLY for LLM runs (battery + any --llm submission) to fit gpt-4o's 30k TPM budget
+         # (verified: FAILED live, RateLimitError, 31805 requested) -- not a leak, a token bound.
+         note="590540 rows. Battery/LLM runs drop V1-V339 (token budget) -> ~55 cols; the "
+              "submission keeps all 393 columns with the LLM off (the V-block carries real AUC "
+              "signal, and the measured thesis says LLM cleaning adds little anyway). "
+              "TransactionDT (time) + card1-6/addr1-2 (weak repeating group) on real fraud data. "
+              "train_transaction.csv ONLY (train_identity.csv ignored -- multi-table non-goal). "
+              "Real metric is AUC; balanced_accuracy used internally for the battery verdict."),
     dict(name="santander-transaction", semantics="poor", target="target",
          metric="balanced_accuracy", id_col="ID_code",
          path="data/kaggle_santander_transaction/train.csv",
@@ -184,14 +234,15 @@ CATALOG = [
          competition="airbnb-recruiting-new-user-bookings", sample=15000,
          test_path="data/kaggle_airbnb/test_users.csv",
          eval_metric="accuracy", framing=False,
-         submit_col="country",  # sample column is "country"; we emit the top-1 label per user
-         submit_sample=200000,    # full train is 213k rows; NDCG@5 scored on our single-label guess
+         submit_col="country",   # sample submission column is "country"
+         submit_topk=5,          # NDCG@5: emit the 5 most-probable countries per user, ranked
+         submit_sample=200000,   # full train is 213k rows
          note="213451 rows -> subsampled to 15k. 12-class target (country_destination: NDF/US/"
               "other/FR/CA/GB/ES/IT/PT/NL/DE/AU), rich semantics (gender/age/signup_method/"
               "language/affiliate_channel/first_device_type) + weak time (date_account_created, "
               "timestamp_first_active). sessions.csv/countries.csv/age_gender_bkts.csv ignored "
-              "(multi-table non-goal). Real metric is NDCG@5; balanced_accuracy on the top label "
-              "used internally, the same label-metric simplification as the 3-class rental case."),
+              "(multi-table non-goal). Real metric is NDCG@5; the submission now emits the ranked "
+              "top-5 (submit_topk), the battery still uses balanced_accuracy on the top label."),
     dict(name="two-sigma-rental", semantics="rich+group", target="interest_level",
          metric="balanced_accuracy", id_col="listing_id",
          path="data/kaggle_twosigma/train_flat.csv",
@@ -224,7 +275,10 @@ def _materialize(spec: dict) -> str | None:
     if os.path.exists(prepared):
         return prepared
     df = pd.read_csv(path)
-    for col in spec.get("drop", []):
+    # The battery always runs with the LLM (the maestra arm), so it drops both real leaks
+    # (`drop`) and the token-budget columns (`llm_only_drop`) — the latter only exist to keep
+    # the LLM profiling call under its rate limit, exactly the case the battery is in.
+    for col in list(spec.get("drop", [])) + list(spec.get("llm_only_drop", [])):
         if col in df.columns:
             df = df.drop(columns=[col])
     if spec.get("sample") and len(df) > spec["sample"]:
@@ -257,8 +311,18 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
         target name; some competitions want e.g. ``Prediction`` not ``revenue``).
       * ``submit_proba`` — True for probability metrics (AUC): output P(positive class) instead
         of a hard label, in a column named ``submit_col``.
-      * ``submit_eval_metric`` — eval metric override for the submission run (e.g. ``roc_auc``
-        when the battery used a label proxy like ``accuracy``).
+      * ``submit_topk`` — for ranking metrics (airbnb NDCG@5): emit the top-k classes per row in
+        LONG format (id repeated k times, one class per row) instead of a single label. Implies
+        multiclass probabilities under the hood.
+      * ``submit_eval_metric`` — eval metric override for the submission run. A plain string, OR
+        one of the custom-scorer keys in ``_CUSTOM_SCORERS`` (e.g. ``"rmspe"`` for Rossmann's
+        real metric, which AutoGluon has no native scorer for).
+      * ``submit_framing`` — override target framing for the submission (default: the catalog
+        ``framing``). A custom scorer works in original space, so framing is turned off with it.
+      * ``submit_use_llm`` — run with the LLM cleaning/FE off (default True). Set False to keep a
+        very wide table the LLM profiling can't fit in its token budget (ieee-fraud's V1-V339).
+      * ``llm_only_drop`` — columns dropped ONLY when the LLM runs (a token-budget bound, not a
+        leak); kept when ``submit_use_llm`` is False so their signal reaches the engine.
       * ``submit_sample`` — cap the training rows (huge tables where full-train is infeasible);
         a large capped sample, not the battery's tiny 15k.
     """
@@ -276,10 +340,18 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
     submit_id = spec.get("submit_id", spec["id_col"])
     submit_col = spec.get("submit_col", spec["target"])
     submit_proba = spec.get("submit_proba", False)
-    submit_eval = spec.get("submit_eval_metric", spec["eval_metric"])
+    submit_topk = spec.get("submit_topk")
+    submit_use_llm = spec.get("submit_use_llm", True)
+    submit_framing = spec.get("submit_framing", spec["framing"])
+    submit_eval = _resolve_metric(spec.get("submit_eval_metric", spec["eval_metric"]))
     train = pd.read_csv(spec["path"])          # FULL train (no battery subsample)
     test_df = pd.read_csv(test_path)
-    for col in spec.get("drop", []):           # same columns dropped from train AND test
+    # `drop` = real leaks, always removed. `llm_only_drop` = a token-budget bound, removed only
+    # when the LLM profiling actually runs (kept for a --no-llm submission so the engine sees it).
+    to_drop = list(spec.get("drop", []))
+    if submit_use_llm:
+        to_drop += list(spec.get("llm_only_drop", []))
+    for col in to_drop:                        # same columns dropped from train AND test
         train = train.drop(columns=[col], errors="ignore")
         test_df = test_df.drop(columns=[col], errors="ignore")
     # Some competitions key the submission on a COMPOSITE id the test set does not carry as a
@@ -300,26 +372,49 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
         print(f"  ({len(train)} rows is too few for '{presets}' bagging -> using medium_quality)")
         presets = "medium_quality"
 
+    # Per-row training weights (Walmart's weighted MAE: holiday weeks count ×5). Built from a
+    # truthy source column and handed to AutoGluon as a sample_weight column, which weights BOTH
+    # training and the metric — the only way to optimise a WMAE the engine has no scorer for.
+    sample_weight = None
+    weight_from = spec.get("submit_weight_from")
+    if weight_from and weight_from in train.columns:
+        sample_weight = "__sample_weight__"
+        heavy = train[weight_from].astype(str).str.upper().isin(["TRUE", "1", "T", "YES"])
+        train[sample_weight] = np.where(heavy, float(spec.get("submit_weight", 5.0)), 1.0)
+        print(f"  (sample weights from {weight_from!r}: {int(heavy.sum())} heavy rows ×"
+              f"{spec.get('submit_weight', 5.0)})")
+
+    # For a top-k ranking submission, get the full class-probability matrix (multiclass wide),
+    # then reshape to the long top-k format below. proba_columns must be the exact class set.
+    proba_columns = None
+    if submit_topk:
+        proba_columns = [str(c) for c in sorted(train[spec["target"]].dropna().unique())]
+    elif submit_proba:
+        proba_columns = [submit_col]
+
     print(f"\n=== {spec['name']}: submission run "
-          f"(eval_metric={submit_eval}, framing={spec['framing']}, proba={submit_proba}, "
-          f"fold_advisor={fold_advisor}, presets={presets}, train_rows={len(train)}) ===")
+          f"(eval_metric={submit_eval}, framing={submit_framing}, proba={bool(proba_columns)}, "
+          f"use_llm={submit_use_llm}, topk={submit_topk}, fold_advisor={fold_advisor}, "
+          f"presets={presets}, train_rows={len(train)}) ===")
     result = run_pipeline(
         train, spec["target"], model=model, test_size=0.2, time_limit=time_limit,
         seed=42, model_dir=f"AutogluonModels/kaggle_{spec['name']}", cv_folds=cv,
-        eval_metric=submit_eval, target_framing=spec["framing"],
+        eval_metric=submit_eval, target_framing=submit_framing, use_llm=submit_use_llm,
         fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id,
-        proba=submit_proba, proba_columns=[submit_col] if submit_proba else None,
-        presets=presets)
+        proba=bool(proba_columns), proba_columns=proba_columns,
+        presets=presets, sample_weight=sample_weight)
 
     submission = result.submission
-    # Label path names the prediction column after the target; rename to what the sample
-    # submission expects. (The proba path already emits submit_col directly.)
-    if not submit_proba and submit_col != spec["target"] and spec["target"] in submission.columns:
+    if submit_topk:  # wide class-prob frame -> long top-k rows (id repeated, one class each)
+        submission = _topk_long(submission, submit_id, submit_col, submit_topk)
+    elif not submit_proba and submit_col != spec["target"] and spec["target"] in submission.columns:
+        # Label path names the prediction column after the target; rename to the sample's column.
+        # (The plain proba path already emits submit_col directly.)
         submission = submission.rename(columns={spec["target"]: submit_col})
     out = f"data/submission_{spec['name']}.csv"
     submission.to_csv(out, index=False)
     append_run("runs.jsonl", result, csv=spec["path"], target=spec["target"], model=model,
-               no_llm=False, max_attempts=1,
+               no_llm=not submit_use_llm, max_attempts=1,
                timestamp=datetime.now().isoformat(timespec="seconds"))
 
     cv_est = result.cv
