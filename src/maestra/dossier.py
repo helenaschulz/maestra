@@ -331,6 +331,89 @@ def render_audit(r, *, verdict_sentence: str | None = None) -> str:
     return _page("Maestra data-risk audit", verdict_html, "".join(sections))
 
 
+def _backtest_verdict(r) -> str:
+    """A deterministic stakeholder sentence for the F1 backtest audit, from its worst finding —
+    same framing convention as :func:`_audit_verdict`. The series-boundary AUC is deliberately
+    NOT a verdict driver here (see :attr:`~maestra.backtest_audit.BacktestAuditReport.risk_level`
+    / :func:`~maestra.backtest_audit.series_leak_check`): it is shown as caveated diagnostic,
+    never as the top-line verdict."""
+    if r.future_leaks:
+        col = r.future_leaks[0]["column"]
+        return (f"A column (<code>{_esc(col)}</code>) may not actually be known at forecast "
+                "time — any backtest score using it as a feature is fiction until it is removed.")
+    sd = r.split_design
+    if sd and sd["direction"] == "optimistic (dangerous)":
+        return (f"Your backtest is measurably optimistic: a naive split (no gap before the "
+                f"test window) reports a better score than an embargoed one by "
+                f"{sd['mean_gap']:.4g} on average across {sd['n_origins']} origins — add a gap "
+                "before your test window to match real deployment.")
+    return ("No future leak and no measurable naive-backtest optimism — this backtest looks "
+            "trustworthy on the checks that currently carry a verdict.")
+
+
+def render_backtest_audit(r, *, verdict_sentence: str | None = None) -> str:
+    """Render an F1 :class:`~maestra.backtest_audit.BacktestAuditReport` on the SAME HTML layer
+    as the run dossier and the pre-modelling audit (P1's shared rendering, reused for F1)."""
+    colour = _RISK_LIGHT.get(r.risk_level, "yellow")
+    bg, label = _LIGHT[colour]
+    sentence = verdict_sentence or _backtest_verdict(r)
+    verdict_html = (f"<div class='verdict'><span class='light' style='background:{bg}'>{label}"
+                    f"</span><p>{sentence}</p></div>")
+
+    setup = [("Rows", _esc(r.n_rows)), ("Target", _esc(r.target)),
+             ("Time column", _esc(r.time_column)),
+             ("Series column", _esc(r.series_column) if r.series_column else "<span class='muted'>none</span>")]
+
+    leaks = [f"<code>{_esc(f['column'])}</code> — {_esc(f['reason'])}"
+            + (f" (|corr| with target: {f['correlation_with_target']:.3f})"
+               if f.get("correlation_with_target") is not None else "")
+            for f in r.future_leaks]
+
+    sd = r.split_design
+    if sd is None:
+        split_body = "<p class='muted'>Not enough rows for even one rolling origin.</p>"
+    else:
+        split_body = _kv_table([
+            ("Metric", _esc(sd["eval_metric"])),
+            ("Naive backtest scores (no gap)", _esc(", ".join(f"{s:.4g}" for s in sd["naive_scores"]))),
+            ("Embargoed backtest scores", _esc(", ".join(f"{s:.4g}" for s in sd["corrected_scores"]))),
+            ("Mean gap (naive − embargoed, signed)", f"<b>{sd['mean_gap']:+.4g}</b>"),
+            ("Direction", _esc(sd["direction"])),
+            ("Origins", _esc(sd["n_origins"])),
+            ("Minimum detectable effect", _esc(f"{sd['mde']:.4g}" if sd["mde"] != float("inf") else "n/a")),
+        ])
+
+    if r.series_leak_auc is None:
+        series_body = "<p class='muted'>Not checked (no series column, or too little data).</p>"
+    else:
+        auc = r.series_leak_auc
+        series_body = (
+            f"<p>Adversarial AUC across the time boundary (series column excluded): "
+            f"<b>{auc:.3f}</b>.</p>"
+            "<p class='note'>Diagnostic only — this does <b>not</b> yet control for ordinary "
+            "time trend, so it does not affect the verdict above. A split exactly on time order "
+            "makes any trending or seasonal series look highly separable (AUC near 1.0) from "
+            "plain temporal signal alone, so a high value here is expected and is NOT evidence "
+            "of series-level leakage. Telling true series-identity leakage apart from expected "
+            "trend needs a shuffled-series control — planned for F2.</p>")
+
+    tf = r.target_framing
+    framing_body = ("<p class='muted'>Not applicable (target is not a non-negative numeric "
+                    "column).</p>" if tf is None else
+                    f"<p>LLM proposed <code>{_esc(tf['proposed'])}</code>"
+                    + (" — verified applicable." if tf["verified"] else " — not applicable.")
+                    + f" <span class='note'>{_esc(tf['rationale'])}</span></p>")
+
+    sections = [
+        _section("Setup", _kv_table(setup), open_=True),
+        _section("Future-leaking features", _findings_list(leaks), open_=True),
+        _section("Split design: naive vs. embargoed backtest", split_body, open_=True),
+        _section("Series-boundary shift (diagnostic, not a verdict)", series_body),
+        _section("Target framing candidate", framing_body),
+    ]
+    return _page("Maestra backtest audit", verdict_html, "".join(sections))
+
+
 _NARRATIVE_SCHEMA: dict = {
     "type": "object",
     "properties": {

@@ -468,37 +468,48 @@ publizierbares Ergebnis.
 entschieden wird per Messung (naiver Backtest vs. korrigierter Backtest, gleiche
 Arbiter-Regel aus `intervention.py`).
 
-- [ ] Neues Modul `src/maestra/backtest_audit.py`. Input: DataFrame, Zeitspalte,
+- [x] Neues Modul `src/maestra/backtest_audit.py`. Input: DataFrame, Zeitspalte,
       Target, optional Serien-ID-Spalte. Checks:
       (a) **Zukunfts-Features:** je Spalte prüfen, ob Werte zum Forecast-Zeitpunkt
       verfügbar wären (LLM klassifiziert Verfügbarkeit aus Spaltensemantik, ein
       deterministischer Timing-/Korrelations-Check validiert; Muster von
-      `validation_strategist.py` übernehmen);
-      (b) **Split-Design:** fehlender Gap/Embargo zwischen Train und Test; bei
-      Serien-ID: leakt ein globales Modell über Serien (adversarial validation über
-      die Zeitgrenze, bestehende Maschinerie aus `validation.py` nutzen);
-      (c) **Target-Framing bei Counts:** log1p-Prüfung aus M11/K1 wiederverwenden
-      (`target_framing.py`).
-- [ ] Messprimitiv `quantify_backtest_lie(...)`: Differenz zwischen naivem
+      `validation_strategist.py` übernommen);
+      (b) **Split-Design:** fehlender Gap/Embargo zwischen Train und Test (naiver vs.
+      embargoed Backtest über mehrere rollierende Origins); bei Serien-ID: leakt ein
+      globales Modell über Serien (adversarial validation über die Zeitgrenze,
+      bestehende Maschinerie aus `validation.py` genutzt);
+      (c) **Target-Framing bei Counts:** log1p-Prüfung aus M11/K1 wiederverwendet
+      (`target_framing.py`, propose+verify direkt aufgerufen, CV-Arbiter bewusst NICHT
+      neu implementiert — der existiert schon in `pipeline.py --target-framing`).
+- [x] Messprimitiv `quantify_backtest_lie(...)`: Differenz zwischen naivem
       Backtest-Score und korrigiertem Backtest-Score, mit Unsicherheit (mehrere
-      Origins = Paare für `paired_delta_test`).
-- [ ] Datensätze: M5 (Walmart), Rossmann, Favorita — alle mit Kaggle-LB als Ground
-      Truth. Download/Grading über die bestehende K1-Infrastruktur
-      (`scripts/kaggle_battery.py`) — wiederverwenden, nicht duplizieren. Neues
-      Skript `scripts/backtest_audit_battery.py`.
-- [ ] MCP-Tool 4 `audit_backtest(path, time_column, target, series_column=None) ->
-      dict` im P2-Server ergänzen; HTML-Report über P1-Rendering.
-- [ ] CLI: `maestra-audit --backtest --time-col <col> [--series-col <col>]`.
-- [ ] Offline-Tests: synthetische Datensätze mit eingebauten Lügen (ein
+      Origins = Paare für `paired_delta_test`, Nadeau-Bengio-korrigiert wie überall).
+- [x] Datensätze: Walmart, Rossmann, Favorita (`store-sales`) — alle bereits lokal aus
+      K1/K2, wiederverwendet, kein neuer Download. Neues Skript
+      `scripts/backtest_audit_battery.py` (15k-Zeilen-Sample pro Task, 3 Origins).
+- [x] MCP-Tool 4 `audit_backtest(path, target, time_column, series_column=None) ->
+      dict` im P2-Server ergänzt; HTML-Report über P1-Rendering
+      (`render_backtest_audit` in dossier.py).
+- [x] CLI: `maestra-audit --backtest --time-col <col> [--series-col <col>]`.
+- [x] Offline-Tests: synthetische Datensätze mit eingebauten Lügen (ein
       Zukunfts-Feature, ein fehlender Gap, ein Serien-Leak) → Audit findet alle drei;
       ein sauberer synthetischer Datensatz → Audit meldet nichts
-      (False-Alarm-Kontrolle).
+      (False-Alarm-Kontrolle). 20 Tests in `test_backtest_audit.py` + 6 in
+      `test_dossier.py` (Rendering) + 2 in `test_mcp_server.py` + 2 in `test_audit.py`
+      (CLI).
 
-**F1 Done:** Auf mindestens einem öffentlichen Datensatz eine Backtest-Lüge gefunden
-und quantifiziert, die ein naives Setup übersieht, mit Kaggle-LB als Beleg →
-Ledger-Zeilen + Post. Wenn auf keinem der drei Datensätze etwas Substanzielles
-gefunden wird: ebenfalls Ledger-Zeile + ehrlicher Post, und F2-Scope wird mit Helena
-neu bewertet.
+**F1 Done (2026-07-07):** Eine echte Backtest-Lüge gefunden und quantifiziert, die ein
+naives Setup übersieht — Rossmanns `Customers`-Spalte: vom LLM als Zukunfts-Feature
+erkannt, deterministisch mit |corr| 0.892 zum Target bestätigt, UND strukturell
+bestätigt (`Customers` fehlt in Rossmanns echter `test.csv` — derselbe
+Beweis-Standard wie beim bike-sharing-`casual`/`registered`-Leak, kein Kaggle-LB
+nötig für diese spezifische Art von Beweis). Ledger-Zeile + committetes Beispiel
+(`docs/examples/reports/rossmann-backtest-audit.html`). Split-Design-Check: auf
+keinem der 3 Tasks eine messbare Lüge bei diesem Budget (ehrlich als "underpowered",
+nicht als "sauber" gemeldet). Series-Leak-Check: ~1.0 AUC auf allen 3 Tasks, aber mit
+einem offenen methodischen Vorbehalt (Confound mit gewöhnlichem Zeit-Trend, nicht
+zwingend Serien-spezifisches Leck) — nicht stillschweigend als sauberer Fund verkauft,
+sondern als offene Frage für F2/eine künftige Iteration im Ledger notiert.
 
 ---
 

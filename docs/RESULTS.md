@@ -950,6 +950,69 @@ correct/remove the claim in the README. The Titanic CLI-transcript example elsew
 (`accuracy: 0.826`, etc.) is an illustrative single-command output, not a dated/seeded claim, and
 is not treated as a ledger discrepancy.
 
+## F1 — backtest audit, real forecasting competitions (2026-07-07)
+
+`scripts/backtest_audit_battery.py` ran `backtest_audit.py` (`gpt-4o`, real AutoGluon, no mocks)
+against three real Kaggle forecasting competitions, reusing K1/K2's already-local data: Rossmann,
+Walmart, and store-sales (Favorita), each a random 15 000-row sample (matching
+`kaggle_battery.py`'s own sampling convention), 3 rolling origins, 10s per fit.
+
+**A real backtest lie, found and quantified — Rossmann's `Customers` column.** The LLM flagged
+`Customers` as a future-leaking feature ("only known after the sales period has ended, as it
+reflects actual customer visits"); the deterministic correlation check corroborated it at
+**|corr| = 0.892** with the target `Sales`. Confirmed structurally: `Customers` is **absent from
+Rossmann's real `test.csv`** — the same definitive absent-from-test-set evidence standard this
+project already uses for bike-sharing's `casual`/`registered` leak, not merely a correlation
+guess. This is F1's Done condition met: a naive setup that kept `Customers` as a feature would
+train on information genuinely unavailable at real forecast time. (The battery script drops
+`Customers` up front for its main 3-task run, mirroring the bike-sharing precedent — the
+above detection ran as a deliberate SEPARATE check with `Customers` still present, specifically
+to verify the future-feature check catches a real, known leak rather than only synthetic ones.)
+Report: [`docs/examples/reports/rossmann-backtest-audit.html`](examples/reports/rossmann-backtest-audit.html).
+
+**Split-design check (naive vs. embargoed backtest): no measurable gap on any of the 3 tasks** at
+this budget — Rossmann mean_gap −2.27 (MDE 159), Walmart +13.05 (MDE 1126), store-sales +52.38
+(MDE 154), all "undecided" (gap far below its own MDE, i.e. genuinely underpowered at 3 origins /
+10s fits / 15k-row samples, not evidence of "no lie"). Open, not claimed as a finding either way —
+more origins and/or a larger sample would sharpen this.
+
+**Series-leak check: near-perfect adversarial AUC (~1.0) on all 3 tasks — a real result, but with
+an important, honestly-flagged confound.** `series_leak_check` splits the data at the naive time
+boundary and asks whether a classifier can tell "before" from "after" with the series column
+removed. All three real, genuinely-trending retail time series scored ~1.0 AUC. This is expected
+for ANY real time series with a strong trend/seasonality — ordinary time-correlated signal (not
+series-identity leakage specifically) is enough for a classifier to separate before/after
+perfectly, since the check does not currently control for plain temporal drift. **Open
+methodological question for a future iteration:** the check as designed cannot currently
+distinguish "this global model can exploit series identity across the boundary" from "this is
+just a normal time series with a trend" — it needs a control (e.g. compare against the AUC of a
+model trained on RANDOMLY shuffled series-assignment across the same time split) before a high
+AUC here can be read as a series-specific warning rather than an expected property of temporal
+data. Not silently resolved — noted here for F2/a future backtest_audit revision.
+
+**Follow-up (2026-07-07, PR#6 review): the series-leak AUC no longer drives the verdict.** The
+ledger above was honest about the confound, but the shipped artifact was not: `risk_level`
+escalated to **"high"** on `series_leak_auc > 0.75`, so the HTML/MCP verdict a non-DS sees would
+have labelled every one of these ordinary trending retail series as a high-risk series leak — a
+false alarm baked into the product, contradicting this very ledger and the "verdicts, not
+build-buttons" invariant. Fixed: `series_leak_auc` is now **diagnostic only** and does NOT feed
+`risk_level` at all (neither "high" nor "elevated"). The number is still computed and shown in the
+report, but under an explicit caveat ("does not yet control for ordinary time trend; a high value
+is expected for any trending series and is not evidence of series leakage — real separation needs
+the shuffled-series control, planned for F2"). `series_leak_check`'s docstring was corrected to say
+the same (the old "beyond just time itself" claim, which the code never delivered, is gone). The
+committed `rossmann-backtest-audit.html` was re-rendered from the same measured values through the
+corrected renderer — its RED verdict still rests on the `Customers` future-feature finding (the
+real leak, unchanged), and the series-boundary section is now a caveated diagnostic rather than a
+"STRONG shift / leaking series identity" verdict block. The full shuffled-series-assignment
+control that would let a high AUC actually mean something remains F2 scope, not built here.
+
+**Target framing: store-sales' skewed `sales` target correctly flagged** (`log1p`, skewness
+7.60, mean 364.5 vs. median 10.0) — consistent with M11/K1's established retail-sales pattern
+(house-prices, bike-sharing). Rossmann's `Sales` target was correctly NOT flagged (skewness 0.60,
+mean/median close) — the framing check is not indiscriminately proposing log1p on every
+regression target.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
