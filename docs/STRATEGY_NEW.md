@@ -270,17 +270,29 @@ vorhersagen, und darf ich der Zahl trauen?", Maestra-Tools liefern das gemessene
 Verdikt, Claude erklärt. Das Video ist das zentrale Vorführ-Artefakt des Portfolios.
 
 Cody-Anteile:
-- [ ] Demo-Datensatz vorbereiten: bike-sharing-Ausschnitt als handliche CSV
-      (`docs/examples/demo/demand.csv`, wenige MB, mit README-Zeile zur Herkunft).
-- [ ] Drehbuch `docs/examples/demo/SCRIPT.md`: exakte Prompts, erwartete Tool-Calls,
+- [x] Demo-Datensatz vorbereiten: bike-sharing-Ausschnitt als handliche CSV
+      (`docs/examples/demo/demand.csv`, wenige MB, mit README-Zeile zur Herkunft). Bewusst
+      unverändert (roh) übernommen, inkl. des bekannten `casual`+`registered`→`count`-Leaks
+      und der Zeitstruktur — genau das soll die Demo live von den Tools finden lassen.
+- [x] Drehbuch `docs/examples/demo/SCRIPT.md`: exakte Prompts, erwartete Tool-Calls,
       erwartete Verdikte, Timing-Hinweise. So konkret, dass Helena beim Aufnehmen nur
       ablesen muss.
-- [ ] Generalprobe: die Drehbuch-Prompts einmal gegen den laufenden MCP-Server
-      ausführen und prüfen, dass die Verdikte den Erwartungen entsprechen;
-      Abweichungen im Drehbuch korrigieren.
+- [x] Generalprobe: alle drei Tools live gegen `docs/examples/demo/demand.csv` ausgeführt
+      (echter `gpt-4o`-Key, echtes AutoGluon, 2026-07-07). Zwei echte Bugs im MCP-Server
+      selbst gefunden und gefixt (Fixup-Commit auf `p2-mcp-server`): `feasibility`s
+      Feature-Importance-Aufruf crashte auf dem rohen Input-Schema (jetzt
+      `feature_stage="transformed"`, keine externen Daten nötig); `check_validation`s und
+      `feasibility`s Zeit-Backstops hatten fast keinen Puffer über ihrer eigenen nominalen
+      AutoGluon-Zeit (check_validation lief real in den 90s-Backstop; beide gelockert:
+      150s/360s, weniger nominale Zeit pro Fold). Drehbuch mit den ECHTEN Zahlen aus dem
+      korrigierten Lauf geschrieben (kein Korrekturbedarf danach — die Zahlen sind live
+      reproduziert).
 
 Helena-Anteile (nicht Cody): Aufnahme, Schnitt, Hosting (z. B. YouTube unlisted),
 Link ins README.
+
+**P2b (Cody-Anteile) — abgeschlossen (2026-07-07).** Drehbuch verifiziert gegen einen echten
+Lauf. Offen: Aufnahme, Schnitt, Hosting, README-Link (Helenas Teil).
 
 **P2b Done:** Drehbuch verifiziert, Video aufgenommen und im README verlinkt.
 
