@@ -168,35 +168,43 @@ und warum) wird ein klickbares Artefakt. Gleiches Rendering für den Audit-Repor
 - Ein einziges statisches HTML-File pro Report, keine externen Assets, kein
   JS-Framework (inline CSS; `<details>` reicht fürs Aufklappen).
 
-- [ ] Neues Modul `src/maestra/dossier.py`: `render_dossier(result: PipelineResult,
-      run_record: dict | None = None) -> str` (HTML-String) und
-      `write_dossier(result, path)`. Datenquellen: `PipelineResult` (cv, hybrid,
-      fold_strategy, skeptic, target_framing, cv_budget), InterventionOutcome-Records,
-      `runlog.py`-Record. Template-Ansatz: f-Strings oder `string.Template`, KEINE
-      neue Pflicht-Dependency.
-- [ ] Abschnitte des Dossiers: (1) Verdikt-Kopf, (2) Setup (Datensatz, Target, Metrik,
-      Fold-Strategie inkl. Advisor-Begründung), (3) Interventionen-Tabelle (Name,
-      Kind, proposed_by, Delta, MDE, reason, angenommen ja/nein), (4) CV-Ergebnis mit
-      per-Fold-Scores, (5) CV-Budget, (6) Limitierungen (automatisch: was war
-      deaktiviert, was ist underpowered).
-- [ ] `audit.py` auf dieselbe Rendering-Schicht heben: `write_audit_html(...)`.
-      Stakeholder-Satz oben (Beispiel-Ton: "Eure CV-Schätzung ist vermutlich ~5x zu
-      optimistisch, weil Gruppen über Folds leaken"), Evidenz darunter.
-- [ ] CLI: `--report html [pfad]` für `maestra`, `--html [pfad]` für `maestra-audit`.
-- [ ] Offline-Tests: Rendering aus einem fixen, synthetischen `PipelineResult` (LLM
-      gemockt); Assertions auf Schlüsselinhalte (Verdikt-Satz vorhanden, abgelehnte
-      Intervention gelistet, kein roher Metrikname ohne Übersetzungssatz).
-- [ ] Skript `scripts/build_example_reports.py`: erzeugt Beispiel-Reports für
-      bike-sharing (K1-Setup), House Prices (M6/M11) und einen Group-Leakage-Fall
-      (Grunfeld aus M1-Real), Ablage unter `docs/examples/reports/`. Die Läufe
-      brauchen echte LLM/AutoGluon-Ausführung — Skript bereitstellen und testen;
-      die eigentliche Generierung führt Helena mit API-Keys aus.
-- [ ] GitHub-Pages-Workflow (`.github/workflows/pages.yml`), der `docs/examples/`
-      publiziert. README bekommt die drei Links (Platzhalter, bis P4 das README
-      umbaut).
+- [x] **`src/maestra/dossier.py`** — `render_dossier(result, *, run_record, verdict_sentence,
+      metric_notes) -> str` + `write_dossier`. Pur, duck-typed auf `result` (kein Import-Zyklus),
+      f-Strings + `html`-Escaping, keine neue Dependency. Die Interventionen kommen aus
+      `hybrid`/`skeptic`/`target_framing` (via `collect_interventions`); MDE ist ein
+      Multi-Seed-Konzept und wird — ehrlich — nur auf Run-/Verdikt-Ebene aus `run_record` gezeigt,
+      nicht pro Intervention erfunden.
+- [x] **Die sechs Dossier-Abschnitte** — Verdikt-Kopf (Ampel, deterministisch), Setup (inkl.
+      Advisor-Begründung), Interventionen-Tabelle (abgelehnte gleichrangig sichtbar), CV mit
+      per-Fold-Scores (+ MDE aus run_record), CV-Budget, auto-abgeleitete Limitierungen.
+- [x] **`audit.py` auf dieselbe HTML-Schicht** — `render_audit` (in dossier.py) + `write_audit_html`;
+      Risk-Level → Ampel, deterministischer Stakeholder-Satz aus dem schlimmsten Befund.
+- [x] **CLI** — `maestra --dossier PATH` (LLM schreibt nur die Prosa via `dossier_narrative`,
+      Fallback deterministisch), `maestra-audit --html PATH`. (Wortlaut leicht abweichend von
+      "--report html": `--dossier`/`--html` sind additiv und brechen den bestehenden
+      `--report`-Markdown-Vertrag nicht.)
+- [x] **Offline-Tests** (`test_dossier.py`, `test_build_example_reports.py`): Verdikt-Satz da,
+      abgelehnte Intervention gelistet, kein roher Metrikname ohne Übersetzung, Ampel-Farbe
+      deterministisch trotz LLM-Satz. 12 Dossier- + 2 Builder-Tests.
+- [x] **`scripts/build_example_reports.py`** — bike-sharing/House-Prices-Dossier + Grunfeld-Audit
+      nach `docs/examples/reports/`; `--dry-run` (offline, synthetisch, getestet). Die echte
+      Generierung braucht LLM/AutoGluon → **Helena führt sie mit API-Keys aus.**
+- [x] **`.github/workflows/pages.yml`** (publiziert `docs/examples/`, nur committetes HTML, keine
+      Secrets) + README-Platzhalterlinks.
 
-**P1 Done:** drei klickbare Beispiel-Reports; mindestens einer zeigt eine abgelehnte
-Intervention mit Begründung; Tests grün.
+**P1 Done — abgeschlossen (2026-07-06/07).** Helena hat die drei echten Beispiel-Reports generiert
+und committet (`aca898a`): bike-sharing (GREEN, `target:log1p` abgelehnt mit Δ+Begründung sichtbar),
+House Prices (GREEN, ebenfalls ein abgelehntes `target:log1p`), Grunfeld-Audit (YELLOW). Die
+P1-Done-Bedingung ("mind. ein Report zeigt eine abgelehnte Intervention mit Begründung") ist damit
+live erfüllt, nicht nur getestet.
+
+**Nebenbefund beim Sichten der echten Reports, gefixt:** Grunfeld zeigte nicht den ursprünglich
+geplanten reinen Group-Fall — der Strategist wählte real `time_local` (`year` + wiederkehrend pro
+`firm`), ein weiterer, dritter Beleg für den K2-"competing structure"-Befund (Strategist zieht bei
+gleichzeitig vorhandener Group- UND Time-Achse eine zeitbasierte Strategie vor). Kein Bug, aber
+`_audit_verdict`'s Top-Zeile behandelte `time_local` wie simples `time` und unterschlug die
+Perioden-Spalte — gefixt (eigener Satz, nennt beide Spalten), das bereits generierte
+`grunfeld.html` NICHT überschrieben (echter bezahlter Lauf).
 
 ---
 
@@ -312,9 +320,12 @@ Colab-Notebook läuft; alle Alt-Tests unverändert grün.
 
 **Ziel:** Die Substanz lesbar machen. Cody entwirft, Helena redigiert.
 
-- [ ] README umbauen, Reihenfolge: (1) These in zwei Sätzen ("gemessenes Urteil statt
-      LLM-Meinung"; das LLM entscheidet nie), (2) der 10-Minuten-Pfad (Report-Links
-      aus P1, Video aus P2b, Colab aus P3), (3) Kern-Evidenz als kompakte Tabelle mit
+- [ ] README umbauen, Reihenfolge: (1) "What is Maestra" in drei Zoom-Stufen
+      (Beschreibung → Ablauf eines Runs → Einordnung "automatisiert die Urteilsarbeit,
+      nicht den Modellbau"; abgestimmter Text vom 2026-07-06, Kurzfassung steht in
+      CLAUDE.md "Was Maestra ist" — professionelle Sprache, keine umgangssprachlichen
+      Zuspitzungen), (2) der 10-Minuten-Pfad (Report-Links aus P1, Video aus P2b,
+      Colab aus P3), (3) Kern-Evidenz als kompakte Tabelle mit
       Ledger-Verweisen, (4) Vokabular-Mapping in Marktbegriffe: structured outputs
       (`llm.py`), retrieval-augmented research (`research.py` + `websearch.py`),
       Multi-Agent mit empirischer Konfliktlösung (Skeptic/Strategist/Diagnosis),
@@ -336,6 +347,37 @@ Colab-Notebook läuft; alle Alt-Tests unverändert grün.
 - [ ] Konsistenz-Pass: jede Zahl in README/Case Study gegen `docs/RESULTS.md` prüfen
       (Invariante). Diskrepanzen nicht stillschweigend fixen, sondern auflisten und
       an Helena geben.
+
+### Textvorlage "What is Maestra" (abgestimmt 2026-07-06, verbatim verwenden)
+
+README-Kopf (englisch):
+
+> **Maestra is an agentic AutoML system for tabular data.** Give it a dataset and a
+> target, and it delivers predictive models together with a trustworthy estimate of
+> the achievable performance. Specialized LLM agents read the semantics of your data
+> and surface the risks that sink real-world ML projects: data leakage, temporal and
+> group structure, flawed validation design. Every agent decision must pass an
+> empirical gate — only interventions that measurably improve results in a controlled
+> experiment are adopted; the LLM itself never decides. The result is a model backed
+> by auditable evidence — or a reasoned refusal when the data cannot support the
+> question.
+>
+> Maestra doesn't automate model building — modern AutoML engines already do that.
+> It automates the senior data scientist's judgment around it: risk detection,
+> validation design, honest expectation-setting. That is the blind spot of every
+> AutoML pipeline, and the estimates' reliability is demonstrated against external
+> ground truth, including real Kaggle leaderboards.
+
+Abgestimmte Positionierungssätze (für Posts/LinkedIn/Gespräche, nicht README-pflichtig):
+- DS/technisch: "Maestra ist ein agentisches ML-System über AutoGluon, in dem jede
+  LLM-Entscheidung ein empirisches Gate passieren muss: paired CV auf identischen
+  Folds, Multi-Seed-Verdikte, ausgewiesener minimal detektierbarer Effekt."
+- Executive/Consulting: "Maestra beurteilt vor der Modellentwicklung, ob Daten eine
+  Fragestellung tragen, und liefert eine belastbare Schätzung der erreichbaren Güte.
+  Die Verlässlichkeit dieser Schätzungen ist an externen Referenzdaten nachgewiesen,
+  unter anderem auf echten Kaggle-Wettbewerben."
+- Hero-Zeile: "Measured judgment, not model opinion: an agentic ML system where
+  every decision has to earn its place through evidence."
 
 **P4 Done:** 10-Minuten-Pfad vollständig; Testlauf mit einer unbeteiligten Person
 (Helena organisiert); die Person kann Maestra in zwei Sätzen erklären.

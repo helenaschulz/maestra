@@ -36,6 +36,14 @@ including the negative ones, come from that harness.
 **Start here:** `maestra-audit --csv data.csv --target y` — a client-ready, pre-modeling data-risk
 report (validation-design recommendation, leakage scan, structural traps). Trains no model.
 
+**Example reports** (clickable HTML, verdict-first with the DS evidence collapsible below — a run's
+full record of what was tried, measured, and *rejected*). Generate with
+`maestra --dossier out.html …` / `maestra-audit --html out.html …`, or all three at once via
+`scripts/build_example_reports.py`. Published copies (placeholders until P4 finalises the README):
+- [bike-sharing run dossier](docs/examples/reports/bike-sharing.html) — temporal demand, fold-advisor + framing
+- [House Prices run dossier](docs/examples/reports/house-prices.html) — rich-semantics regression
+- [Grunfeld data-risk audit](docs/examples/reports/grunfeld.html) — group leakage caught before modeling
+
 ```bash
 pip install -e ".[dev]"
 echo "OPENAI_API_KEY=sk-..." > .env
