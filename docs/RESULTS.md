@@ -931,6 +931,25 @@ individual test file alone, and the full 293 tests split into two ~150-test halv
 processes (151 + 142 passed, ~9s each) — strong evidence the code is correct and this was pure
 single-process resource accumulation on a heavily-used machine, not a bug introduced by P3.
 
+## P4 — README reframe, case study, architecture writeup, and one open ledger gap (2026-07-07)
+
+`docs/case_studies/bike_sharing.md` and `docs/ARCHITECTURE.md` were written; the README was
+reordered around the agreed "what is Maestra" opening, a 10-minute path, and a market-vocabulary
+mapping. A subagent then cross-checked every numeric claim in README.md and the new case study
+against this ledger: every graded-experiment number (M1, M2, M6, M9, M9-extend, M10, M11, E1, E2,
+K1, N1, N2) matches exactly.
+
+**One real, pre-existing discrepancy surfaced — not introduced this session, not silently fixed.**
+The README's existing "Case study: Maestra caught its own mistake" section (Playground S6E6, the
+dropped-photometric-bands leak) states the baseline comparison exposed damage "0.955 → 0.919".
+This ledger's only S6E6 entry (Kaggle submissions, above) records a different number pair: public
+`0.95045` ≈ holdout `0.9516` — the final, fixed submission's score, not the before/after
+comparison the README describes. The 0.955/0.919 pair has no traceable source here. **Left as-is,
+flagged for Helena**: either recover the numbers from `runs.jsonl` and add a proper ledger line, or
+correct/remove the claim in the README. The Titanic CLI-transcript example elsewhere in the README
+(`accuracy: 0.826`, etc.) is an illustrative single-command output, not a dated/seeded claim, and
+is not treated as a ledger discrepancy.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain

@@ -370,33 +370,41 @@ Colab-Notebook läuft; alle Alt-Tests unverändert grün.
 
 **Ziel:** Die Substanz lesbar machen. Cody entwirft, Helena redigiert.
 
-- [ ] README umbauen, Reihenfolge: (1) "What is Maestra" in drei Zoom-Stufen
+- [x] README umbauen, Reihenfolge: (1) "What is Maestra" in drei Zoom-Stufen
       (Beschreibung → Ablauf eines Runs → Einordnung "automatisiert die Urteilsarbeit,
-      nicht den Modellbau"; abgestimmter Text vom 2026-07-06, Kurzfassung steht in
-      CLAUDE.md "Was Maestra ist" — professionelle Sprache, keine umgangssprachlichen
-      Zuspitzungen), (2) der 10-Minuten-Pfad (Report-Links aus P1, Video aus P2b,
-      Colab aus P3), (3) Kern-Evidenz als kompakte Tabelle mit
-      Ledger-Verweisen, (4) Vokabular-Mapping in Marktbegriffe: structured outputs
-      (`llm.py`), retrieval-augmented research (`research.py` + `websearch.py`),
-      Multi-Agent mit empirischer Konfliktlösung (Skeptic/Strategist/Diagnosis),
-      Guardrails (Sandbox, `_is_row_independent`, CVBudget), Eval-Harness (Arbiter,
-      Multi-Seed, Kontrollexperimente), MCP (P2), (5) FE-Ergebnisse ehrlich als
-      "measured null, kept for reproducibility", (6) Quickstart/Install.
-      Beim bike-sharing-Ergebnis (−71%) den Kausalitäts-Caveat direkt an die Zahl:
-      der Gewinn entstand durch das Beheben dreier per Anomalie gefundener Defekte,
-      nicht durch "LLM-Intelligenz".
-- [ ] Case Study `docs/case_studies/bike_sharing.md` (~2 Seiten), erzählt als
+      nicht den Modellbau"; abgestimmter Text vom 2026-07-06 verbatim übernommen), (2) der
+      10-Minuten-Pfad (Report-Links aus P1, Demo-Skript aus P2b — Video-Link als "pending"
+      markiert, da Aufnahme Helenas Teil ist, Colab aus P3), (3) Kern-Evidenz-Tabelle mit
+      Ledger-Verweisen (unverändert, bereits vorhanden), (4) neuer Abschnitt
+      "Vocabulary, in market terms" (structured outputs, RAG, Multi-Agent mit empirischer
+      Konfliktlösung, Guardrails, Eval-Harness, MCP), (5) FE-Ergebnisse waren bereits als
+      "measured null" gerahmt (Finding 3) — unverändert, (6) Quickstart/Install (unverändert
+      Position). Der Kausalitäts-Caveat beim bike-sharing-Ergebnis war schon vorhanden
+      ("driven by fixing 3 of Maestra's own bugs, not a clean baseline comparison") und
+      bleibt. Zusätzlich `mcp_server.py`/`compare.py`/`dossier.py`/`run_memory.py` in die
+      Modul-Tabelle nachgetragen (fehlten dort seit P1/P2/P3 — ein eigener Konsistenzfund).
+- [x] Case Study `docs/case_studies/bike_sharing.md` (~2 Seiten), erzählt als
       Demand-Forecasting-Fall: Ausgangslage, der 3-Bug-Hunt, der CV↔LB-Gap als
       Wahrheitssignal, was das über Backtest-Ehrlichkeit lehrt. Alle Zahlen mit
-      Ledger-Verweis.
-- [ ] `docs/ARCHITECTURE.md` (~2 Seiten): der lineare Loop, das Gate-Design
+      Ledger-Verweis, gegengeprüft (siehe Konsistenz-Pass unten).
+- [x] `docs/ARCHITECTURE.md` (~2 Seiten): der lineare Loop, das Gate-Design
       (`intervention.py` als einziges Mess-Primitiv), warum kein Agent-Framework
       (Auditierbarkeit, Debugbarkeit, triviale Topologie), Schichtentrennung
       Entscheidung/Validierung/Ausführung/Bewertung. Bestehendes Architekturdiagramm
-      aus `assets/` einbinden.
-- [ ] Konsistenz-Pass: jede Zahl in README/Case Study gegen `docs/RESULTS.md` prüfen
-      (Invariante). Diskrepanzen nicht stillschweigend fixen, sondern auflisten und
-      an Helena geben.
+      aus `assets/` eingebunden.
+- [x] Konsistenz-Pass (Subagent, vollständig über README.md + die neue Case Study gegen
+      `docs/RESULTS.md`): **alle** graded-experiment-Zahlen (M1/M2/M6/M9/M9-extend/M10/M11/
+      E1/E2/K1/N1/N2) stimmen exakt überein. **Eine echte, vorbestehende Diskrepanz
+      gefunden** (nicht durch diese Session eingeführt, nicht stillschweigend gefixt — an
+      Helena): der bestehende "Case study: Maestra caught its own mistake"-Abschnitt
+      (Playground S6E6) nennt "0.955 → 0.919" als Vorher/Nachher-Zahlen — `docs/RESULTS.md`
+      führt zu S6E6 nur eine einzige Zeile ("public 0.95045 ≈ holdout 0.9516", ein anderes
+      Zahlenpaar, der FINALE Submission-Stand, nicht der Vorher/Nachher-Vergleich). Die
+      0.955/0.919-Zahlen sind unbelegt — entweder in RESULTS.md nachtragen (falls aus
+      `runs.jsonl` rekonstruierbar) oder im README korrigieren/entfernen. Nicht selbst
+      entschieden. Der illustrative CLI-Transkript-Auszug (Titanic-Beispiel, `accuracy: 0.826`
+      etc.) ist bewusst kein Ledger-Claim (kein Seed/Datum genannt, reine Beispielausgabe) —
+      nicht als Diskrepanz gewertet.
 
 ### Textvorlage "What is Maestra" (abgestimmt 2026-07-06, verbatim verwenden)
 
@@ -428,6 +436,12 @@ Abgestimmte Positionierungssätze (für Posts/LinkedIn/Gespräche, nicht README-
   unter anderem auf echten Kaggle-Wettbewerben."
 - Hero-Zeile: "Measured judgment, not model opinion: an agentic ML system where
   every decision has to earn its place through evidence."
+
+**P4 (Cody-Anteile) — abgeschlossen (2026-07-07).** README/Case-Study/Architektur-Writeup stehen,
+Konsistenz-Pass gelaufen (ein Fund, an Helena). Offen (Helenas Teil, nicht Cody): der
+10-Minuten-Pfad ist inhaltlich vollständig, aber der Testlauf mit einer unbeteiligten Person
+braucht Helena zu organisieren — kann erst nach dem P2b-Video (noch nicht aufgenommen) sinnvoll
+stattfinden.
 
 **P4 Done:** 10-Minuten-Pfad vollständig; Testlauf mit einer unbeteiligten Person
 (Helena organisiert); die Person kann Maestra in zwei Sätzen erklären.
