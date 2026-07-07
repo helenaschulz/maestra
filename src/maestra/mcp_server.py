@@ -1,6 +1,7 @@
 """Maestra as an MCP tool backend for LLM frontends (Claude Desktop/Code) — the non-DS channel:
-consume verdicts, never build models. Three opinionated, budget-capped tools, each wrapping
-existing Maestra machinery (`audit.py`, `validation_strategist.py`, `pipeline.py`). Every return
+consume verdicts, never build models. Four opinionated, budget-capped tools, each wrapping
+existing Maestra machinery (`audit.py`, `validation_strategist.py`, `pipeline.py`,
+`backtest_audit.py`). Every return
 value is a structured verdict record (a plain dict), never a model or a raw DataFrame; rejection
 (too few rows, missing target, budget exceeded) is a first-class, reasoned result, not a
 traceback. No selectable parameters beyond path/target/model — conservative CV settings and a
@@ -44,11 +45,13 @@ _MIN_ROWS = 50  # below this, any judgment (LLM or CV) is noise, not signal -- a
 # at ~253s against a 300s ceiling (~16% slack). Both were tightened (less nominal AutoGluon time)
 # and given real headroom (a higher backstop) so the backstop stays a genuine safety net, not a
 # routine trip on ordinary real-world-sized data.
-_BUDGETS = {"audit_csv": 60.0, "check_validation": 150.0, "feasibility": 360.0}
+_BUDGETS = {"audit_csv": 60.0, "check_validation": 150.0, "feasibility": 360.0,
+           "audit_backtest": 150.0}
 _CHECK_VALIDATION_TIME_LIMIT = 10  # seconds per fold, both CV arms
 _CHECK_VALIDATION_FOLDS = 3
 _FEASIBILITY_TIME_LIMIT = 45  # seconds per fold
 _FEASIBILITY_FOLDS = 3
+_BACKTEST_TIME_LIMIT = 10  # seconds per fit (up to 2 x 3 origins + 1 adversarial check)
 
 
 def _reject(reason: str, **extra) -> dict:
@@ -56,18 +59,19 @@ def _reject(reason: str, **extra) -> dict:
     return {"verdict": "rejected", "reason": reason, **extra}
 
 
-def _load_and_check(path: str, target: str) -> tuple[pd.DataFrame | None, dict | None]:
-    """Shared entry guard for every tool: load the CSV, check the target exists and there are
-    enough rows. Returns ``(df, None)`` on success or ``(None, rejection_dict)`` on failure."""
+def _load_and_check(path: str, target: str, *other_required: str) -> tuple[pd.DataFrame | None, dict | None]:
+    """Shared entry guard for every tool: load the CSV, check the target (and any other
+    required columns, e.g. a time column) exist, and there are enough rows. Returns
+    ``(df, None)`` on success or ``(None, rejection_dict)`` on failure."""
     try:
         df = pd.read_csv(path)
     except FileNotFoundError:
         return None, _reject(f"file not found: {path}")
     except pd.errors.EmptyDataError:
         return None, _reject(f"CSV is empty: {path}")
-    if target not in df.columns:
-        return None, _reject(f"target column {target!r} not in {path}",
-                             columns=list(df.columns))
+    for col in (target, *other_required):
+        if col not in df.columns:
+            return None, _reject(f"column {col!r} not in {path}", columns=list(df.columns))
     if len(df) < _MIN_ROWS:
         return None, _reject(
             f"only {len(df)} rows — too few for a reliable judgment (need >= {_MIN_ROWS})",
@@ -283,6 +287,55 @@ def feasibility(path: str, target: str, model: str = "gpt-4o") -> dict:
     "strongest_drivers": [{"feature": "tenure_months", "importance": 0.31}, ...], ...}
     """
     return _with_budget(_feasibility, tool="feasibility", path=path, target=target, model=model)
+
+
+# --- Tool 4: audit_backtest --------------------------------------------------------------
+
+def _audit_backtest(path: str, target: str, time_column: str, series_column: str | None,
+                    model: str) -> dict:
+    df, err = _load_and_check(path, target, time_column)
+    if err:
+        return err
+    from maestra.backtest_audit import audit_backtest, write_backtest_audit_html
+
+    report = audit_backtest(df, target, time_column, model=model, series_column=series_column,
+                            time_limit=_BACKTEST_TIME_LIMIT, csv=path)
+    html_path = f"{path}.backtest_audit.html"
+    write_backtest_audit_html(report, html_path)
+    return {
+        "verdict": "ok",
+        "risk_level": report.risk_level,
+        "future_leaks": report.future_leaks,
+        "split_design": report.split_design,
+        "series_leak_auc": report.series_leak_auc,
+        "target_framing": report.target_framing,
+        "html_report": html_path,
+    }
+
+
+@mcp.tool()
+def audit_backtest(path: str, target: str, time_column: str, series_column: str | None = None,
+                   model: str = "gpt-4o") -> dict:
+    """Audit an EXISTING forecasting setup for backtest leakage. Checks (1) whether any column
+    would actually be unknown at real forecast time (LLM-flagged, correlation-corroborated),
+    (2) whether a naive (no-gap) backtest MEASURABLY overstates quality versus an embargoed one,
+    across several rolling origins — quantified, not asserted, using the same statistical test
+    every other Maestra gate uses, (3) with a series column, whether a single global model can
+    tell train and test apart across the time boundary (adversarial check). Trains no
+    deployable model — every fit here is a diagnostic, budget-bounded backtest replication.
+
+    Returns {"verdict": "ok", "risk_level": "low"|"elevated"|"high", "future_leaks": [...],
+    "split_design": {"mean_gap": ..., "direction": "optimistic (dangerous)"|"pessimistic (safe)"|
+    "undecided", "n_origins": ..., ...} | None, "series_leak_auc": float | None,
+    "target_framing": {...} | None, "html_report": "<path>"} — or
+    {"verdict": "rejected", "reason": "..."}.
+
+    Example: audit_backtest("data/sales.csv", "units_sold", "date", series_column="store_id")
+    might return {"verdict": "ok", "risk_level": "high",
+    "split_design": {"direction": "optimistic (dangerous)", "mean_gap": 12.4, ...}, ...}
+    """
+    return _with_budget(_audit_backtest, tool="audit_backtest", path=path, target=target,
+                        time_column=time_column, series_column=series_column, model=model)
 
 
 def main() -> None:

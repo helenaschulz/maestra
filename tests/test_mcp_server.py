@@ -213,6 +213,41 @@ def test_feasibility_rejects_when_pipeline_produces_no_cv(tmp_path, monkeypatch)
     assert result["achievable_quality"] is None
 
 
+# --- Tool 4: audit_backtest ---------------------------------------------------------------
+
+def _forecast_df(n=100):
+    return pd.DataFrame({"date": range(n), "x": range(n), "sales": [i % 7 for i in range(n)]})
+
+
+def _backtest_report(**over):
+    from maestra.backtest_audit import BacktestAuditReport
+    base = dict(csv="x.csv", n_rows=100, target="sales", time_column="date", series_column=None)
+    base.update(over)
+    return BacktestAuditReport(**base)
+
+
+def test_audit_backtest_missing_time_column_is_a_structured_rejection(tmp_path):
+    p = tmp_path / "data.csv"
+    _forecast_df().to_csv(p, index=False)
+    result = srv.audit_backtest(str(p), "sales", "no_such_column")
+    assert result["verdict"] == "rejected" and "no_such_column" in result["reason"]
+
+
+def test_audit_backtest_happy_path(tmp_path, monkeypatch):
+    p = tmp_path / "data.csv"
+    _forecast_df().to_csv(p, index=False)
+    report = _backtest_report(future_leaks=[{"column": "x", "reason": "r",
+                                             "correlation_with_target": 0.9}])
+    monkeypatch.setattr("maestra.backtest_audit.audit_backtest", lambda *a, **k: report)
+    monkeypatch.setattr("maestra.backtest_audit.write_backtest_audit_html", lambda *a, **k: None)
+
+    result = srv.audit_backtest(str(p), "sales", "date", series_column="store_id")
+    assert result["verdict"] == "ok"
+    assert result["risk_level"] == "high"
+    assert result["future_leaks"] == [{"column": "x", "reason": "r", "correlation_with_target": 0.9}]
+    assert result["html_report"] == f"{p}.backtest_audit.html"
+
+
 # --- entry point -------------------------------------------------------------------------
 
 def test_main_loads_dotenv_before_running_the_server(monkeypatch):
