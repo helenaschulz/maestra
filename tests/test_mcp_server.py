@@ -211,3 +211,13 @@ def test_feasibility_rejects_when_pipeline_produces_no_cv(tmp_path, monkeypatch)
     result = srv.feasibility(str(p), "y")
     assert result["verdict"] == "rejected"
     assert result["achievable_quality"] is None
+
+
+# --- entry point -------------------------------------------------------------------------
+
+def test_main_loads_dotenv_before_running_the_server(monkeypatch):
+    calls = []
+    monkeypatch.setattr("maestra.config.load_dotenv", lambda: calls.append("dotenv"))
+    monkeypatch.setattr(srv.mcp, "run", lambda: calls.append("run"))
+    srv.main()
+    assert calls == ["dotenv", "run"]

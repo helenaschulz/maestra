@@ -271,7 +271,14 @@ def feasibility(path: str, target: str, model: str = "gpt-4o") -> dict:
 
 
 def main() -> None:
-    """Entry point for the ``maestra-mcp`` console script — starts the server over stdio."""
+    """Entry point for the ``maestra-mcp`` console script — starts the server over stdio.
+
+    Loads ``.env`` first, same as every other entry point (`cli.py`, `audit.py`): an MCP
+    frontend launches this as a bare subprocess, not through a shell that already sourced it.
+    """
+    from maestra.config import load_dotenv
+
+    load_dotenv()
     mcp.run()
 
 
