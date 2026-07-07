@@ -188,3 +188,25 @@ def validate_fold_strategy(proposal: dict, df: pd.DataFrame, target: str) -> tup
     for w in warnings:
         log.append(f"LEAKAGE WARNING {w.get('column')!r}: {w.get('reason')}")
     return verified, log
+
+
+def check_validation(df: pd.DataFrame, target: str, *, model: str = "gpt-4o",
+                     description: str | None = None) -> dict:
+    """Public, DataFrame-input API (P3): how should folds be built for ``df``/``target``?
+
+    A thin wrapper around :func:`propose_fold_strategy` + :func:`validate_fold_strategy` —
+    the same two calls :func:`~maestra.audit.audit` already makes internally. CSV loading is
+    the CLI's job (``maestra-audit``); this takes an in-memory DataFrame, for library/notebook
+    use. Unlike the MCP server's ``check_validation`` tool, this does NOT run a CV-measured
+    optimism gap — that is an MCP-specific value-add, not core Validation Strategist behavior.
+
+    Returns ``{"strategy": "random"|"group"|"time"|"time_local", "group_column": ...,
+    "time_column": ..., "period_column": ..., "rationale": "...", "leakage_warnings": [...],
+    "log": [...]}``.
+    """
+    from maestra.profiling import description_context, profile_dataframe
+
+    proposal = propose_fold_strategy(model, profile_dataframe(df, target), target,
+                                     description_context(description))
+    verified, log = validate_fold_strategy(proposal, df, target)
+    return {**verified, "log": log}

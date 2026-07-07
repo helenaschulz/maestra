@@ -894,6 +894,43 @@ control show the effect **vanishes** (not shrinks) when column semantics are rem
 is the mechanism, and the arbiter is what converts that mechanism into only-upside (2 wins, 0
 losses, noise refused).
 
+## P3 — the arbiter as a generic DS tool, and two spikes (2026-07-07)
+
+`compare()` (`src/maestra/compare.py`), the P3 public API, was verified end to end on real
+sklearn estimators (no LLM, no AutoGluon): `compare(Lasso(alpha=10), LinearRegression(), df, "y")`
+on a clean linear synthetic signal correctly calls `LinearRegression` "improved" (mean paired
+delta +0.13 R², `n_folds=4`) — the same `paired_delta_test`/Nadeau-Bengio machinery every
+internal gate uses (N1), now reachable without training a single AutoGluon model.
+
+**AutoGluon-as-optional-dependency investigation.** Verified via grep: exactly two files in
+`src/maestra` import `autogluon.tabular` at module level (`engine.py`, `validation.py`) — both
+now import it LAZILY, inside the 3 functions that actually construct a `TabularPredictor`.
+Verified live: `sys.modules["autogluon"] = None; import maestra; from maestra import compare` and
+a real `compare()` call both succeed with AutoGluon completely absent. The `pyproject.toml`
+DEPENDENCY itself was deliberately NOT made optional — that would mean `pip install -e .` no
+longer yields an immediately-runnable `maestra`/`maestra-audit`/`-bench`/`-mlebench`/`-mcp` CLI
+without an extra install step, breaking the project's existing zero-friction install contract
+(a Stopp-Trigger case, not mine to decide unilaterally). The Colab notebook
+(`docs/examples/compare_quickstart.ipynb`) works around this with `pip install --no-deps`
+instead, which needs no packaging change.
+
+**TabPFN spike — aborted, setup problem.** `pip install tabpfn` installs cleanly (8.0.8), but
+`TabPFNClassifier.fit()` requires a ONE-TIME interactive license acceptance (browser login at
+priorlabs.ai + a personal `TABPFN_TOKEN` API key) before it will download model weights — not
+obtainable non-interactively. No `TabPFNEngine` was built; this is exactly the "setup problem,
+note the finding, don't force it" case the task explicitly allows for.
+
+**A real, environment-only finding, not a code defect:** running the full 293-test offline
+suite as a single `pytest` process intermittently stalled partway through (reproducibly at
+`test_pipeline.py::test_cv_path_submission_also_clips_negative_predictions`, 0% CPU, no
+progress for minutes) on this specific long-lived local dev machine — traced to `AutogluonModels/`
+having grown to **91 GB** over the session's many real AutoGluon runs (disk was at 97%,
+15 GB free). Cleared (it is gitignored, purely regenerable model cache; nothing tracked was
+lost). The suite passes cleanly and quickly in every other configuration checked: every
+individual test file alone, and the full 293 tests split into two ~150-test halves as separate
+processes (151 + 142 passed, ~9s each) — strong evidence the code is correct and this was pure
+single-process resource accumulation on a heavily-used machine, not a bug introduced by P3.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain

@@ -7,6 +7,14 @@ training part via the existing fit/transform separation, so the score is honest.
 
 Adversarial validation checks whether train and test are drawn from the same distribution
 by training a classifier to tell them apart; an AUC near 0.5 means no detectable shift.
+
+``cross_validate``'s ``engine`` parameter (P3) is engine-agnostic in name only: the default
+(``None``/an ``AutoGluonEngine``) is the untouched AutoGluon path above; any OTHER
+:class:`~maestra.engine.Engine` (e.g. ``SklearnEngine``) takes the separate, simpler
+``_cross_validate_with_engine`` path, used by ``compare()`` to run the arbiter over arbitrary
+sklearn-compatible estimators. ``TabularPredictor`` is imported LAZILY (inside
+``adversarial_validation``, its only user here) so this module — hence the engine-agnostic
+CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.py``'s docstring).
 """
 from __future__ import annotations
 
@@ -14,7 +22,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from autogluon.tabular import TabularPredictor
 from sklearn.model_selection import (
     GroupKFold,
     KFold,
@@ -25,7 +32,7 @@ from sklearn.model_selection import (
 from sklearn.utils.multiclass import type_of_target
 
 from maestra.cleaning import fit_cleaning_plan
-from maestra.engine import predict, predict_proba, train_and_evaluate
+from maestra.engine import AutoGluonEngine, Engine, predict, predict_proba, train_and_evaluate
 from maestra.feature_engineering import fit_feature_plan
 
 _ADV_LABEL = "__is_test__"
@@ -149,6 +156,10 @@ def _is_classification(y: pd.Series) -> bool:
     continuous target into StratifiedKFold (crashing on singleton "classes"). So for numeric
     targets we additionally require a small number of distinct values; string/bool targets
     stay classification as-is. AutoGluon applies its own, similar inference for training.
+
+    Duplicated (not shared) in ``engine.py::_looks_like_classification`` for
+    ``LightGBMEngine`` — that module is imported FROM here, so importing back would cycle.
+    Keep both in sync if this heuristic changes.
     """
     y = y.dropna()
     if type_of_target(y) not in ("binary", "multiclass"):
@@ -247,6 +258,33 @@ def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan, gen
     return train, val
 
 
+def _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds, n_folds,
+                                stratified, engine: Engine, generated_features, classification):
+    """The P3 engine-agnostic CV path (see :func:`cross_validate`'s ``engine`` doc): one
+    ``engine.fit``/``.score`` per fold, reusing the same fold-independent cleaning/FE fitting
+    as the AutoGluon path. ``engine.score``'s contract (see :class:`~maestra.engine.Engine`)
+    fixes greater-is-better, so no metric-direction bookkeeping is needed here."""
+    fold_scores = []
+    for train_idx, val_idx in folds:
+        proc_train, proc_val = _process_fold(
+            df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan,
+            generated_features)
+        X_train, y_train = proc_train.drop(columns=[target]), proc_train[target]
+        X_val, y_val = proc_val.drop(columns=[target]), proc_val[target]
+        fitted = engine.fit(X_train, y_train)
+        fold_scores.append(float(fitted.score(X_val, y_val)))
+    return CVResult(
+        eval_metric=f"{type(engine).__name__}.score",
+        problem_type="classification" if classification else "regression",
+        fold_scores=fold_scores,
+        mean=float(np.mean(fold_scores)),
+        std=float(np.std(fold_scores)),
+        n_folds=n_folds,
+        stratified=stratified,
+        greater_is_better=True,
+    )
+
+
 def cross_validate(
     df: pd.DataFrame,
     target: str,
@@ -266,6 +304,7 @@ def cross_validate(
     presets: str | None = None,
     sample_weight: str | None = None,
     target_transform=None,
+    engine: "Engine | None" = None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -282,6 +321,15 @@ def cross_validate(
             (regression only). Each fold trains on ``forward(target)``; predictions are
             inverted back and the fold is scored in ORIGINAL space via :func:`_ag_score`,
             so the result pairs cleanly against an untransformed base CV on the same folds.
+        engine: ``None`` (default) or an :class:`~maestra.engine.AutoGluonEngine` instance ->
+            the AutoGluon path below, unchanged (``time_limit``/``model_dir``/``presets``/
+            ``sample_weight``/``target_transform``/a custom AutoGluon ``Scorer`` all apply).
+            Any OTHER :class:`~maestra.engine.Engine` (e.g. :class:`~maestra.engine.SklearnEngine`)
+            -> a separate, simpler path (P3): per-fold ``engine.fit``/``.score``, no
+            presets/sample_weight/target_transform/custom-Scorer support (AutoGluon-native
+            concepts with no equivalent here), ``eval_metric`` unused, OOF predictions/probs
+            not collected. Used by ``compare()`` to run the arbiter over arbitrary
+            sklearn-compatible estimators.
 
     Returns:
         A :class:`CVResult` with the per-fold scores and their mean/std.
@@ -291,6 +339,11 @@ def cross_validate(
     folds = _make_folds(df, target, n_folds, seed, use_stratified,
                         group_column=group_column, time_column=time_column,
                         period_column=period_column)
+
+    if engine is not None and not isinstance(engine, AutoGluonEngine):
+        return _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds,
+                                           n_folds, use_stratified, engine, generated_features,
+                                           classification)
 
     fold_scores: list[float] = []
     # ``eval_metric`` (a metric string OR a custom AutoGluon Scorer object) is passed UNCHANGED
@@ -409,6 +462,8 @@ def adversarial_validation(
 
     Returns None if there are no shared feature columns to compare.
     """
+    from autogluon.tabular import TabularPredictor
+
     data, feats = _build_adversarial_data(train_df, test_df, target, cleaning_plan)
     if data is None:
         return None

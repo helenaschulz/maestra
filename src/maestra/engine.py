@@ -3,13 +3,32 @@
 The LLM never computes. Train/holdout split, model search, hyperparameter tuning and
 metric calculation all happen here, inside AutoGluon. This module returns plain data
 (leaderboard, metrics) and prints nothing, so it is easy to test and reuse.
+
+Also defines the minimal ``Engine`` fit/predict protocol (P3): ``SklearnEngine`` lets
+``compare()`` (see ``maestra.__init__``) run the arbiter over ANY sklearn-compatible
+estimator, not just AutoGluon. ``LightGBMEngine`` is a fast proxy engine (LightGBM is
+already a transitive AutoGluon dependency) for quick checks where a full AutoGluon fit
+would be overkill. ``AutoGluonEngine`` exists for API symmetry with ``SklearnEngine``
+and is usable standalone, but ``validation.py::cross_validate``'s existing AutoGluon path
+(presets, sample_weight, custom Scorer objects, target transforms) is untouched code, not
+routed through it — those are AutoGluon-native concepts with no sklearn equivalent, so
+unifying them into one fit/predict interface would either lose functionality or bloat the
+interface. ``cross_validate`` special-cases ``engine is None`` (and ``AutoGluonEngine``
+instances) to keep that path byte-identical.
+
+``TabularPredictor`` is imported LAZILY (inside the functions that construct one), not at
+module level: this lets ``import maestra`` (hence ``SklearnEngine``/``compare()``) succeed
+even where AutoGluon isn't installed (P3's Colab notebook uses a ``--no-deps`` install for
+exactly this). ``autogluon.tabular[all]`` stays a required ``pyproject.toml`` dependency —
+this is an import-time nicety, not a packaging change (see P3's docs/RESULTS.md note on why
+making the *dependency* itself optional was investigated and NOT done).
 """
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import pandas as pd
-from autogluon.tabular import TabularPredictor
 
 
 @dataclass
@@ -65,6 +84,8 @@ def train_and_evaluate(
         A :class:`TrainingResult`. The problem type and evaluation metric are inferred
         by AutoGluon from the target column.
     """
+    from autogluon.tabular import TabularPredictor
+
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
                                  sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
@@ -108,6 +129,8 @@ def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: 
     empty; ``val_score`` is AutoGluon's internal validation score. ``presets`` /
     ``sample_weight`` — see :func:`train_and_evaluate` (must match what the CV folds used).
     """
+    from autogluon.tabular import TabularPredictor
+
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
                                  sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
@@ -121,3 +144,142 @@ def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: 
         predictor=predictor,
         val_score=val_score,
     )
+
+
+def _looks_like_classification(y: pd.Series) -> bool:
+    """Same heuristic as ``validation.py::_is_classification`` (duplicated, not imported, to
+    avoid a cycle: ``validation.py`` imports FROM this module). sklearn's own
+    ``type_of_target`` calls any integer-VALUED column with >2 distinct values "multiclass" —
+    including plain regression targets like a rounded price or a count — so numeric targets
+    additionally need a small distinct-value count to actually be a class label."""
+    from sklearn.utils.multiclass import type_of_target
+
+    y = y.dropna()
+    if type_of_target(y) not in ("binary", "multiclass"):
+        return False
+    if y.dtype.kind in "iuf":
+        return y.nunique() <= 20
+    return True
+
+
+class Engine(ABC):
+    """Minimal fit/predict/score protocol so a cross-validation loop can run over ANY model,
+    not just AutoGluon. One instance is used per fold: ``fit`` receives already-cleaned
+    feature/target frames (cleaning and feature engineering stay outside the engine, in
+    ``validation.py``) and returns a fitted engine; ``score`` evaluates it on a held-out fold.
+    """
+
+    @abstractmethod
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "Engine":
+        """Fit on training rows. Returns ``self`` (fitted), so calls can be chained."""
+
+    @abstractmethod
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        """Predict labels for ``X``."""
+
+    def predict_proba(self, X: pd.DataFrame) -> pd.DataFrame | None:
+        """Predict class probabilities, or ``None`` if the wrapped model can't (default)."""
+        return None
+
+    @abstractmethod
+    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
+        """Score a fitted engine on held-out rows. Higher must always mean better — unlike
+        AutoGluon's metrics (which can be true errors, e.g. RMSE), this generic path fixes
+        the sklearn convention (accuracy, R², sklearn's ``neg_*`` losses) so CV means compare
+        cleanly across engines without a separate ``greater_is_better`` flag.
+        """
+
+
+class SklearnEngine(Engine):
+    """Wraps any sklearn-compatible estimator (fit/predict, optionally predict_proba). Cloned
+    fresh per fold via :func:`sklearn.base.clone` so folds never share fitted state."""
+
+    def __init__(self, estimator, *, scoring: str | None = None):
+        self._template = estimator
+        self._scoring = scoring
+        self._fitted = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "SklearnEngine":
+        from sklearn.base import clone
+
+        self._fitted = clone(self._template).fit(X, y)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        return pd.Series(self._fitted.predict(X), index=X.index)
+
+    def predict_proba(self, X: pd.DataFrame) -> pd.DataFrame | None:
+        if not hasattr(self._fitted, "predict_proba"):
+            return None
+        proba = self._fitted.predict_proba(X)
+        return pd.DataFrame(proba, index=X.index, columns=self._fitted.classes_)
+
+    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
+        if self._scoring is not None:
+            from sklearn.metrics import get_scorer
+
+            return float(get_scorer(self._scoring)(self._fitted, X, y))
+        return float(self._fitted.score(X, y))  # sklearn default: accuracy / R^2, both gib=True
+
+
+class LightGBMEngine(SklearnEngine):
+    """A fast, cheap-to-fit proxy engine (P3) for quick checks (e.g. a future light-weight
+    validation gate) where a full AutoGluon fit would be overkill. LightGBM is already a
+    transitive dependency of ``autogluon.tabular[all]`` — no new install, no optional dep-group
+    needed (checked 2026-07-07: ``import lightgbm`` succeeds out of the box).
+
+    Classifier vs. regressor is auto-selected from the target's type at ``fit`` time (unknown
+    at construction), matching this project's own ``_is_classification`` convention elsewhere.
+    Everything else (predict/predict_proba/score) is inherited from :class:`SklearnEngine`.
+    """
+
+    def __init__(self, *, scoring: str | None = None, **params):
+        super().__init__(estimator=None, scoring=scoring)
+        self._params = params
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "LightGBMEngine":
+        from lightgbm import LGBMClassifier, LGBMRegressor
+
+        cls = LGBMClassifier if _looks_like_classification(y) else LGBMRegressor
+        self._template = cls(verbose=-1, **self._params)
+        return super().fit(X, y)
+
+
+class AutoGluonEngine(Engine):
+    """Adapter over AutoGluon, for API symmetry with :class:`SklearnEngine` and standalone use
+    (e.g. directly via ``compare()``). NOT what ``validation.py::cross_validate`` calls for its
+    own default AutoGluon path — that path's presets/sample_weight/custom-Scorer/target-transform
+    support has no equivalent in this minimal interface, so ``cross_validate`` keeps its
+    existing, untouched code for ``engine=None``/an ``AutoGluonEngine`` instance (see module
+    docstring) rather than routing through ``fit``/``predict`` here.
+    """
+
+    def __init__(self, target: str, *, model_dir: str, time_limit: int,
+                eval_metric: str | None = None, presets: str | None = None):
+        self._target = target
+        self._model_dir = model_dir
+        self._time_limit = time_limit
+        self._eval_metric = eval_metric
+        self._presets = presets
+        self._result: TrainingResult | None = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "AutoGluonEngine":
+        train = X.assign(**{self._target: y.to_numpy()})
+        self._result = fit_predictor(train, self._target, self._time_limit, self._model_dir,
+                                     eval_metric=self._eval_metric, presets=self._presets)
+        return self
+
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        return predict(self._result.predictor, X)
+
+    def predict_proba(self, X: pd.DataFrame) -> pd.DataFrame | None:
+        if self._result.problem_type not in ("binary", "multiclass"):
+            return None
+        return predict_proba(self._result.predictor, X)
+
+    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
+        gib = getattr(self._result.predictor.eval_metric, "greater_is_better", True)
+        val = X.assign(**{self._target: y.to_numpy()})
+        metrics = self._result.predictor.evaluate(val, silent=True)
+        raw = metrics.get(self._result.eval_metric) or next(iter(metrics.values()))
+        return float(raw) if gib else -float(raw)  # normalise to this Engine's gib=True contract
