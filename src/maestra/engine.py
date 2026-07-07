@@ -6,13 +6,22 @@ metric calculation all happen here, inside AutoGluon. This module returns plain 
 
 Also defines the minimal ``Engine`` fit/predict protocol (P3): ``SklearnEngine`` lets
 ``compare()`` (see ``maestra.__init__``) run the arbiter over ANY sklearn-compatible
-estimator, not just AutoGluon. ``AutoGluonEngine`` exists for API symmetry with
-``SklearnEngine`` and is usable standalone, but ``validation.py::cross_validate``'s
-existing AutoGluon path (presets, sample_weight, custom Scorer objects, target
-transforms) is untouched code, not routed through it — those are AutoGluon-native
-concepts with no sklearn equivalent, so unifying them into one fit/predict interface
-would either lose functionality or bloat the interface. ``cross_validate`` special-cases
-``engine is None`` (and ``AutoGluonEngine`` instances) to keep that path byte-identical.
+estimator, not just AutoGluon. ``LightGBMEngine`` is a fast proxy engine (LightGBM is
+already a transitive AutoGluon dependency) for quick checks where a full AutoGluon fit
+would be overkill. ``AutoGluonEngine`` exists for API symmetry with ``SklearnEngine``
+and is usable standalone, but ``validation.py::cross_validate``'s existing AutoGluon path
+(presets, sample_weight, custom Scorer objects, target transforms) is untouched code, not
+routed through it — those are AutoGluon-native concepts with no sklearn equivalent, so
+unifying them into one fit/predict interface would either lose functionality or bloat the
+interface. ``cross_validate`` special-cases ``engine is None`` (and ``AutoGluonEngine``
+instances) to keep that path byte-identical.
+
+``TabularPredictor`` is imported LAZILY (inside the functions that construct one), not at
+module level: this lets ``import maestra`` (hence ``SklearnEngine``/``compare()``) succeed
+even where AutoGluon isn't installed (P3's Colab notebook uses a ``--no-deps`` install for
+exactly this). ``autogluon.tabular[all]`` stays a required ``pyproject.toml`` dependency —
+this is an import-time nicety, not a packaging change (see P3's docs/RESULTS.md note on why
+making the *dependency* itself optional was investigated and NOT done).
 """
 from __future__ import annotations
 
@@ -20,7 +29,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import pandas as pd
-from autogluon.tabular import TabularPredictor
 
 
 @dataclass
@@ -76,6 +84,8 @@ def train_and_evaluate(
         A :class:`TrainingResult`. The problem type and evaluation metric are inferred
         by AutoGluon from the target column.
     """
+    from autogluon.tabular import TabularPredictor
+
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
                                  sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
@@ -119,6 +129,8 @@ def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: 
     empty; ``val_score`` is AutoGluon's internal validation score. ``presets`` /
     ``sample_weight`` — see :func:`train_and_evaluate` (must match what the CV folds used).
     """
+    from autogluon.tabular import TabularPredictor
+
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
                                  sample_weight=sample_weight).fit(
         train, time_limit=time_limit, presets=presets)
@@ -132,6 +144,22 @@ def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: 
         predictor=predictor,
         val_score=val_score,
     )
+
+
+def _looks_like_classification(y: pd.Series) -> bool:
+    """Same heuristic as ``validation.py::_is_classification`` (duplicated, not imported, to
+    avoid a cycle: ``validation.py`` imports FROM this module). sklearn's own
+    ``type_of_target`` calls any integer-VALUED column with >2 distinct values "multiclass" —
+    including plain regression targets like a rounded price or a count — so numeric targets
+    additionally need a small distinct-value count to actually be a class label."""
+    from sklearn.utils.multiclass import type_of_target
+
+    y = y.dropna()
+    if type_of_target(y) not in ("binary", "multiclass"):
+        return False
+    if y.dtype.kind in "iuf":
+        return y.nunique() <= 20
+    return True
 
 
 class Engine(ABC):
@@ -192,6 +220,29 @@ class SklearnEngine(Engine):
 
             return float(get_scorer(self._scoring)(self._fitted, X, y))
         return float(self._fitted.score(X, y))  # sklearn default: accuracy / R^2, both gib=True
+
+
+class LightGBMEngine(SklearnEngine):
+    """A fast, cheap-to-fit proxy engine (P3) for quick checks (e.g. a future light-weight
+    validation gate) where a full AutoGluon fit would be overkill. LightGBM is already a
+    transitive dependency of ``autogluon.tabular[all]`` — no new install, no optional dep-group
+    needed (checked 2026-07-07: ``import lightgbm`` succeeds out of the box).
+
+    Classifier vs. regressor is auto-selected from the target's type at ``fit`` time (unknown
+    at construction), matching this project's own ``_is_classification`` convention elsewhere.
+    Everything else (predict/predict_proba/score) is inherited from :class:`SklearnEngine`.
+    """
+
+    def __init__(self, *, scoring: str | None = None, **params):
+        super().__init__(estimator=None, scoring=scoring)
+        self._params = params
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "LightGBMEngine":
+        from lightgbm import LGBMClassifier, LGBMRegressor
+
+        cls = LGBMClassifier if _looks_like_classification(y) else LGBMRegressor
+        self._template = cls(verbose=-1, **self._params)
+        return super().fit(X, y)
 
 
 class AutoGluonEngine(Engine):

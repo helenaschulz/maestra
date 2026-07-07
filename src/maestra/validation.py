@@ -12,7 +12,9 @@ by training a classifier to tell them apart; an AUC near 0.5 means no detectable
 (``None``/an ``AutoGluonEngine``) is the untouched AutoGluon path above; any OTHER
 :class:`~maestra.engine.Engine` (e.g. ``SklearnEngine``) takes the separate, simpler
 ``_cross_validate_with_engine`` path, used by ``compare()`` to run the arbiter over arbitrary
-sklearn-compatible estimators.
+sklearn-compatible estimators. ``TabularPredictor`` is imported LAZILY (inside
+``adversarial_validation``, its only user here) so this module — hence the engine-agnostic
+CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.py``'s docstring).
 """
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from autogluon.tabular import TabularPredictor
 from sklearn.model_selection import (
     GroupKFold,
     KFold,
@@ -155,6 +156,10 @@ def _is_classification(y: pd.Series) -> bool:
     continuous target into StratifiedKFold (crashing on singleton "classes"). So for numeric
     targets we additionally require a small number of distinct values; string/bool targets
     stay classification as-is. AutoGluon applies its own, similar inference for training.
+
+    Duplicated (not shared) in ``engine.py::_looks_like_classification`` for
+    ``LightGBMEngine`` — that module is imported FROM here, so importing back would cycle.
+    Keep both in sync if this heuristic changes.
     """
     y = y.dropna()
     if type_of_target(y) not in ("binary", "multiclass"):
@@ -457,6 +462,8 @@ def adversarial_validation(
 
     Returns None if there are no shared feature columns to compare.
     """
+    from autogluon.tabular import TabularPredictor
+
     data, feats = _build_adversarial_data(train_df, test_df, target, cleaning_plan)
     if data is None:
         return None

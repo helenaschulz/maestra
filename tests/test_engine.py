@@ -6,7 +6,7 @@ import pytest
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
 from maestra import engine as engine_mod
-from maestra.engine import AutoGluonEngine, SklearnEngine, TrainingResult
+from maestra.engine import AutoGluonEngine, LightGBMEngine, SklearnEngine, TrainingResult
 
 
 def _clf_data():
@@ -81,6 +81,32 @@ def test_sklearn_engine_clones_fresh_per_fit_call():
     eng.fit(X1, y1)
     assert eng._fitted is not first_fitted
     assert est.coef_ is None if hasattr(est, "coef_") else True  # the template itself never fits
+
+
+def test_lightgbm_engine_picks_a_regressor_for_a_continuous_target():
+    # enough distinct values that sklearn's type_of_target reads this as "continuous", not a
+    # low-cardinality integer-coded class label (_reg_data()'s 5 values are too few for that)
+    X = pd.DataFrame({"a": [float(i) for i in range(30)]})
+    y = pd.Series([float(2 * i) for i in range(30)])
+    eng = LightGBMEngine().fit(X, y)
+    assert type(eng._fitted).__name__ == "LGBMRegressor"
+    assert eng.predict(X) is not None
+    assert eng.predict_proba(X) is None  # a regressor has no predict_proba
+
+
+def test_lightgbm_engine_picks_a_classifier_for_a_binary_target():
+    X, y = _clf_data()
+    eng = LightGBMEngine().fit(X, y)
+    assert type(eng._fitted).__name__ == "LGBMClassifier"
+    proba = eng.predict_proba(X)
+    assert proba is not None and (proba.sum(axis=1).round(6) == 1.0).all()
+
+
+def test_lightgbm_engine_passes_through_constructor_params():
+    eng = LightGBMEngine(n_estimators=7)
+    X, y = _reg_data()
+    eng.fit(X, y)
+    assert eng._fitted.n_estimators == 7
 
 
 class _FakePredictor:
