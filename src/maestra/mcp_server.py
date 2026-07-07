@@ -36,10 +36,18 @@ _MIN_ROWS = 50  # below this, any judgment (LLM or CV) is noise, not signal -- a
 # check_validation runs two small CVs (more real compute); feasibility runs a full conservative
 # pipeline (the most expensive). Overridable by the caller for slower environments, not by the
 # LLM frontend (the tool signatures below take no budget parameter — opinionated by design).
-_BUDGETS = {"audit_csv": 60.0, "check_validation": 90.0, "feasibility": 300.0}
-_CHECK_VALIDATION_TIME_LIMIT = 15  # seconds per fold, both CV arms
+#
+# check_validation/feasibility's nominal AutoGluon time (folds x time_limit) previously left
+# almost no headroom under their own backstop -- found via a real rehearsal run against
+# docs/examples/demo/demand.csv (~10.9k rows, 2026-07-07): check_validation actually hit its 90s
+# backstop (6 fold-fits x 15s nominal = 90s already, before overhead), and feasibility finished
+# at ~253s against a 300s ceiling (~16% slack). Both were tightened (less nominal AutoGluon time)
+# and given real headroom (a higher backstop) so the backstop stays a genuine safety net, not a
+# routine trip on ordinary real-world-sized data.
+_BUDGETS = {"audit_csv": 60.0, "check_validation": 150.0, "feasibility": 360.0}
+_CHECK_VALIDATION_TIME_LIMIT = 10  # seconds per fold, both CV arms
 _CHECK_VALIDATION_FOLDS = 3
-_FEASIBILITY_TIME_LIMIT = 60  # seconds per fold
+_FEASIBILITY_TIME_LIMIT = 45  # seconds per fold
 _FEASIBILITY_FOLDS = 3
 
 
@@ -227,9 +235,16 @@ def _feasibility(path: str, target: str, model: str) -> dict:
     predictor = getattr(result.training, "predictor", None)
     if predictor is not None:
         try:
+            # feature_stage="transformed" scores AutoGluon's OWN post-processed feature names
+            # (e.g. "datetime_hour") using its internal validation split -- no external `data`
+            # needed. feature_stage="original" (the default) demands a dataset matching Maestra's
+            # cleaned+engineered schema, which isn't available here (PipelineResult doesn't expose
+            # the transformed frame); found via a real rehearsal run against docs/examples/demo
+            # (2026-07-07), where passing the raw input df raised a KeyError on AutoGluon's own
+            # derived columns.
             imp = predictor.feature_importance(
-                df.sample(min(len(df), 2000), random_state=42), subsample_size=2000,
-                num_shuffle_sets=1, time_limit=30, silent=True)
+                feature_stage="transformed", subsample_size=2000, num_shuffle_sets=1,
+                time_limit=30, silent=True)
             drivers = [{"feature": name, "importance": round(float(row["importance"]), 4)}
                        for name, row in imp.head(5).iterrows()]
         except Exception:  # noqa: BLE001 - importance is a bonus, never block the verdict on it
