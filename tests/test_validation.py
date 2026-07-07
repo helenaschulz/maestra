@@ -257,3 +257,67 @@ def test_improves_beyond_noise_falls_back_without_fold_scores():
     assert ok and delta == pytest.approx(0.05)          # 0.05 > 2*0.02
     ok, _ = improves_beyond_noise(base, CVResult("m", "binary", [], 0.83, 0.02, 3, True, True))
     assert not ok                                        # 0.03 < 0.04
+
+
+def test_cross_validate_with_a_sklearn_engine_runs_real_folds_no_autogluon():
+    """P3: engine=SklearnEngine(...) takes the separate, engine-agnostic path -- no AutoGluon
+    call at all (no monkeypatching of train_and_evaluate needed, unlike every other test here)."""
+    from sklearn.linear_model import LinearRegression
+
+    from maestra.engine import SklearnEngine
+
+    df = pd.DataFrame({"x": list(range(40)), "y": [float(2 * i) for i in range(40)]})
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None, model_dir="x",
+                        time_limit=1, n_folds=4, seed=0, engine=SklearnEngine(LinearRegression()))
+    assert cv.n_folds == 4 and len(cv.fold_scores) == 4
+    assert cv.problem_type == "regression"
+    assert cv.eval_metric == "SklearnEngine.score"
+    assert cv.greater_is_better is True
+    # a perfectly linear y = 2x -> every fold's held-out R^2 should be (near) perfect
+    assert cv.mean == pytest.approx(1.0, abs=1e-6)
+
+
+def test_cross_validate_with_engine_still_refits_cleaning_per_fold():
+    """The engine path reuses `_process_fold` -- the leakage guarantee holds there too."""
+    from sklearn.linear_model import LinearRegression
+
+    from maestra.engine import SklearnEngine
+
+    plan = {"columns_to_drop": [], "imputations": [{"column": "x", "strategy": "mean", "reason": "t"}]}
+    x = [float(i) for i in range(24)]
+    x[4] = np.nan
+    df = pd.DataFrame({"x": x, "y": [float(2 * i) for i in range(24)]})
+    cv = cross_validate(df, "y", cleaning_plan=plan, feature_plan=None, model_dir="x",
+                        time_limit=1, n_folds=2, seed=0, engine=SklearnEngine(LinearRegression()))
+    assert len(cv.fold_scores) == 2   # ran without raising on the NaN -> imputation applied per fold
+
+
+def test_cross_validate_with_engine_uses_an_explicit_scorer():
+    from sklearn.linear_model import LinearRegression
+
+    from maestra.engine import SklearnEngine
+
+    df = pd.DataFrame({"x": list(range(40)), "y": [float(2 * i) for i in range(40)]})
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None, model_dir="x",
+                        time_limit=1, n_folds=4, seed=0,
+                        engine=SklearnEngine(LinearRegression(), scoring="neg_mean_squared_error"))
+    assert cv.mean == pytest.approx(0.0, abs=1e-6)  # perfect fit -> MSE 0 -> neg_MSE 0
+
+
+def test_cross_validate_autogluon_engine_instance_takes_the_untouched_ag_path(monkeypatch):
+    """Passing an AutoGluonEngine explicitly (the spec's 'existing callers set AutoGluonEngine')
+    must behave identically to engine=None -- both dispatch to the untouched AutoGluon branch,
+    not to _cross_validate_with_engine."""
+    from maestra.engine import AutoGluonEngine
+
+    df = pd.DataFrame({"x": list(range(12)), "y": [0, 1] * 6})
+    scores = iter([0.7, 0.8, 0.9])
+
+    def fake_train_and_evaluate(train, val, target, time_limit, model_dir, eval_metric=None,
+                                presets=None, sample_weight=None):
+        return TrainingResult("binary", "accuracy", pd.DataFrame(), {"accuracy": next(scores)})
+
+    monkeypatch.setattr(validation, "train_and_evaluate", fake_train_and_evaluate)
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None, model_dir="x", time_limit=1,
+                        n_folds=3, seed=0, engine=AutoGluonEngine("y", model_dir="x", time_limit=1))
+    assert cv.fold_scores == [0.7, 0.8, 0.9]  # from the mocked AutoGluon path, not from the engine
