@@ -844,6 +844,36 @@ real submission awaits Helena's go.
    Store-repeating tasks the Strategist proposed `time`, not `group`, and whether that changed the
    wins is unresolved — a controlled forced-`group` rerun is future work.
 
+## P2b generalprobe — the MCP tools' own thesis, replayed live (2026-07-07)
+
+The P2b demo rehearsal (`docs/examples/demo/SCRIPT.md`) ran all three MCP tools for real
+(`gpt-4o`, real AutoGluon, no mocks) against `docs/examples/demo/demand.csv` — Kaggle Bike Sharing
+Demand's raw training data, kept deliberately unclean so the tools find its known issues live
+rather than on pre-scrubbed input.
+
+`audit_csv`: risk_level `high` — `time` fold strategy (datetime-ordered rows) + a deterministic
+leak (`registered`, |corr| 0.971 with `count`; `count = casual + registered`, both absent from the
+real competition test set).
+
+`check_validation`: naive random-split CV `root_mean_squared_error` ≈ **5.29**; recommended
+time-ordered CV ≈ **20.27** — **optimism_gap = 14.98, "optimistic (dangerous)"**. The project's
+own CV↔LB-gap thesis (K1/K2), replayed live through the MCP surface rather than the CLI/battery
+path, on the same dataset K1 already used.
+
+`feasibility`: achievable quality (time-ordered CV, leak-cleaned by the LLM's own cleaning plan)
+`root_mean_squared_error` ≈ **77.6 (± 31.1)**; strongest drivers `datetime_hour` (178.1),
+`datetime_year` (54.2), `workingday` (51.9).
+
+**Two real bugs found and fixed by this run** (`p2-mcp-server` branch, fixup commit
+2026-07-07, ahead of `docs/MCP.md`'s writing): `feasibility`'s feature-importance call was fed the
+raw input schema and crashed with a `KeyError` on AutoGluon's own derived columns (fixed:
+`feature_stage="transformed"`, no external data needed — scores the model's post-processed
+features against its own internal validation split); `check_validation`'s and `feasibility`'s
+wall-clock backstops had almost no headroom over their nominal AutoGluon time
+(`check_validation` hit its original 90s backstop for real on this file's ~10.9k rows) — both
+loosened (150s/360s, less nominal time per fold) using the measured numbers above as the
+calibration basis.
+
 ## Where LLM judgment pays off — the whole map
 
 The systematic answer to the project's question, across every layer a conductor could touch:
