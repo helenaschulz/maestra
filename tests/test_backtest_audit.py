@@ -206,15 +206,29 @@ def test_audit_backtest_finds_a_missing_gap(monkeypatch):
     assert report.risk_level == "high"
 
 
-def test_audit_backtest_finds_a_series_leak(monkeypatch):
+def test_audit_backtest_records_series_auc_but_does_not_escalate_risk(monkeypatch):
+    """A high series-boundary AUC is RECORDED as diagnostic but must NOT drive risk_level: without
+    a time-trend control it is ~1.0 for any trending series, so it carries no verdict meaning yet
+    (the PR#6 review finding). Here nothing else is wrong (no future leak, undecided split), so a
+    ~1.0 AUC alone must stay 'low', not escalate to 'high'."""
     _patch_clean(monkeypatch)
     import maestra.validation as validation_mod
-    monkeypatch.setattr(validation_mod, "adversarial_validation", lambda *a, **k: 0.95)
+    monkeypatch.setattr(validation_mod, "adversarial_validation", lambda *a, **k: 0.999)
     df = _forecast_df()
     df["store_id"] = np.arange(len(df)) % 5
     report = audit_backtest(df, "sales", "date", model="m", series_column="store_id")
-    assert report.series_leak_auc == pytest.approx(0.95)
-    assert report.risk_level == "high"
+    assert report.series_leak_auc == pytest.approx(0.999)  # still computed and surfaced
+    assert report.risk_level == "low"                       # but NOT a verdict driver anymore
+
+
+def test_risk_level_ignores_series_auc_across_the_whole_range():
+    """The series AUC never changes the verdict, at any value -- a pure trending series with a
+    near-perfect boundary AUC and no real leak/optimism stays 'low'."""
+    for auc in (0.5, 0.65, 0.8, 0.999, 1.0):
+        report = BacktestAuditReport(csv="x", n_rows=500, target="y", time_column="t",
+                                     series_column="s", future_leaks=[], split_design=None,
+                                     series_leak_auc=auc)
+        assert report.risk_level == "low", f"series AUC {auc} must not escalate risk_level"
 
 
 def test_audit_backtest_flags_target_framing_candidate(monkeypatch):

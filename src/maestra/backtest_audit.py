@@ -225,12 +225,19 @@ def split_design_check(df: pd.DataFrame, target: str, time_column: str, *,
 def series_leak_check(df: pd.DataFrame, target: str, time_column: str, series_column: str, *,
                       test_frac: float = 0.2, time_limit: int = 15,
                       model_dir: str = "AutogluonModels/backtest_audit/series") -> float | None:
-    """Does a single global model leak across SERIES at the time boundary? Splits at the naive
-    (no-embargo) boundary and runs the project's existing adversarial-validation machinery on
-    the two halves — an AUC near 0.5 means the "before" and "after" blocks (including their
-    series membership) look interchangeable; a high AUC means the model could distinguish rows
-    from either side of the boundary beyond just time itself, a warning sign for series-level
-    leakage in a global model.
+    """Diagnostic only: split at the naive (no-embargo) time boundary and run the project's
+    existing adversarial-validation machinery on the two halves, with the series column excluded.
+
+    IMPORTANT — this does NOT control for ordinary time trend, and therefore currently carries
+    NO verdict meaning. Because the split is EXACTLY on time order, any trending or seasonal
+    series lets a classifier separate the "before" and "after" halves nearly perfectly (AUC
+    ~1.0) from plain temporal signal alone — that is EXPECTED for a real time series, not
+    evidence of series-level leakage. So a high value here must not be read as a leak and does
+    not drive :attr:`BacktestAuditReport.risk_level`; it is surfaced as caveated diagnostic in
+    the report instead. Separating true series-identity leakage from expected time trend needs a
+    control (a shuffled series-assignment null distribution over the same split) — that is F2
+    scope, not built here. Returns the AUC, or None if there is too little data on either side
+    of the boundary.
     """
     from maestra.validation import adversarial_validation
 
@@ -278,21 +285,21 @@ class BacktestAuditReport:
 
     @property
     def risk_level(self) -> str:
-        """High: a future leak found, the naive backtest is a DECIDED-optimistic lie, or a
-        series-leak AUC is strong (>0.75). Elevated: a series-leak AUC is moderate (0.6-0.75) --
-        ambiguous, worth a second look. Otherwise low, INCLUDING an "undecided" split-design
-        (no measurable gap found is the safe, not the risky, outcome -- distinct from "not
-        enough data to measure at all", which returns split_design=None and is also low: a
-        missing measurement isn't evidence of a problem, `feasibility`-style tools already
-        surface small-n concerns separately)."""
+        """High: a future leak found, or the naive backtest is a DECIDED-optimistic lie.
+        Otherwise low, INCLUDING an "undecided" split-design (no measurable gap found is the
+        safe, not the risky, outcome -- distinct from "not enough data to measure at all", which
+        returns split_design=None and is also low: a missing measurement isn't evidence of a
+        problem, `feasibility`-style tools already surface small-n concerns separately).
+
+        The series-boundary AUC is deliberately NOT a verdict driver: without a time-trend
+        control it is ~1.0 for any trending series (see :func:`series_leak_check`), so it carries
+        no verdict meaning yet and would only cry false alarm. It is shown as caveated diagnostic
+        in the report instead; F2 will add the shuffled-series control that would let a high value
+        actually mean series-level leakage."""
         if self.future_leaks:
             return "high"
         if self.split_design and self.split_design["direction"] == "optimistic (dangerous)":
             return "high"
-        if self.series_leak_auc is not None and self.series_leak_auc > 0.75:
-            return "high"
-        if self.series_leak_auc is not None and self.series_leak_auc > 0.6:
-            return "elevated"
         return "low"
 
 

@@ -187,11 +187,18 @@ def test_render_backtest_audit_optimistic_split_is_red():
     assert "RED" in html and "add a gap" in html and "0.2" in html
 
 
-def test_render_backtest_audit_series_shift_is_red():
+def test_render_backtest_audit_series_shift_is_caveated_diagnostic_not_a_red_verdict():
+    """PR#6 review fix: a high series-boundary AUC alone must NOT produce a RED verdict, and its
+    section must carry the time-trend caveat instead of the old 'leaking series identity' claim."""
     from maestra.dossier import render_backtest_audit
     report = _backtest_report(series_leak_auc=0.9, series_column="store_id")
     html = render_backtest_audit(report)
-    assert "RED" in html and "0.90" in html and "leaking series identity" in html
+    assert "RED" not in html                                  # no future leak / no optimism -> not red
+    assert "GREEN" in html                                    # verdict rests on the checks that count
+    assert "0.900" in html                                    # the AUC is still shown as diagnostic
+    assert "does not affect the verdict" in html              # explicit caveat present
+    assert "F2" in html                                       # points to the planned control
+    assert "leaking series identity" not in html             # the misleading claim is gone
 
 
 def test_render_backtest_audit_clean_is_green():

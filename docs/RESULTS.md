@@ -990,6 +990,23 @@ model trained on RANDOMLY shuffled series-assignment across the same time split)
 AUC here can be read as a series-specific warning rather than an expected property of temporal
 data. Not silently resolved — noted here for F2/a future backtest_audit revision.
 
+**Follow-up (2026-07-07, PR#6 review): the series-leak AUC no longer drives the verdict.** The
+ledger above was honest about the confound, but the shipped artifact was not: `risk_level`
+escalated to **"high"** on `series_leak_auc > 0.75`, so the HTML/MCP verdict a non-DS sees would
+have labelled every one of these ordinary trending retail series as a high-risk series leak — a
+false alarm baked into the product, contradicting this very ledger and the "verdicts, not
+build-buttons" invariant. Fixed: `series_leak_auc` is now **diagnostic only** and does NOT feed
+`risk_level` at all (neither "high" nor "elevated"). The number is still computed and shown in the
+report, but under an explicit caveat ("does not yet control for ordinary time trend; a high value
+is expected for any trending series and is not evidence of series leakage — real separation needs
+the shuffled-series control, planned for F2"). `series_leak_check`'s docstring was corrected to say
+the same (the old "beyond just time itself" claim, which the code never delivered, is gone). The
+committed `rossmann-backtest-audit.html` was re-rendered from the same measured values through the
+corrected renderer — its RED verdict still rests on the `Customers` future-feature finding (the
+real leak, unchanged), and the series-boundary section is now a caveated diagnostic rather than a
+"STRONG shift / leaking series identity" verdict block. The full shuffled-series-assignment
+control that would let a high AUC actually mean something remains F2 scope, not built here.
+
 **Target framing: store-sales' skewed `sales` target correctly flagged** (`log1p`, skewness
 7.60, mean 364.5 vs. median 10.0) — consistent with M11/K1's established retail-sales pattern
 (house-prices, bike-sharing). Rossmann's `Sales` target was correctly NOT flagged (skewness 0.60,
