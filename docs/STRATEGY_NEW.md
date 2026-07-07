@@ -218,29 +218,42 @@ Target. Konservative CV-Einstellungen, hartes Zeit- und CV-Budget. Ablehnung bei
 kleinen Daten oder untragbarem Target ist ein reguläres Ergebnis mit Begründung.
 Rückgaben sind strukturierte Verdikt-Records (dict), nie Modelle.
 
-- [ ] Optionale dep-group `mcp` in `pyproject.toml` (FastMCP / `mcp`-SDK). Core-Install
+- [x] Optionale dep-group `mcp` in `pyproject.toml` (FastMCP / `mcp`-SDK). Core-Install
       bleibt schlank.
-- [ ] Neues Modul `src/maestra/mcp_server.py` mit Entry-Point `maestra-mcp` in
+- [x] Neues Modul `src/maestra/mcp_server.py` mit Entry-Point `maestra-mcp` in
       `pyproject.toml`. Tool-Beschreibungen sind Prompts: präzise formulieren, mit
       je einem Beispiel; sie entscheiden, ob das Frontend die Tools richtig einsetzt.
-- [ ] Tool 1 `audit_csv(path: str) -> dict`: führt den bestehenden Audit aus, liefert
-      Verdikt-Record (Ampel, Stakeholder-Satz, Befunde mit Evidenz) + Pfad zum
-      HTML-Report (P1-Rendering).
-- [ ] Tool 2 `check_validation(path: str, target: str) -> dict`:
-      Fold-Strategie-Empfehlung (nutzt `validation_strategist` + adversarial
-      validation), quantifizierter Optimismus des naiven Splits, empfohlener Splitter
-      als benennbare Konfiguration (z. B. `{"strategy": "group",
-      "column": "customer_id"}`).
-- [ ] Tool 3 `feasibility(path: str, target: str) -> dict`: intern konservativer
-      Pipeline-Lauf (feste Flags, hartes Budget), Rückgabe ist die Antwort, nicht das
-      Modell: erreichbare Güte in Zieleinheiten übersetzt, stärkste Treiber
-      (Feature-Importance der Engine), größte Risiken (aus Audit), was die Güte
-      verbessern würde. Bei untragbarem Setup: strukturierte Ablehnung mit Begründung.
-- [ ] Guardrails als Code: maximale Laufzeit pro Tool-Call (konfigurierbar; Default
-      z. B. 300s für `feasibility`, 60s für die anderen), Mindest-Zeilenzahl, Abbruch
-      mit verständlicher Meldung statt Traceback.
-- [ ] Offline-Tests für alle drei Tools (LLM/AutoGluon gemockt): Happy Path,
-      Ablehnungsfall, Guardrail-Fall.
+- [x] Tool 1 `audit_csv(path: str, target: str, model="gpt-4o") -> dict`: führt den
+      bestehenden Audit aus, liefert Verdikt-Record (Risk-Level, Befunde mit Evidenz)
+      + Pfad zum HTML-Report (P1-Rendering). (Signatur weicht von der Spec ab: `audit()`
+      selbst braucht zwingend einen Target-Namen — ohne Target ist Leak-Scan/Fold-Advisor
+      nicht möglich — daher `target` als Pflichtparameter, nicht nur `path`.)
+- [x] Tool 2 `check_validation(path: str, target: str, model="gpt-4o") -> dict`:
+      Fold-Strategie-Empfehlung (`validation_strategist`), plus — nur wenn eine
+      Nicht-Random-Strategie erkannt wird — zwei echte, gepaarte `cross_validate()`-Läufe
+      (naiver Random-Split vs. empfohlene Folds, gleiche Daten/Seed) für einen
+      quantifizierten, vorzeichenrichtigen Optimismus-Gap
+      (`"optimistic (dangerous)"`/`"pessimistic (safe)"`/`"negligible"`). Adversarial
+      Validation aus der Spec-Klammer entfällt bewusst: die Tool-Signatur nimmt nur eine
+      CSV entgegen, adversarial validation braucht aber zwingend ein zweites (Test-)Set.
+- [x] Tool 3 `feasibility(path: str, target: str, model="gpt-4o") -> dict`: intern
+      konservativer Pipeline-Lauf (feste Flags: `cv_folds=3`, `fold_advisor=True`, kurzes
+      Zeitbudget), Rückgabe ist die Antwort, nicht das Modell: erreichbare Güte in
+      Zieleinheiten, stärkste Treiber (`predictor.feature_importance`, budget-begrenzt),
+      größte Risiken (aus `audit()`). Bei untragbarem Setup (keine CV-Schätzung):
+      strukturierte Ablehnung mit Begründung.
+- [x] Guardrails als Code: `_MIN_ROWS = 50`, `_with_budget` (ThreadPoolExecutor-Backstop,
+      Default 60s/90s/300s für audit_csv/check_validation/feasibility — bewusst eigene
+      Werte, da STRATEGY_NEW nur Beispielzahlen "z. B." nennt), strukturierte Ablehnung
+      (`{"verdict": "rejected", "reason": ...}`) statt Traceback für fehlende Datei,
+      fehlendes Target, zu wenig Zeilen, Budget-Überschreitung. Ehrlich dokumentierte
+      Grenze: der Backstop ist best-effort (kein Hard-Kill) — der eigentliche Kostenrahmen
+      bleibt AutoGluons eigenes `time_limit`.
+- [x] Offline-Tests für alle drei Tools (LLM/AutoGluon gemockt): Happy Path,
+      Ablehnungsfall (fehlende Datei/Target/zu wenig Zeilen), Guardrail-Fall (Timeout via
+      Toy-Funktion), plus Tool-2-spezifische Tests für beide Optimismus-Richtungen.
+      11 Tests in `test_mcp_server.py`, übersprungen ohne die optionale `mcp`-Gruppe
+      (CI installiert nur `.[dev,research]`).
 - [ ] Doku `docs/MCP.md`: Installation, Konfiguration in Claude Desktop/Code,
       Beispiel-Dialog.
 
