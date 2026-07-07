@@ -2,6 +2,7 @@
 are mocked; the structural flags and report rendering are exercised for real."""
 import numpy as np
 import pandas as pd
+import pytest
 
 from maestra import audit as audit_mod
 from maestra.audit import audit, render_report
@@ -119,3 +120,33 @@ def test_load_table_by_extension(tmp_path):
     df.to_parquet(pq)
     assert _load_table(str(csv)).equals(df)
     assert _load_table(str(pq)).equals(df)
+
+
+def test_backtest_flag_requires_time_col(tmp_path, capsys):
+    from maestra.audit import main
+
+    csv = tmp_path / "d.csv"
+    pd.DataFrame({"date": range(60), "y": range(60)}).to_csv(csv, index=False)
+    with pytest.raises(SystemExit):
+        main(["--csv", str(csv), "--target", "y", "--backtest"])
+    assert "--time-col" in capsys.readouterr().err
+
+
+def test_backtest_flag_runs_the_f1_audit(tmp_path, monkeypatch, capsys):
+    from maestra.audit import main
+    from maestra.backtest_audit import BacktestAuditReport
+
+    csv = tmp_path / "d.csv"
+    pd.DataFrame({"date": range(60), "y": range(60)}).to_csv(csv, index=False)
+    report = BacktestAuditReport(csv=str(csv), n_rows=60, target="y", time_column="date",
+                                 series_column=None, future_leaks=[], split_design=None)
+    monkeypatch.setattr("maestra.backtest_audit.audit_backtest", lambda *a, **k: report)
+    monkeypatch.setattr("maestra.backtest_audit.write_backtest_audit_html", lambda *a, **k: None)
+
+    html_path = str(tmp_path / "out.html")
+    rc = main(["--csv", str(csv), "--target", "y", "--backtest", "--time-col", "date",
+              "--html", html_path])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Backtest audit" in out and "Risk level: low" in out
+    assert f"HTML backtest audit written to {html_path}" in out

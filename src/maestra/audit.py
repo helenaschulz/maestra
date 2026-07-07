@@ -17,6 +17,10 @@ fast and cheap: one structured LLM call plus a profile. The report opens with an
 summary and an overall risk verdict, every finding carries a recommended action, and the output
 is available in English and German (``--lang de``) — the LLM's own rationale sentences stay in
 the pipeline language.
+
+``--backtest --time-col COL [--series-col COL]`` switches to F1's backtest audit
+(``backtest_audit.py``) for an EXISTING forecasting setup instead: temporal leakage, a
+measured naive-vs-embargoed backtest gap, and a series-boundary shift check.
 """
 from __future__ import annotations
 
@@ -331,13 +335,46 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--time-limit", type=int, default=30, help="Budget for the adversarial classifier.")
     p.add_argument("--out", help="Write the Markdown report here (default: stdout).")
     p.add_argument("--html", metavar="PATH", help="Also write a clickable HTML audit to PATH.")
+    p.add_argument("--backtest", action="store_true",
+                   help="Run the F1 backtest audit (temporal leakage in an existing forecasting "
+                        "setup) instead of the pre-modelling data-risk audit. Needs --time-col.")
+    p.add_argument("--time-col", metavar="COLUMN",
+                   help="Time/ordering column for --backtest.")
+    p.add_argument("--series-col", metavar="COLUMN",
+                   help="Optional series-id column for --backtest (per-entity leak check).")
     args = p.parse_args(argv)
     load_dotenv()
 
     train_df = _load_table(args.csv)
-    test_df = _load_table(args.test) if args.test else None
     description = open(args.description).read() if args.description else None
 
+    if args.backtest:
+        if not args.time_col:
+            p.error("--backtest requires --time-col")
+        from maestra.backtest_audit import audit_backtest, write_backtest_audit_html
+
+        bt_report = audit_backtest(train_df, args.target, args.time_col, model=args.model,
+                                   series_column=args.series_col, description=description,
+                                   time_limit=args.time_limit, csv=args.csv)
+        summary = (
+            f"Backtest audit: {args.csv}\nRisk level: {bt_report.risk_level}\n"
+            f"Future-leaking columns: {[f['column'] for f in bt_report.future_leaks] or 'none'}\n"
+            f"Split design: {bt_report.split_design}\n"
+            f"Series-leak AUC: {bt_report.series_leak_auc}\n"
+            f"Target-framing candidate: {bt_report.target_framing}\n"
+        )
+        if args.out:
+            with open(args.out, "w") as fh:
+                fh.write(summary)
+            print(f"Backtest audit written to {args.out}")
+        else:
+            print(summary)
+        if args.html:
+            write_backtest_audit_html(bt_report, args.html)
+            print(f"HTML backtest audit written to {args.html}")
+        return 0
+
+    test_df = _load_table(args.test) if args.test else None
     report = audit(train_df, args.target, model=args.model, test_df=test_df,
                    description=description, time_limit=args.time_limit, csv=args.csv)
     text = render_report(report, lang=args.lang)
