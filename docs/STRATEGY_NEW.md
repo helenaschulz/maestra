@@ -437,6 +437,12 @@ Abgestimmte Positionierungssätze (für Posts/LinkedIn/Gespräche, nicht README-
 - Hero-Zeile: "Measured judgment, not model opinion: an agentic ML system where
   every decision has to earn its place through evidence."
 
+**P4 (Cody-Anteile) — abgeschlossen (2026-07-07).** README/Case-Study/Architektur-Writeup stehen,
+Konsistenz-Pass gelaufen (ein Fund, an Helena). Offen (Helenas Teil, nicht Cody): der
+10-Minuten-Pfad ist inhaltlich vollständig, aber der Testlauf mit einer unbeteiligten Person
+braucht Helena zu organisieren — kann erst nach dem P2b-Video (noch nicht aufgenommen) sinnvoll
+stattfinden.
+
 **P4 Done:** 10-Minuten-Pfad vollständig; Testlauf mit einer unbeteiligten Person
 (Helena organisiert); die Person kann Maestra in zwei Sätzen erklären.
 
