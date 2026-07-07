@@ -944,9 +944,13 @@ The README's existing "Case study: Maestra caught its own mistake" section (Play
 dropped-photometric-bands leak) states the baseline comparison exposed damage "0.955 → 0.919".
 This ledger's only S6E6 entry (Kaggle submissions, above) records a different number pair: public
 `0.95045` ≈ holdout `0.9516` — the final, fixed submission's score, not the before/after
-comparison the README describes. The 0.955/0.919 pair has no traceable source here. **Left as-is,
-flagged for Helena**: either recover the numbers from `runs.jsonl` and add a proper ledger line, or
-correct/remove the claim in the README. The Titanic CLI-transcript example elsewhere in the README
+comparison the README describes. The 0.955/0.919 pair has no traceable source here (it survives only
+as a narrative note in the now-untracked `CHANGELOG.md`; `runs.jsonl` has no Stellar/S6E6 run, so it
+is not reproducible from what the repo holds). **Resolved 2026-07-07:** the unbacked pair was removed
+from the README; the case study keeps its qualitative point ("only the baseline comparison exposed the
+damage") and the ledger-backed submission score (`0.95045` public ≈ `0.9516` holdout). Restoring a
+real number would require Cody to re-run the with/without-photometric-bands experiment on S6E6 and add
+a proper ledger line — optional strengthening, not required for the claim to be honest. The Titanic CLI-transcript example elsewhere in the README
 (`accuracy: 0.826`, etc.) is an illustrative single-command output, not a dated/seeded claim, and
 is not treated as a ledger discrepancy.
 

@@ -19,10 +19,12 @@ mlebench_out/
 
 # Local working docs (kept out of the repo for now; RESULTS.md is committed)
 docs/STRATEGY.md
+docs/STRATEGY_NEW.md
 docs/RELATED_WORK.md
 docs/CHANGELOG.md
+docs/Maestra_Beschreibung_2026-07.docx
 
-# Session context, stays internal (2026-07-06)
+# Session context, stays internal
 CLAUDE.md
 
 # Second venv (Python 3.11, mlebench runs) + tool caches
