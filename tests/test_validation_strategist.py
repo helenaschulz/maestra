@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from maestra import validation
-from maestra.validation_strategist import validate_fold_strategy
+from maestra.validation_strategist import check_validation, validate_fold_strategy
 
 
 def _grouped_df(n_groups=10, rows_per_group=6):
@@ -275,3 +275,32 @@ def test_few_entity_group_gets_a_treatment_factor_warning():
         {"strategy": "group", "group_column": "arm", "rationale": "r"}, df, "y")
     assert verified["strategy"] == "group"                       # judgment not overridden
     assert any("treatment/design factor" in line for line in log)
+
+
+def test_check_validation_is_a_thin_dataframe_wrapper(monkeypatch):
+    """P3 public API: DataFrame in, no CSV/CLI involved, same two calls audit() makes
+    internally (propose_fold_strategy + validate_fold_strategy), plus the log."""
+    from maestra import validation_strategist as vs_mod
+
+    captured = {}
+
+    def fake_propose(model, profile, target, context=None):
+        captured["model"], captured["context"] = model, context
+        return {"strategy": "group", "group_column": "customer_id", "rationale": "r"}
+
+    monkeypatch.setattr(vs_mod, "propose_fold_strategy", fake_propose)
+    df = _grouped_df()
+    result = check_validation(df, "y", model="gpt-4o", description="a churn dataset")
+    assert result["strategy"] == "group" and result["group_column"] == "customer_id"
+    assert any("FOLDS group by 'customer_id'" in line for line in result["log"])
+    assert captured["model"] == "gpt-4o" and "churn dataset" in captured["context"]
+
+
+def test_check_validation_reachable_as_public_maestra_import(monkeypatch):
+    from maestra import check_validation as public_check_validation
+    from maestra import validation_strategist as vs_mod
+
+    monkeypatch.setattr(vs_mod, "propose_fold_strategy",
+                        lambda model, profile, target, context=None: {"strategy": "random"})
+    result = public_check_validation(_grouped_df(), "y")
+    assert result["strategy"] == "random"
