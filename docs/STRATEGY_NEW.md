@@ -320,9 +320,12 @@ Colab-Notebook läuft; alle Alt-Tests unverändert grün.
 
 **Ziel:** Die Substanz lesbar machen. Cody entwirft, Helena redigiert.
 
-- [ ] README umbauen, Reihenfolge: (1) These in zwei Sätzen ("gemessenes Urteil statt
-      LLM-Meinung"; das LLM entscheidet nie), (2) der 10-Minuten-Pfad (Report-Links
-      aus P1, Video aus P2b, Colab aus P3), (3) Kern-Evidenz als kompakte Tabelle mit
+- [ ] README umbauen, Reihenfolge: (1) "What is Maestra" in drei Zoom-Stufen
+      (Beschreibung → Ablauf eines Runs → Einordnung "automatisiert die Urteilsarbeit,
+      nicht den Modellbau"; abgestimmter Text vom 2026-07-06, Kurzfassung steht in
+      CLAUDE.md "Was Maestra ist" — professionelle Sprache, keine umgangssprachlichen
+      Zuspitzungen), (2) der 10-Minuten-Pfad (Report-Links aus P1, Video aus P2b,
+      Colab aus P3), (3) Kern-Evidenz als kompakte Tabelle mit
       Ledger-Verweisen, (4) Vokabular-Mapping in Marktbegriffe: structured outputs
       (`llm.py`), retrieval-augmented research (`research.py` + `websearch.py`),
       Multi-Agent mit empirischer Konfliktlösung (Skeptic/Strategist/Diagnosis),
@@ -344,6 +347,37 @@ Colab-Notebook läuft; alle Alt-Tests unverändert grün.
 - [ ] Konsistenz-Pass: jede Zahl in README/Case Study gegen `docs/RESULTS.md` prüfen
       (Invariante). Diskrepanzen nicht stillschweigend fixen, sondern auflisten und
       an Helena geben.
+
+### Textvorlage "What is Maestra" (abgestimmt 2026-07-06, verbatim verwenden)
+
+README-Kopf (englisch):
+
+> **Maestra is an agentic AutoML system for tabular data.** Give it a dataset and a
+> target, and it delivers predictive models together with a trustworthy estimate of
+> the achievable performance. Specialized LLM agents read the semantics of your data
+> and surface the risks that sink real-world ML projects: data leakage, temporal and
+> group structure, flawed validation design. Every agent decision must pass an
+> empirical gate — only interventions that measurably improve results in a controlled
+> experiment are adopted; the LLM itself never decides. The result is a model backed
+> by auditable evidence — or a reasoned refusal when the data cannot support the
+> question.
+>
+> Maestra doesn't automate model building — modern AutoML engines already do that.
+> It automates the senior data scientist's judgment around it: risk detection,
+> validation design, honest expectation-setting. That is the blind spot of every
+> AutoML pipeline, and the estimates' reliability is demonstrated against external
+> ground truth, including real Kaggle leaderboards.
+
+Abgestimmte Positionierungssätze (für Posts/LinkedIn/Gespräche, nicht README-pflichtig):
+- DS/technisch: "Maestra ist ein agentisches ML-System über AutoGluon, in dem jede
+  LLM-Entscheidung ein empirisches Gate passieren muss: paired CV auf identischen
+  Folds, Multi-Seed-Verdikte, ausgewiesener minimal detektierbarer Effekt."
+- Executive/Consulting: "Maestra beurteilt vor der Modellentwicklung, ob Daten eine
+  Fragestellung tragen, und liefert eine belastbare Schätzung der erreichbaren Güte.
+  Die Verlässlichkeit dieser Schätzungen ist an externen Referenzdaten nachgewiesen,
+  unter anderem auf echten Kaggle-Wettbewerben."
+- Hero-Zeile: "Measured judgment, not model opinion: an agentic ML system where
+  every decision has to earn its place through evidence."
 
 **P4 Done:** 10-Minuten-Pfad vollständig; Testlauf mit einer unbeteiligten Person
 (Helena organisiert); die Person kann Maestra in zwei Sätzen erklären.
