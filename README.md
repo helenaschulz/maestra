@@ -4,45 +4,74 @@
 
 ### Trustworthy validation design and a measured, empirical arbiter — for tabular ML that doesn't lie to itself.
 
-*AutoGluon assumes rows are exchangeable and fits the target as given. Maestra's LLM judges
-exactly where that assumption breaks — grouped/temporal data, leakage, a skewed target — and a
-deterministic arbiter, never another model's opinion, decides whether the judgment holds.*
-
 ![Python](https://img.shields.io/badge/python-3.9–3.12-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Engine](https://img.shields.io/badge/engine-AutoGluon-FF6F00)
 ![LLM](https://img.shields.io/badge/LLM-LiteLLM%20·%20model--agnostic-7E57C2)
+![MCP](https://img.shields.io/badge/frontend-MCP%20server-4B8BBE)
 ![CI](https://github.com/helenaschulz/maestra/actions/workflows/ci.yml/badge.svg)
 
 </div>
 
 ---
 
-**Maestra** is a pre-modeling data-risk audit plus a set of LLM judgment agents over
-[AutoGluon](https://auto.gluon.ai/), each aimed at a decision AutoML cannot make for itself:
-how validation folds must be built (random / grouped / temporal — and, for a *repeating* local
-deployment split, `time_local`), whether a column is leakage, whether a regression target should
-be reframed. It also conducts a full run end to end — profiling, cleaning, feature engineering,
-training — but that layer is the *smaller* finding, not the pitch: measured over a strong engine,
-LLM feature engineering is a wash (below).
+## What is Maestra
 
-What makes Maestra different is not the agent — it's the **empirical arbiter around it**. Every
-LLM proposal is compared against a `--no-llm` baseline, graded against real answer keys, and
-validated with a leakage-free CV whose own trustworthiness is measured (the **CV↔LB gap**).
-Conflicts are settled by measurement, never by one model judging another — the differentiator
-from most LLM-for-AutoML work, which resolves disagreement with an LLM judge. The findings below,
-including the negative ones, come from that harness.
+**Maestra is an agentic AutoML system for tabular data.** Give it a dataset and a
+target, and it delivers predictive models together with a trustworthy estimate of
+the achievable performance. Specialized LLM agents read the semantics of your data
+and surface the risks that sink real-world ML projects: data leakage, temporal and
+group structure, flawed validation design. Every agent decision must pass an
+empirical gate — only interventions that measurably improve results in a controlled
+experiment are adopted; the LLM itself never decides. The result is a model backed
+by auditable evidence — or a reasoned refusal when the data cannot support the
+question.
 
-**Start here:** `maestra-audit --csv data.csv --target y` — a client-ready, pre-modeling data-risk
+Maestra doesn't automate model building — modern AutoML engines already do that.
+It automates the senior data scientist's judgment around it: risk detection,
+validation design, honest expectation-setting. That is the blind spot of every
+AutoML pipeline, and the estimates' reliability is demonstrated against external
+ground truth, including real Kaggle leaderboards.
+
+**What a run actually does:** a column profile goes to specialized LLM agents (validation
+strategist, cleaning, feature engineering), each of which proposes a structured JSON plan —
+never raw code, never a final decision. A leakage-free k-fold cross-validation — re-fitting every
+transform per fold — then measures whether each proposal beats a deterministic `--no-llm`
+baseline beyond fold noise (Nadeau-Bengio-corrected, so overlapping folds don't fool the accept
+rule). Only measured improvements survive. What comes out is a verdict — a risk-flagged audit, a
+quantified optimism gap, an achievable-quality estimate, or a full model — never a bare number to
+trust on faith.
+
+**The differentiator is not the agent, it's the empirical arbiter around it.** Conflicts are
+settled by measurement, never by one model judging another — most LLM-for-AutoML work resolves
+disagreement with an LLM judge instead. The findings below, including the negative ones, come
+from that harness.
+
+## The 10-minute path
+
+No installation needed to see the core claims:
+
+1. **Read this README** — the evidence table and findings below.
+2. **Open a clickable example report** — verdict-first, the full DS evidence collapsible
+   underneath (what was tried, measured, and *rejected*, with numbers):
+   - [bike-sharing run dossier](docs/examples/reports/bike-sharing.html) — temporal demand, fold-advisor + framing
+   - [House Prices run dossier](docs/examples/reports/house-prices.html) — rich-semantics regression
+   - [Grunfeld data-risk audit](docs/examples/reports/grunfeld.html) — group leakage caught before modeling
+3. **Watch the 3-minute demo** — a live Claude session asking "can we forecast this, and can I
+   trust the number?", answered by Maestra's [MCP tools](docs/MCP.md)
+   (script and a real, measured rehearsal: [docs/examples/demo/SCRIPT.md](docs/examples/demo/SCRIPT.md);
+   recorded video: pending).
+4. **Run the arbiter yourself, no install** — [`compare_quickstart.ipynb`](docs/examples/compare_quickstart.ipynb)
+   in Colab: two sklearn pipelines, one honest verdict, `pip install --no-deps` (no AutoGluon
+   needed for this one).
+5. **Check any number** — every claim traces to a line in [`docs/RESULTS.md`](docs/RESULTS.md),
+   the project's measurement ledger, negative results included.
+
+Reports/notebook are generated with `maestra --dossier out.html …` / `maestra-audit --html out.html …`
+/ `scripts/build_example_reports.py`.
+
+**Start building:** `maestra-audit --csv data.csv --target y` — a client-ready, pre-modeling data-risk
 report (validation-design recommendation, leakage scan, structural traps). Trains no model.
-
-**Example reports** (clickable HTML, verdict-first with the DS evidence collapsible below — a run's
-full record of what was tried, measured, and *rejected*). Generate with
-`maestra --dossier out.html …` / `maestra-audit --html out.html …`, or all three at once via
-`scripts/build_example_reports.py`. Published copies (placeholders until P4 finalises the README):
-- [bike-sharing run dossier](docs/examples/reports/bike-sharing.html) — temporal demand, fold-advisor + framing
-- [House Prices run dossier](docs/examples/reports/house-prices.html) — rich-semantics regression
-- [Grunfeld data-risk audit](docs/examples/reports/grunfeld.html) — group leakage caught before modeling
 
 ```bash
 pip install -e ".[dev]"
@@ -86,7 +115,7 @@ Every claim below is a graded run against a real answer key: LLM vs. the determi
 | Leaf classification (MLE-bench, 99 classes) | none (anonymous) | log_loss ↓ | **0.0737** | 0.0783 | LLM hurts (reproducible over 3 seeds) |
 | **House Prices** (43 semantic text columns) | **rich** | rmse ↓ | mean 30 743 | **mean 29 458** | ahead in 5/5 seeds, mean −1 285 rmse — **undecided** under the corrected variance rule (N1, 2026-07-05; passed narrowly before the correction — see RESULTS.md) |
 | **10-task battery** (5 seeds each, paired verdict) | rich → anonymous | mixed | — | — | **2 decided wins (both rich: credit −39%, wage −1.1%), 8 undecided, 0 decided losses**; anonymous controls inert (Δ ≈ 0); both wins hold under the N1-corrected rule |
-| **Kaggle battery** (4 real competitions, 5 seeds) | rich → anonymous, real data | mixed | — | — | **1 decided win** (bike-sharing rmse 124.0→**36.1**, −71% — driven by fixing 3 of Maestra's own bugs, not a clean baseline comparison; see the case study below), 3 undecided, **0 decided losses** |
+| **Kaggle battery** (4 real competitions, 5 seeds) | rich → anonymous, real data | mixed | — | — | **1 decided win** (bike-sharing rmse 124.0→**36.1**, −71% — driven by fixing 3 of Maestra's own bugs, not a clean baseline comparison; [full case study](docs/case_studies/bike_sharing.md)), 3 undecided, **0 decided losses** |
 | **Target framing** (House Prices, `--target-framing`) | setup decision | rmse ↓ | raw target | **log1p, 5/5 seeds** | **mean −2 273 rmse (≈ −8%)** — a setup win AutoGluon cannot make itself |
 | **House Prices submission** (real Kaggle leaderboard) | rmse ↓ (LB: RMSLE) | CV↔LB gap | CV 0.1307 (log-space) | **LB 0.12544** | **gap +0.0053 (≈4%), CV pessimistic — trustworthy on a live leaderboard** |
 | **Grouped data** (entity leakage, synthetic) | structural | CV↔truth gap | **+0.499** (random folds) | **−0.006** (`--fold-advisor`) | **Strategist removes a 50-point CV lie** |
@@ -126,7 +155,8 @@ found:
    `time_local`** (blocked, within-period folds pooled across every period) for exactly this
    shape — confirmed on independent synthetic data, but rerunning bike-sharing itself surfaced a
    further, precisely-scoped gap rather than a clean close: see
-   [N2 below](#n2--the-fold-granularity-fix-and-the-integration-gap-it-surfaced-2026-07-05).
+   [N2 below](#n2--the-fold-granularity-fix-and-the-integration-gap-it-surfaced-2026-07-05) and
+   the [full bike-sharing case study](docs/case_studies/bike_sharing.md) for the whole arc.
 2. **The LLM pays off where column *semantics* exist, and nowhere else — now shown causally.**
    On House Prices (`Neighborhood`, `KitchenQual`, `YearBuilt`, …) its cleaning/encoding judgment
    was ahead of the baseline on **all 5 seeds** (mean −1 285 rmse) — directionally consistent,
@@ -204,11 +234,26 @@ profile signal that never flags continuous floats), and the final submission sco
 public — within 0.001 of the local estimate, confirming the leakage-safe pipeline gives honest
 numbers.
 
+## Vocabulary, in market terms
+
+Maestra's own language (agent, arbiter, gate) maps onto more familiar terms if you're scanning
+for specific capabilities:
+
+| Market term | What it is in Maestra |
+|---|---|
+| Structured outputs | [`llm.py`](src/maestra/llm.py) — every LLM call is forced tool-calling against a fixed JSON schema, `temperature=0` |
+| Retrieval-augmented generation | [`research.py`](src/maestra/research.py) + [`websearch.py`](src/maestra/websearch.py) — opt-in, web-grounded strategy hypotheses that inform planning, never bypass validation |
+| Multi-agent, with empirical conflict resolution | Skeptic / Validation Strategist / diagnosis agents don't defer to each other's judgment — every disagreement is settled by a CV measurement, not an LLM-judge vote |
+| Guardrails | The `--hybrid`/`--text-features` sandbox (no network, secrets stripped, CPU/memory caps), `_is_row_independent` (blocks context-dependent generated features), `CVBudget` (caps counterfactual trial spend per run) |
+| Eval harness | The arbiter itself: paired per-fold tests with Nadeau-Bengio variance correction, multi-seed replications, anonymized-twin/synthetic control experiments |
+| MCP (agentic frontend) | [`maestra-mcp`](docs/MCP.md) — three tools (`audit_csv`, `check_validation`, `feasibility`) for Claude Desktop/Code, each a verdict record, never a model |
+
 ## Architecture
 
 **Specialized LLM agents propose. A measurement arbiter disposes.** Every agent's output is a
 *proposal*, not a decision — a leakage-free CV, a `--no-llm` baseline, or a per-candidate gate has
-the final word. That inverts the usual multi-agent design, where one LLM judges another.
+the final word. That inverts the usual multi-agent design, where one LLM judges another. Full
+write-up (the gate design, why no agent framework, the layer separation): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ![Maestra architecture](assets/architecture.png)
 
@@ -226,6 +271,15 @@ parameter is fitted on train (per fold, under CV) and replayed on holdout/test, 
 
 ## Features
 
+- **`maestra-mcp`** — three MCP tools for agentic frontends (Claude Desktop/Code):
+  `audit_csv` (the data-risk audit), `check_validation` (fold-strategy recommendation +
+  a MEASURED naive-split optimism gap, not just an LLM assertion), `feasibility` (achievable
+  quality, strongest drivers, biggest risks — from one conservative internal run). Every
+  return is a verdict record, never a model. See [`docs/MCP.md`](docs/MCP.md).
+- **`compare()`** — the arbiter as a generic DS tool: `from maestra import compare` honestly
+  compares two arbitrary sklearn-compatible estimators/pipelines via the same paired,
+  Nadeau-Bengio-corrected test every internal gate uses. No LLM call, no AutoGluon needed —
+  see [`docs/examples/compare_quickstart.ipynb`](docs/examples/compare_quickstart.ipynb).
 - **`maestra-audit`** — a standalone data-risk report to run *before* building a model:
   an executive summary with an overall risk verdict, the recommended validation strategy, LLM-flagged
   *and* deterministically-detected leakage (near-copies of the target by correlation), structural
@@ -371,6 +425,17 @@ result.cv                 # CVResult with OOF predictions/probabilities (with cv
 result.hybrid             # generated-feature provenance (with hybrid=True)
 ```
 
+`compare()` needs neither an LLM key nor AutoGluon installed — it is the arbiter alone, over any
+sklearn-compatible estimator:
+
+```python
+from maestra import compare
+from sklearn.linear_model import LinearRegression, Ridge
+
+result = compare(LinearRegression(), Ridge(alpha=1.0), df, "SalePrice", cv=5, seeds=3)
+print(result.summary())   # verdict: improved | no_improvement | underpowered, + Markdown detail
+```
+
 ## Module map
 
 | Module | Responsibility |
@@ -387,13 +452,17 @@ result.hybrid             # generated-feature provenance (with hybrid=True)
 | [`_sandbox_worker.py`](src/maestra/_sandbox_worker.py) | Locked-down subprocess (no network, rlimits, whitelisted builtins) |
 | [`intervention.py`](src/maestra/intervention.py) | The intervention core: one counterfactual primitive (base vs. trial on identical folds) shared by every gate, plus the per-run CV budget |
 | [`validation.py`](src/maestra/validation.py) | Leakage-free k-fold CV (random/group/time folds, OOF preds + probas) + adversarial validation |
-| [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification |
+| [`validation_strategist.py`](src/maestra/validation_strategist.py) | Validation Strategist: LLM fold-strategy proposal + deterministic verification; also the public, DataFrame-input `check_validation()` |
 | [`target_framing.py`](src/maestra/target_framing.py) | Target framing agent: LLM `log1p` proposal for skewed regression targets, CV-arbitrated in original units |
 | [`audit.py`](src/maestra/audit.py) | `maestra-audit`: standalone data-risk report (validation / leakage / structural / shift) |
+| [`dossier.py`](src/maestra/dossier.py) | Shared HTML rendering: verdict-first, DS evidence collapsible — used by both the run dossier and the audit report |
 | [`calibration.py`](src/maestra/calibration.py) | Temperature scaling on OOF probabilities |
-| [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics, predict / predict_proba |
+| [`engine.py`](src/maestra/engine.py) | AutoGluon training, metrics, predict / predict_proba; the `Engine` fit/predict/score protocol (`SklearnEngine`/`LightGBMEngine`/`AutoGluonEngine`) |
+| [`compare.py`](src/maestra/compare.py) | Public API: `compare()` — the paired arbiter over any sklearn-compatible estimator, no LLM/AutoGluon needed |
+| [`mcp_server.py`](src/maestra/mcp_server.py) | `maestra-mcp`: the three MCP tools (`audit_csv`/`check_validation`/`feasibility`) for agentic frontends |
 | [`diagnosis.py`](src/maestra/diagnosis.py) | LLM failure diagnosis → bounded recovery actions |
 | [`research.py`](src/maestra/research.py) / [`websearch.py`](src/maestra/websearch.py) | Opt-in web research → non-binding strategy brief (cached) |
+| [`run_memory.py`](src/maestra/run_memory.py) | The project's own past verdicts, retrieved as non-binding context for future planning |
 | [`benchmark.py`](src/maestra/benchmark.py) | Local benchmark: answer-key carving, grading metrics, scoreboard |
 | [`mlebench_runner.py`](src/maestra/mlebench_runner.py) | MLE-bench adapter: real grading, medals, CV↔LB gap, metric modes |
 | [`report.py`](src/maestra/report.py) | LLM Markdown report grounded in the run's real numbers |
