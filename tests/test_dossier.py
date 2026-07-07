@@ -161,3 +161,55 @@ def test_dossier_narrative_calls_the_llm_and_feeds_the_renderer(monkeypatch):
     assert "green" in captured["facts"]                         # the deterministic colour is a fact
     html = render_dossier(_result(), **narrative)
     assert "typical miss ~$310 in sale price" in html
+
+
+def _backtest_report(**over):
+    from maestra.backtest_audit import BacktestAuditReport
+    base = dict(csv="x.csv", n_rows=500, target="sales", time_column="date", series_column=None)
+    base.update(over)
+    return BacktestAuditReport(**base)
+
+
+def test_render_backtest_audit_future_leak_is_red():
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report(future_leaks=[
+        {"column": "actual_total", "reason": "same-day actual", "correlation_with_target": 0.999}])
+    html = render_backtest_audit(report)
+    assert "RED" in html and "actual_total" in html and "0.999" in html
+
+
+def test_render_backtest_audit_optimistic_split_is_red():
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report(split_design={
+        "mean_gap": 0.2, "direction": "optimistic (dangerous)", "n_origins": 3, "mde": 0.05,
+        "eval_metric": "r2", "naive_scores": [0.9, 0.91, 0.89], "corrected_scores": [0.7, 0.71, 0.69]})
+    html = render_backtest_audit(report)
+    assert "RED" in html and "add a gap" in html and "0.2" in html
+
+
+def test_render_backtest_audit_series_shift_is_red():
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report(series_leak_auc=0.9, series_column="store_id")
+    html = render_backtest_audit(report)
+    assert "RED" in html and "0.90" in html and "leaking series identity" in html
+
+
+def test_render_backtest_audit_clean_is_green():
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report()
+    html = render_backtest_audit(report)
+    assert "GREEN" in html and "looks trustworthy" in html
+
+
+def test_render_backtest_audit_uses_the_shared_html_shell():
+    from maestra.dossier import render_backtest_audit
+    html = render_backtest_audit(_backtest_report())
+    assert html.startswith("<!DOCTYPE html>")
+    assert "<summary>Split design: naive vs. embargoed backtest</summary>" in html
+
+
+def test_write_backtest_audit_html_writes_the_file(tmp_path):
+    from maestra.backtest_audit import write_backtest_audit_html
+    p = tmp_path / "backtest.html"
+    write_backtest_audit_html(_backtest_report(), str(p))
+    assert p.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")

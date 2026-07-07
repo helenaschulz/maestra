@@ -331,3 +331,12 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
         series_column=series_column, future_leaks=future_leaks, split_design=split_design,
         series_leak_auc=series_leak_auc, target_framing=framing,
     )
+
+
+def write_backtest_audit_html(report: BacktestAuditReport, path: str, *,
+                              verdict_sentence: str | None = None) -> None:
+    """Render the backtest audit on the shared HTML layer (P1's rendering, reused for F1) and
+    write it to ``path`` — a verdict-first, dependency-free static file."""
+    from maestra.dossier import render_backtest_audit
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_backtest_audit(report, verdict_sentence=verdict_sentence))
