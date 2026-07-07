@@ -251,13 +251,15 @@ Rückgaben sind strukturierte Verdikt-Records (dict), nie Modelle.
       bleibt AutoGluons eigenes `time_limit`.
 - [x] Offline-Tests für alle drei Tools (LLM/AutoGluon gemockt): Happy Path,
       Ablehnungsfall (fehlende Datei/Target/zu wenig Zeilen), Guardrail-Fall (Timeout via
-      Toy-Funktion), plus Tool-2-spezifische Tests für beide Optimismus-Richtungen.
-      11 Tests in `test_mcp_server.py`, übersprungen ohne die optionale `mcp`-Gruppe
-      (CI installiert nur `.[dev,research]`).
-- [ ] Doku `docs/MCP.md`: Installation, Konfiguration in Claude Desktop/Code,
+      Toy-Funktion), plus Tool-2-spezifische Tests für beide Optimismus-Richtungen und
+      einen Test, dass `main()` `.env` lädt. 12 Tests in `test_mcp_server.py`, übersprungen
+      ohne die optionale `mcp`-Gruppe (CI installiert nur `.[dev,research]`).
+- [x] Doku `docs/MCP.md`: Installation, Konfiguration in Claude Desktop/Code,
       Beispiel-Dialog.
 
-**P2 Done:** Server startet lokal, drei Tools mit Tests, Doku vorhanden.
+**P2 Done — abgeschlossen (2026-07-07).** `maestra-mcp` startet lokal und bleibt auf stdio
+laufen (smoke-getestet), 12 Tests grün, `docs/MCP.md` vorhanden. Nicht gemacht: P2b (Demo-Video,
+eigener Meilenstein, Helena-geführt) — kein Teil dieses Abschnitts.
 
 ---
 
