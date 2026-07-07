@@ -291,40 +291,63 @@ Link ins README.
 **Ziel:** Der Arbiter als generisches DS-Werkzeug: zwei beliebige sklearn-kompatible
 Pipelines ehrlich vergleichen. Dafür wird die Engine-Schicht pluggable.
 
-- [ ] Engine-Protokoll definieren (`engine.py`): minimales Interface `fit(X, y)` /
-      `predict(X)` (+ `predict_proba` optional), plus Adapter `AutoGluonEngine`
-      (bestehendes Verhalten, unverändert Default der Pipeline) und
-      `SklearnEngine(estimator)` (wrappt ein beliebiges Estimator-Objekt via
+- [x] Engine-Protokoll definieren (`engine.py`): minimales Interface `fit(X, y)` /
+      `predict(X)` (+ `predict_proba` optional, + `score(X, y)` mit fixiertem
+      Higher-is-better-Vorzeichen), plus Adapter `AutoGluonEngine` (API-Symmetrie,
+      standalone nutzbar; `cross_validate`s eigener AutoGluon-Pfad routet NICHT darüber, s.u.)
+      und `SklearnEngine(estimator)` (wrappt ein beliebiges Estimator-Objekt via
       `sklearn.base.clone` pro Fold).
-- [ ] `validation.py::cross_validate` nimmt einen Engine-Parameter statt hart
+- [x] `validation.py::cross_validate` nimmt einen Engine-Parameter statt hart
       AutoGluon. Alle bestehenden Aufrufer explizit auf `AutoGluonEngine` setzen →
       Verhalten identisch. **Regressionskriterium: alle bestehenden Tests bleiben ohne
-      inhaltliche Anpassung grün.**
-- [ ] Leichte Proxy-Engine: `LightGBMEngine` als Default für schnelle Checks
-      (`check_validation`, künftige Gates optional). Vorher prüfen, ob LightGBM
-      bereits transitiv über AutoGluon vorhanden ist — dann direkt nutzen, sonst
-      optionale dep-group `fast`. Befund im Commit dokumentieren.
-- [ ] Public API in `src/maestra/__init__.py`: `compare(estimator_a, estimator_b,
+      inhaltliche Anpassung grün.** (Umsetzung: `engine=None` UND eine `AutoGluonEngine`-Instanz
+      dispatchen beide auf den unveränderten Alt-Code — bestehende Aufrufer wurden NICHT
+      einzeln auf ein explizites `engine=AutoGluonEngine(...)` umgestellt, da das für Dutzende
+      Call-Sites ein rein kosmetisches No-Op mit echtem Regressionsrisiko wäre; ein neuer
+      expliziter Regressionstest belegt die Äquivalenz stattdessen.)
+- [x] Leichte Proxy-Engine: `LightGBMEngine` als Default für schnelle Checks
+      (`check_validation`, künftige Gates optional). LightGBM ist bereits transitiv über
+      `autogluon.tabular[all]` vorhanden (geprüft 2026-07-07: `import lightgbm` klappt ohne
+      weitere Installation) — direkt genutzt, keine neue dep-group nötig.
+- [x] Public API in `src/maestra/__init__.py`: `compare(estimator_a, estimator_b,
       df: pd.DataFrame, target: str, *, cv: int = 5, seeds: int = 1,
       metric: str | None = None) -> CompareResult`. `CompareResult`: Verdikt
       (`improved | no_improvement | underpowered`), mean_delta,
       per-Fold/Seed-Deltas, MDE, menschenlesbares `summary()` (Markdown-String,
       geeignet zum Einfügen in eine PR-Beschreibung). Nutzt `paired_delta_test` mit
       Nadeau-Bengio (P0.1) und MDE (P0.2). Kein LLM-Call nötig.
-- [ ] `check_validation(df, target)` und `audit(df, target)` ebenfalls als Public API
+- [x] `check_validation(df, target)` und `audit(df, target)` ebenfalls als Public API
       mit DataFrame-Input (dünne Wrapper um Bestehendes; CSV-Laden bleibt CLI-Sache).
-- [ ] Colab-Notebook `docs/examples/compare_quickstart.ipynb`: zwei sklearn-Pipelines
-      auf einem kleinen öffentlichen Datensatz, `compare()` in ~5 Zellen, kurze
-      Laufzeit, ohne AutoGluon-Installation. Notebook wird in CI nicht ausgeführt
-      (Vermerk im Notebook-Kopf); stattdessen Smoke-Test `tests/test_public_api.py`
-      mit zwei sklearn-Dummies.
-- [ ] Prüfen, ob AutoGluon zur optionalen Dependency werden kann, ohne bestehende
-      Einstiege zu brechen (Import-Struktur, Fehlermeldung bei fehlender
-      Installation). Wenn ja: umsetzen. Wenn nein: Befund dokumentieren und an Helena
-      geben — nicht auf eigene Faust brechen (Stopp-Trigger API-Vertrag).
-- [ ] Optionaler, streng timeboxter Spike: TabPFN als Gate-Engine für kleine
-      Datensätze (`TabPFNEngine`). Ergebnis als Ledger-Zeile in `docs/RESULTS.md`,
-      egal wie es ausgeht. Bei Setup-Problemen: abbrechen, Befund notieren.
+      **Abweichung:** `audit` wird NICHT als `maestra.audit` re-exportiert — `audit.py` ist
+      selbst ein Submodul, und `from maestra.audit import audit` in `__init__.py` würde das
+      Submodul verdecken (`from maestra import audit as audit_mod`, das bestehende Muster im
+      Testsuite, bekäme dann die Funktion statt des Moduls) — ein echter, per Testlauf
+      verifizierter Regressionsfund, nicht nur Vorsicht. `audit()` ist bereits public und
+      DataFrame-Input via `from maestra.audit import audit`; nur `check_validation` (neu,
+      keine Namenskollision) ist unter `maestra.check_validation` erreichbar.
+- [x] Colab-Notebook `docs/examples/compare_quickstart.ipynb`: zwei sklearn-Pipelines
+      auf einem kleinen öffentlichen Datensatz (`sklearn.datasets.load_diabetes`, kein
+      Download), `compare()` in ~5 Zellen, kurze Laufzeit, ohne AutoGluon-Installation
+      (`pip install --no-deps`). Notebook wird in CI nicht ausgeführt (Vermerk im
+      Notebook-Kopf); Smoke-Test `tests/test_public_api.py` mit zwei sklearn-Dummies deckt
+      denselben Importpfad (`from maestra import compare`) offline ab.
+- [x] Geprüft, ob AutoGluon zur optionalen Dependency werden kann — **teils umgesetzt, teils
+      an Helena zurückgegeben.** Der IMPORT ist jetzt verzögert (`TabularPredictor` wird lazy
+      innerhalb der 3 Funktionen importiert, die ihn brauchen: `engine.py::train_and_evaluate`/
+      `fit_predictor`, `validation.py::adversarial_validation` — die einzigen Stellen im ganzen
+      Package, verifiziert per Grep). Das reicht bereits, damit `import maestra`/`compare()`
+      ohne installiertes AutoGluon laufen (per echtem Test verifiziert:
+      `sys.modules["autogluon"] = None` vor dem Import). Die DEPENDENCY selbst (in
+      `pyproject.toml`) NICHT optional gemacht — das würde das bestehende
+      "`pip install -e .` gibt eine sofort lauffähige CLI"-Versprechen für `maestra`/
+      `maestra-audit`/-`bench`/-`mlebench`/-`mcp` brechen, ein Stopp-Trigger-Fall
+      (API-/CLI-Vertrag). Befund an Helena: Colab braucht deshalb `pip install --no-deps`
+      (im Notebook so gelöst) statt eines normalen Installs.
+- [x] Optionaler, streng timeboxter Spike: TabPFN als Gate-Engine (`TabPFNEngine`) —
+      **abgebrochen, Setup-Problem.** `pip install tabpfn` installiert sauber (8.0.8), aber
+      `TabPFNClassifier.fit()` verlangt beim ersten Aufruf eine interaktive Lizenz-Annahme
+      (Browser-Login bei priorlabs.ai + persönlicher API-Key als `TABPFN_TOKEN`) — nicht
+      autonom herstellbar. Kein `TabPFNEngine` gebaut. Ledger-Zeile in `docs/RESULTS.md`.
 
 **P3 Done:** `from maestra import compare` funktioniert mit reinen sklearn-Estimatoren;
 Colab-Notebook läuft; alle Alt-Tests unverändert grün.
