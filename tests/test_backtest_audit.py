@@ -262,6 +262,16 @@ def test_audit_backtest_finds_a_missing_gap(monkeypatch):
     assert report.risk_level == "high"
 
 
+def test_audit_backtest_threads_n_origins_into_split_design_check(monkeypatch):
+    """F2: --origins is a real parameter, not just a CLI no-op -- it must reach the actual fits."""
+    _patch_clean(monkeypatch)
+    import maestra.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "train_and_evaluate", _mock_train_and_evaluate(True))
+    df = _forecast_df(n=400)
+    report = audit_backtest(df, "sales", "date", model="m", n_origins=5)
+    assert report.split_design["n_origins"] == 5
+
+
 def test_audit_backtest_records_series_auc_but_does_not_escalate_risk(monkeypatch):
     """A high series-boundary AUC is RECORDED as diagnostic but must NOT drive risk_level: without
     a time-trend control it is ~1.0 for any trending series, so it carries no verdict meaning yet

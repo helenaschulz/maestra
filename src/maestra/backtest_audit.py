@@ -384,11 +384,15 @@ class BacktestAuditReport:
 
 def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: str,
                    series_column: str | None = None, description: str | None = None,
-                   time_limit: int = 15, csv: str = "data") -> BacktestAuditReport:
+                   time_limit: int = 15, n_origins: int = 3, csv: str = "data") -> BacktestAuditReport:
     """Produce a :class:`BacktestAuditReport` for an existing forecasting setup. One LLM call
     (future-feature semantics); the split-design measurement and the optional series-leak checks
     are real, budget-bounded fits — see :func:`split_design_check`/:func:`series_leak_check`/
     :func:`series_leak_null`.
+
+    ``n_origins`` (F2): rolling origins for :func:`split_design_check`'s naive-vs-embargoed
+    comparison — more origins means more paired observations (statistical power) at the cost of
+    that many more fits; default 3 matches F1's original battery.
     """
     from maestra.profiling import description_context, profile_dataframe
 
@@ -402,7 +406,8 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
     proposal = propose_future_features(model, profile, target, time_column, context)
     future_leaks = check_future_features(df, target, proposal)
 
-    split_design = split_design_check(df, target, time_column, time_limit=time_limit)
+    split_design = split_design_check(df, target, time_column, time_limit=time_limit,
+                                      n_origins=n_origins)
 
     series_leak_auc = None
     series_leak = None
