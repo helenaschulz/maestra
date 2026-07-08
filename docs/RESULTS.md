@@ -1034,6 +1034,46 @@ to M9's original claude-opus-4-8 row (`docs/RESULTS.md`'s M9 section) and to thi
 pre-Bau-1 baseline. The new profile field does not introduce false alarms or regress detection.
 Logged: `detection_benchmark.jsonl` (new `claude-opus-4-8` row, 2026-07-08T03:18:37).
 
+**Messung 2/3 — backtest-audit power battery, all three F1 datasets re-run (2026-07-08).**
+`scripts/backtest_audit_battery.py --task all --model claude-opus-4-8 --origins 5 --time-limit 60`
+(up from F1's `--origins 3 --time-limit 10`), full 15 000-row samples, real AutoGluon (medium
+preset — `split_design_check`/`series_leak_check`/`series_leak_null` never request `best_quality`,
+so these fits are far lighter than a `--make-submission` run). All three completed cleanly.
+
+| Task | risk_level | split_design (mean_gap / MDE / direction) | series_leak (observed / null_mean / null_p95 / verdict) | target_framing |
+|---|---|---|---|---|
+| store-sales | low | +173.63 / 328.25 / undecided | 1.0 / 1.0 / 1.0 / **not leaking** | log1p, verified (skew 7.60) |
+| rossmann | low | +196.92 / 542.29 / undecided | 1.0 / 1.0 / 1.0 / **not leaking** | none (skew 0.60) |
+| walmart | low | +101.85 / 2003.48 / undecided | 1.0 / 1.0 / 1.0 / **not leaking** | n/a (target can be negative) |
+
+**Series-leak null control: 3/3 correct false-alarm avoidance on real data — the F1 confound is
+closed.** All three raw `series_leak_auc` values sit at (numerically) 1.0 — exactly F1's flagged
+trend confound. The new null-tested `series_leak` check now explains why: `null_mean`/`null_p95`
+ALSO sit at 1.0 on all three, i.e. permuting the real series labels does not reduce separability
+at all — the discriminating signal lives entirely in ordinary trend/other retained features, not
+in series identity, so `verdict == "not leaking"` on all three, correctly. This is real evidence
+the mechanism works as designed (Bau-3), not just on the offline mocked tests: a genuine leak
+would have shown `null_mean` dropping well below `observed` (as the offline
+`test_series_leak_null_detects_a_genuine_leak` fixture demonstrates), and none of these three
+real, ordinary trending retail series does.
+
+**Split-design: still honestly "undecided" on all three, even with 5 origins/60s (up from
+3/10s).** MDE actually *grew* on rossmann (159 → 542) and walmart (1126 → 2003) despite more
+origins — the extra origins captured more real fold-to-fold variance (a single high-variance
+origin, e.g. rossmann's fifth corrected score −3356 vs. the other four clustered around −2300 to
+−2600, dominates the paired SEM) rather than tightening the estimate; more origins is not a
+free lunch against real heteroskedasticity across a rolling backtest. Reported as underpowered,
+not spun as "no lie confirmed" — consistent with F1's own honesty convention.
+
+**Target framing: reproduces F1 exactly.** store-sales log1p/skew 7.60 and rossmann none/skew
+0.60 match F1's original run's numbers almost verbatim (a different LLM, `claude-opus-4-8` vs.
+`gpt-4o`, converging on the same skewness reads and the same framing decision) — a small,
+free cross-model robustness data point alongside M9.
+
+**Disk hygiene note (2026-07-08):** the battery's own model dirs never exceeded ~4GB per
+task/fold; the pressure came from the CONCURRENT `--make-submission bike-sharing` run (see
+below), not from this battery. No incident here.
+
 
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
