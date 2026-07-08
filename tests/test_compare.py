@@ -87,6 +87,19 @@ def test_compare_regularized_vs_plain_linear_regression_picks_the_better_fit():
     assert result.verdict == "improved"
 
 
+def test_compare_with_a_rolling_origin_splitter_uses_its_actual_fold_count():
+    """F2: an arbitrary sklearn splitter overrides the plain k-fold split; n_folds in the
+    result reflects the SPLITTER's fold count, not the (deliberately mismatched) cv= kwarg."""
+    from maestra.validation import RollingOriginSplit
+
+    df = _linear_df(n=40)
+    result = compare(DummyRegressor(strategy="mean"), LinearRegression(), df, "y", cv=99,
+                     splitter=RollingOriginSplit(n_origins=4, horizon=5))
+    assert result.n_folds == 4
+    assert len(result.deltas) == 4
+    assert result.verdict == "improved"  # a perfectly linear signal still decisively wins
+
+
 def test_compare_works_without_autogluon_installed(monkeypatch):
     """The Colab notebook's whole premise: compare() must not need AutoGluon at all."""
     import builtins

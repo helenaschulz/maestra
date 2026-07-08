@@ -14,7 +14,11 @@ Same three-part contract as every judgment node in this project:
   is answered by :func:`quantify_backtest_lie`, comparing a naive backtest against an embargoed
   one over several rolling origins, with the SAME Nadeau-Bengio-corrected paired test
   (`validation.py::paired_delta_test`) every other gate in this project uses. The LLM never
-  decides the verdict — only the naive-vs-corrected NUMBER does.
+  decides the verdict — only the naive-vs-corrected NUMBER does. A sibling measurement,
+  :func:`series_leak_null` (F2), answers the series-identity question the same way: a null band
+  from permuting series labels, not the LLM, decides whether a high series-boundary AUC is a
+  genuine leak or just ordinary trend (see :func:`series_leak_check`'s docstring for the confound
+  it left open).
 """
 from __future__ import annotations
 
@@ -228,16 +232,16 @@ def series_leak_check(df: pd.DataFrame, target: str, time_column: str, series_co
     """Diagnostic only: split at the naive (no-embargo) time boundary and run the project's
     existing adversarial-validation machinery on the two halves, with the series column excluded.
 
-    IMPORTANT — this does NOT control for ordinary time trend, and therefore currently carries
-    NO verdict meaning. Because the split is EXACTLY on time order, any trending or seasonal
+    IMPORTANT — this does NOT control for ordinary time trend, and therefore carries NO verdict
+    meaning ON ITS OWN. Because the split is EXACTLY on time order, any trending or seasonal
     series lets a classifier separate the "before" and "after" halves nearly perfectly (AUC
     ~1.0) from plain temporal signal alone — that is EXPECTED for a real time series, not
     evidence of series-level leakage. So a high value here must not be read as a leak and does
-    not drive :attr:`BacktestAuditReport.risk_level`; it is surfaced as caveated diagnostic in
-    the report instead. Separating true series-identity leakage from expected time trend needs a
-    control (a shuffled series-assignment null distribution over the same split) — that is F2
-    scope, not built here. Returns the AUC, or None if there is too little data on either side
-    of the boundary.
+    not itself drive :attr:`BacktestAuditReport.risk_level`; it stays a caveated diagnostic in
+    the report. The null-tested check that CAN drive the verdict is :func:`series_leak_null`
+    (F2) — a separate, independent measurement (see its docstring for why it cannot simply
+    reuse this function's return value). Returns the AUC, or None if there is too little data on
+    either side of the boundary.
     """
     from maestra.validation import adversarial_validation
 
@@ -249,6 +253,77 @@ def series_leak_check(df: pd.DataFrame, target: str, time_column: str, series_co
     after = df.iloc[order[cut:]].drop(columns=[series_column])
     return adversarial_validation(before, after, target, cleaning_plan=None,
                                   model_dir=model_dir, time_limit=time_limit)
+
+
+# Margin added on top of the null band's 95th percentile before calling something "leaking" --
+# a single-percentile comparison right at the boundary is noisy with only a few dozen
+# permutations; this pushes the accept bar conservatively higher (false alarms cost more here
+# than misses, matching E1's stated risk asymmetry for the sibling Validation Strategist).
+_SERIES_LEAK_MARGIN = 0.02
+
+
+def series_leak_null(df: pd.DataFrame, target: str, time_column: str, series_column: str, *,
+                     n_perm: int = 20, test_frac: float = 0.2, time_limit: int = 15,
+                     model_dir: str = "AutogluonModels/backtest_audit/series_null",
+                     seed: int = 0) -> dict | None:
+    """The F2 null-band control that closes :func:`series_leak_check`'s trend confound: does the
+    RAW series identity itself (e.g. a Store/customer id) carry information about which side of
+    the time boundary a row is on, beyond what ordinary trend/seasonality in the OTHER columns
+    already explains?
+
+    Unlike :func:`series_leak_check` (which excludes the series column entirely, so permuting it
+    would be a no-op — dropping a column makes its content, real or shuffled, irrelevant), this
+    function keeps the series column as an ordinary feature: ``observed`` is the adversarial AUC
+    WITH the true series labels present; the null band is the same AUC across ``n_perm``
+    permutations of those labels (breaking the true row-to-series mapping, same before/after
+    split). A real deployment-breaking leak — e.g. series ids assigned in roughly chronological
+    order, or whole series that only exist on one side of the boundary — lets the TRUE labels
+    predict the boundary far better than any random relabelling; ordinary trend shared by every
+    series does not care whether the series label is real or shuffled, so observed and null land
+    close together. This is why ``series_leak_auc``/:func:`series_leak_check` stays a SEPARATE,
+    still-uncontrolled diagnostic in the report rather than being replaced: it answers a
+    different, cruder question (does dropping the series column still leave the OTHER columns
+    separable), and this function's ``observed`` is deliberately NOT the same number.
+
+    Reuses :func:`series_leak_check`'s own order/cut split and its too-little-data guard.
+    Returns ``{"observed", "null_mean", "null_p95", "n_perm", "verdict"}`` where ``verdict`` is
+    ``"leaking"`` only when ``observed`` clears the null band's 95th percentile by
+    :data:`_SERIES_LEAK_MARGIN`, else ``"not leaking"`` — never on a single permutation, which
+    would be too noisy. ``None`` under the same too-little-data condition
+    :func:`series_leak_check` returns ``None`` for, or if every permutation fit failed.
+    """
+    from maestra.validation import adversarial_validation
+
+    order = _time_sorted_order(df, time_column)
+    cut = int(len(df) * (1 - test_frac))
+    if cut < 10 or len(df) - cut < 10:
+        return None
+    before = df.iloc[order[:cut]]
+    after = df.iloc[order[cut:]]
+    observed = adversarial_validation(before, after, target, cleaning_plan=None,
+                                      model_dir=f"{model_dir}/observed", time_limit=time_limit)
+    if observed is None:
+        return None
+
+    rng = np.random.default_rng(seed)
+    full_series = df[series_column].to_numpy()
+    null_scores = []
+    for i in range(n_perm):
+        shuffled = rng.permutation(full_series)  # global permutation of series LABELS, not rows
+        before_p = before.assign(**{series_column: shuffled[order[:cut]]})
+        after_p = after.assign(**{series_column: shuffled[order[cut:]]})
+        auc = adversarial_validation(before_p, after_p, target, cleaning_plan=None,
+                                     model_dir=f"{model_dir}/perm_{i}", time_limit=time_limit)
+        if auc is not None:
+            null_scores.append(auc)
+    if not null_scores:
+        return None
+
+    null_mean = float(np.mean(null_scores))
+    null_p95 = float(np.percentile(null_scores, 95))
+    verdict = "leaking" if observed > null_p95 + _SERIES_LEAK_MARGIN else "not leaking"
+    return {"observed": observed, "null_mean": null_mean, "null_p95": null_p95,
+           "n_perm": len(null_scores), "verdict": verdict}
 
 
 def target_framing_flag(model: str, profile: dict, df: pd.DataFrame, target: str,
@@ -281,34 +356,43 @@ class BacktestAuditReport:
     future_leaks: list[dict] = field(default_factory=list)
     split_design: dict | None = None
     series_leak_auc: float | None = None
+    series_leak: dict | None = None
     target_framing: dict | None = None
 
     @property
     def risk_level(self) -> str:
-        """High: a future leak found, or the naive backtest is a DECIDED-optimistic lie.
-        Otherwise low, INCLUDING an "undecided" split-design (no measurable gap found is the
-        safe, not the risky, outcome -- distinct from "not enough data to measure at all", which
-        returns split_design=None and is also low: a missing measurement isn't evidence of a
-        problem, `feasibility`-style tools already surface small-n concerns separately).
+        """High: a future leak found, the naive backtest is a DECIDED-optimistic lie, or the F2
+        null-tested series-leak check decided "leaking". Otherwise low, INCLUDING an "undecided"
+        split-design (no measurable gap found is the safe, not the risky, outcome -- distinct
+        from "not enough data to measure at all", which returns split_design=None and is also
+        low: a missing measurement isn't evidence of a problem, `feasibility`-style tools already
+        surface small-n concerns separately).
 
-        The series-boundary AUC is deliberately NOT a verdict driver: without a time-trend
-        control it is ~1.0 for any trending series (see :func:`series_leak_check`), so it carries
-        no verdict meaning yet and would only cry false alarm. It is shown as caveated diagnostic
-        in the report instead; F2 will add the shuffled-series control that would let a high value
-        actually mean series-level leakage."""
+        ``series_leak_auc`` (:func:`series_leak_check`) is deliberately NOT a verdict driver:
+        without a time-trend control it is ~1.0 for any trending series, so it carries no verdict
+        meaning and would only cry false alarm -- it stays a caveated diagnostic in the report.
+        ``series_leak`` (:func:`series_leak_null`, F2) IS gated on a null-band comparison and may
+        escalate risk; see that function's docstring for why the two are separate measurements."""
         if self.future_leaks:
             return "high"
         if self.split_design and self.split_design["direction"] == "optimistic (dangerous)":
+            return "high"
+        if self.series_leak and self.series_leak["verdict"] == "leaking":
             return "high"
         return "low"
 
 
 def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: str,
                    series_column: str | None = None, description: str | None = None,
-                   time_limit: int = 15, csv: str = "data") -> BacktestAuditReport:
+                   time_limit: int = 15, n_origins: int = 3, csv: str = "data") -> BacktestAuditReport:
     """Produce a :class:`BacktestAuditReport` for an existing forecasting setup. One LLM call
-    (future-feature semantics); the split-design measurement and the optional series-leak check
-    are real, budget-bounded fits — see :func:`split_design_check`/:func:`series_leak_check`.
+    (future-feature semantics); the split-design measurement and the optional series-leak checks
+    are real, budget-bounded fits — see :func:`split_design_check`/:func:`series_leak_check`/
+    :func:`series_leak_null`.
+
+    ``n_origins`` (F2): rolling origins for :func:`split_design_check`'s naive-vs-embargoed
+    comparison — more origins means more paired observations (statistical power) at the cost of
+    that many more fits; default 3 matches F1's original battery.
     """
     from maestra.profiling import description_context, profile_dataframe
 
@@ -322,12 +406,16 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
     proposal = propose_future_features(model, profile, target, time_column, context)
     future_leaks = check_future_features(df, target, proposal)
 
-    split_design = split_design_check(df, target, time_column, time_limit=time_limit)
+    split_design = split_design_check(df, target, time_column, time_limit=time_limit,
+                                      n_origins=n_origins)
 
     series_leak_auc = None
+    series_leak = None
     if series_column is not None and series_column in df.columns:
         series_leak_auc = series_leak_check(df, target, time_column, series_column,
                                             time_limit=time_limit)
+        series_leak = series_leak_null(df, target, time_column, series_column,
+                                       time_limit=time_limit)
 
     framing = None
     if df[target].dtype.kind in "iuf" and float(df[target].min()) >= 0:
@@ -336,7 +424,7 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
     return BacktestAuditReport(
         csv=csv, n_rows=len(df), target=target, time_column=time_column,
         series_column=series_column, future_leaks=future_leaks, split_design=split_design,
-        series_leak_auc=series_leak_auc, target_framing=framing,
+        series_leak_auc=series_leak_auc, series_leak=series_leak, target_framing=framing,
     )
 
 

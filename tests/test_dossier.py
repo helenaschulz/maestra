@@ -197,8 +197,33 @@ def test_render_backtest_audit_series_shift_is_caveated_diagnostic_not_a_red_ver
     assert "GREEN" in html                                    # verdict rests on the checks that count
     assert "0.900" in html                                    # the AUC is still shown as diagnostic
     assert "does not affect the verdict" in html              # explicit caveat present
-    assert "F2" in html                                       # points to the planned control
     assert "leaking series identity" not in html             # the misleading claim is gone
+
+
+def test_render_backtest_audit_series_leak_not_leaking_is_green():
+    """F2: the null-tested series_leak check renders its own section, distinct from the raw AUC."""
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report(
+        series_column="store_id",
+        series_leak={"observed": 0.97, "null_mean": 0.96, "null_p95": 0.98, "n_perm": 20,
+                    "verdict": "not leaking"})
+    html = render_backtest_audit(report)
+    assert "GREEN" in html and "RED" not in html
+    assert "not leaking" in html
+    assert "explained by ordinary" in html
+
+
+def test_render_backtest_audit_series_leak_leaking_is_red():
+    """F2: a genuine null-tested series leak escalates the traffic light AND the top sentence."""
+    from maestra.dossier import render_backtest_audit
+    report = _backtest_report(
+        series_column="store_id",
+        series_leak={"observed": 0.95, "null_mean": 0.55, "null_p95": 0.60, "n_perm": 20,
+                    "verdict": "leaking"})
+    html = render_backtest_audit(report)
+    assert "RED" in html
+    assert "genuine series-level leak" in html
+    assert "store_id" in html
 
 
 def test_render_backtest_audit_clean_is_green():

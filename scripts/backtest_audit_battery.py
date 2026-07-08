@@ -16,6 +16,7 @@ series-density for speed, an explicit, documented simplification, not a silent o
     ./.venv/bin/python scripts/backtest_audit_battery.py --list
     ./.venv/bin/python scripts/backtest_audit_battery.py --task rossmann
     ./.venv/bin/python scripts/backtest_audit_battery.py --task all
+    ./.venv/bin/python scripts/backtest_audit_battery.py --task rossmann --origins 5 --time-limit 300
 """
 from __future__ import annotations
 
@@ -41,7 +42,8 @@ TASKS = [
 ]
 
 
-def run_task(spec: dict, *, model: str, sample: int, seed: int, time_limit: int) -> dict:
+def run_task(spec: dict, *, model: str, sample: int, seed: int, time_limit: int,
+            n_origins: int = 3) -> dict:
     df = pd.read_csv(spec["path"])
     if spec["drop"]:
         df = df.drop(columns=[c for c in spec["drop"] if c in df.columns])
@@ -49,14 +51,14 @@ def run_task(spec: dict, *, model: str, sample: int, seed: int, time_limit: int)
         df = df.sample(n=sample, random_state=seed)
     report = audit_backtest(df, spec["target"], spec["time_column"], model=model,
                             series_column=spec["series_column"], time_limit=time_limit,
-                            csv=spec["path"])
+                            n_origins=n_origins, csv=spec["path"])
     html_path = f"data/backtest_audit_{spec['name']}.html"
     write_backtest_audit_html(report, html_path)
     return {
         "name": spec["name"], "n_rows_sampled": len(df), "risk_level": report.risk_level,
         "future_leaks": report.future_leaks, "split_design": report.split_design,
-        "series_leak_auc": report.series_leak_auc, "target_framing": report.target_framing,
-        "html_report": html_path,
+        "series_leak_auc": report.series_leak_auc, "series_leak": report.series_leak,
+        "target_framing": report.target_framing, "html_report": html_path,
     }
 
 
@@ -69,6 +71,10 @@ def main(argv=None) -> int:
     p.add_argument("--sample", type=int, default=15000)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--time-limit", type=int, default=10, help="AutoGluon budget per origin fit.")
+    p.add_argument("--origins", type=int, default=3,
+                   help="Rolling origins for the split-design check (F2: more origins = more "
+                        "paired power for quantify_backtest_lie, at the cost of that many more "
+                        "fits). Default 3 matches F1's original battery.")
     args = p.parse_args(argv)
 
     if args.list:
@@ -89,7 +95,7 @@ def main(argv=None) -> int:
     for spec in specs:
         print(f"=== {spec['name']} ===")
         result = run_task(spec, model=args.model, sample=args.sample, seed=args.seed,
-                          time_limit=args.time_limit)
+                          time_limit=args.time_limit, n_origins=args.origins)
         print(json.dumps(result, indent=2, default=str))
         results.append(result)
     return 0

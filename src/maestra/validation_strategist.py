@@ -10,6 +10,11 @@ can judge from the profile plus a dataset description.
 The agent proposes; deterministic code verifies. A proposal naming a column that does not
 exist, a group column without repeats, or an unsortable time column falls back to random folds
 with an explicit log line — the LLM cannot break the pipeline, only inform it.
+
+``time_local``'s ``period_column`` may name a real column OR a ``period_candidates`` token from
+``profiling.py`` (e.g. ``"month_of:datetime"``, F2) — closes the N2 integration gap where a
+raw datetime column has no period column yet for the Strategist to see, before any feature
+engineering has decomposed it.
 """
 from __future__ import annotations
 
@@ -37,7 +42,11 @@ FOLD_STRATEGY_SCHEMA = {
         "period_column": {
             "type": ["string", "null"],
             "description": "For strategy=time_local ONLY: the column naming the repeating period "
-                           "(e.g. month, patient visit number) within which the local split repeats.",
+                           "(e.g. month, patient visit number) within which the local split "
+                           "repeats. May also be a 'period_candidates' token from a column's "
+                           "profile entry (e.g. 'month_of:datetime') used VERBATIM -- that is a "
+                           "period derivable from a raw datetime column, even though it is not "
+                           "yet a column of its own.",
         },
         "rationale": {"type": "string", "description": "Why this strategy, in one or two sentences."},
         "leakage_warnings": {
@@ -75,7 +84,11 @@ _SYSTEM_PROMPT = (
     "of the timeline and validates on a large, distributionally different future block — it "
     "OVERSHOOTS into an overly pessimistic estimate on data that is really a mild, repeated, "
     "local extrapolation. Name the ordering column as time_column AND the repeating period as "
-    "period_column.\n"
+    "period_column. A column's profile entry may carry 'period_candidates' — ready-made tokens "
+    "like 'month_of:datetime' naming a period derivable from that RAW datetime column (it is "
+    "not yet split into month/week/day-of-week as its own column). If the repeating period you "
+    "need is one of these, use the token VERBATIM as period_column; do not invent your own name "
+    "for it and do not name the raw datetime column itself as period_column.\n"
     "Evidence for group: an id-like column with n_unique clearly BELOW n_rows (repeats!), or "
     "the description says several rows belong to one entity. CAUTION: a categorical with only a "
     "FEW balanced levels (control/treatment arms, A/B variants, product categories) is a design "
@@ -167,16 +180,35 @@ def validate_fold_strategy(proposal: dict, df: pd.DataFrame, target: str) -> tup
             return fallback(f"proposed time column {col!r} does not exist")
         if col == target:
             return fallback("time column must not be the target")
-        if not period_col or period_col not in df.columns:
+        if not period_col:
             return fallback(f"proposed period column {period_col!r} does not exist")
-        if period_col == target:
-            return fallback("period column must not be the target")
         values = df[col]
         if values.dtype.kind not in "iufM":
             values = pd.to_datetime(values, errors="coerce", format="mixed")
         if values.isna().mean() > 0.05:
             return fallback(f"time column {col!r} is not sortable (unparseable values)")
-        n_periods = df[period_col].nunique(dropna=True)
+
+        # F2: period_col may be a real column OR a period_candidates TOKEN from profiling.py
+        # (e.g. "month_of:datetime") -- a period not yet materialised onto df. Verification
+        # counts periods either way; only fold-building (validation.py) derives the values.
+        from maestra.validation import _PERIOD_TOKEN_RE, _materialize_period
+
+        token_match = _PERIOD_TOKEN_RE.match(period_col)
+        if token_match:
+            source_col = token_match.group(2)
+            if source_col not in df.columns or source_col == target:
+                return fallback(f"period token {period_col!r} references a nonexistent column")
+            try:
+                n_periods = _materialize_period(df, period_col).nunique(dropna=True)
+            except Exception:
+                return fallback(f"period token {period_col!r} could not be derived")
+        elif period_col in df.columns:
+            if period_col == target:
+                return fallback("period column must not be the target")
+            n_periods = df[period_col].nunique(dropna=True)
+        else:
+            return fallback(f"proposed period column {period_col!r} does not exist")
+
         if n_periods < 2:
             return fallback(f"period column {period_col!r} has fewer than 2 periods")
         verified.update(strategy="time_local", time_column=col, period_column=period_col)

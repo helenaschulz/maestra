@@ -179,6 +179,94 @@ def test_make_folds_is_deterministic():
     assert [v.tolist() for _, v in a] == [v.tolist() for _, v in b]
 
 
+# --- RollingOriginSplit (F2): a standalone, sklearn-compatible rolling-origin splitter -----
+
+def test_rolling_origin_split_get_n_splits_matches_n_origins():
+    from maestra.validation import RollingOriginSplit
+
+    splitter = RollingOriginSplit(n_origins=3, horizon=5, gap=2)
+    assert splitter.get_n_splits() == 3
+
+
+def test_rolling_origin_split_yields_exactly_n_origins_folds_test_strictly_after_train():
+    from maestra.validation import RollingOriginSplit
+
+    X = np.arange(50)
+    splitter = RollingOriginSplit(n_origins=4, horizon=5, gap=0)
+    folds = list(splitter.split(X))
+    assert len(folds) == 4
+    for train_idx, test_idx in folds:
+        assert len(test_idx) == 5
+        assert train_idx.max() < test_idx.min()  # every test row strictly later than every train row
+        assert test_idx.tolist() == sorted(test_idx.tolist())  # contiguous, time-ordered block
+
+
+def test_rolling_origin_split_tiles_expanding_windows_toward_the_back():
+    from maestra.validation import RollingOriginSplit
+
+    X = np.arange(30)
+    folds = list(RollingOriginSplit(n_origins=3, horizon=5, gap=0).split(X))
+    # each origin's test block starts exactly where the previous one ended (contiguous tiling)
+    assert [f[1].tolist() for f in folds] == [
+        list(range(15, 20)), list(range(20, 25)), list(range(25, 30))]
+    # training prefixes expand: origin i+1 trains on strictly more rows than origin i
+    sizes = [len(train_idx) for train_idx, _ in folds]
+    assert sizes == sorted(sizes) and len(set(sizes)) == 3
+
+
+def test_rolling_origin_split_gap_embargoes_rows_between_train_and_test():
+    from maestra.validation import RollingOriginSplit
+
+    X = np.arange(30)
+    train_idx, test_idx = next(iter(RollingOriginSplit(n_origins=1, horizon=5, gap=3).split(X)))
+    assert train_idx.max() == test_idx.min() - 1 - 3  # exactly `gap` embargoed rows in between
+
+
+def test_rolling_origin_split_raises_when_too_few_rows():
+    from maestra.validation import RollingOriginSplit
+
+    with pytest.raises(ValueError, match="RollingOriginSplit needs at least"):
+        list(RollingOriginSplit(n_origins=5, horizon=10, gap=0).split(np.arange(20)))
+
+
+def test_make_folds_with_a_splitter_bypasses_every_other_strategy():
+    """A splitter (F2) takes priority even when group_column/time_column are also passed."""
+    from maestra.validation import RollingOriginSplit
+
+    df = pd.DataFrame({"g": [0] * 30, "x": range(30), "y": range(30)})
+    folds = validation._make_folds(df, "y", n_folds=99, seed=0, stratified=False,
+                                   group_column="g", splitter=RollingOriginSplit(3, 5))
+    assert len(folds) == 3  # splitter's own count, not the (irrelevant) n_folds=99
+
+
+def test_make_folds_with_a_splitter_and_time_column_sorts_by_time_first():
+    from maestra.validation import RollingOriginSplit
+
+    rng = np.random.default_rng(4)
+    order = rng.permutation(30)
+    df = pd.DataFrame({"ts": pd.date_range("2024-01-01", periods=30, freq="D").to_numpy()[order],
+                       "y": np.arange(30)[order]})
+    folds = validation._make_folds(df, "y", n_folds=1, seed=0, stratified=False,
+                                   time_column="ts", splitter=RollingOriginSplit(1, 5))
+    train_idx, test_idx = folds[0]
+    assert df["ts"].iloc[train_idx].max() < df["ts"].iloc[test_idx].min()
+
+
+def test_cross_validate_with_a_splitter_reports_the_splitters_actual_fold_count():
+    """cross_validate's n_folds reflects the splitter, not the (here mismatched) n_folds kwarg."""
+    from sklearn.linear_model import LinearRegression
+
+    from maestra.engine import SklearnEngine
+    from maestra.validation import RollingOriginSplit
+
+    df = pd.DataFrame({"x": list(range(40)), "y": [float(2 * i) for i in range(40)]})
+    cv = cross_validate(df, "y", cleaning_plan=None, feature_plan=None, model_dir="x",
+                        time_limit=1, n_folds=99, seed=0,
+                        engine=SklearnEngine(LinearRegression()),
+                        splitter=RollingOriginSplit(n_origins=4, horizon=5))
+    assert cv.n_folds == 4 and len(cv.fold_scores) == 4
+
+
 def test_build_adversarial_data_drops_id_and_labels_rows():
     plan = {"columns_to_drop": [{"column": "id", "reason": "ID"}], "imputations": []}
     train = pd.DataFrame({"id": [1, 2], "f": [1.0, 2.0], "y": [0, 1]})

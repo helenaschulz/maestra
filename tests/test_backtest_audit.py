@@ -13,6 +13,7 @@ from maestra.backtest_audit import (
     quantify_backtest_lie,
     rolling_origins,
     series_leak_check,
+    series_leak_null,
     split_design_check,
 )
 from maestra.engine import TrainingResult
@@ -158,6 +159,60 @@ def test_series_leak_check_none_for_too_little_data(monkeypatch):
     assert series_leak_check(df, "sales", "date", "store_id", time_limit=1) is None
 
 
+# --- series_leak_null (F2): the null-band control that CAN drive a verdict -----------------
+
+def test_series_leak_null_detects_a_genuine_leak(monkeypatch):
+    """The true series labels predict the boundary far better than permuted ones -> leaking."""
+    import maestra.validation as validation_mod
+
+    def fake(*a, model_dir, **k):
+        return 0.95 if "observed" in model_dir else 0.55
+
+    monkeypatch.setattr(validation_mod, "adversarial_validation", fake)
+    df = _forecast_df()
+    df["store_id"] = np.arange(len(df)) % 5
+    result = series_leak_null(df, "sales", "date", "store_id", n_perm=10, time_limit=1)
+    assert result["observed"] == pytest.approx(0.95)
+    assert result["null_mean"] == pytest.approx(0.55)
+    assert result["n_perm"] == 10
+    assert result["verdict"] == "leaking"
+
+
+def test_series_leak_null_not_leaking_when_real_and_permuted_labels_perform_alike(monkeypatch):
+    """Pure trend: the real series labels help no more than random relabellings -> not leaking."""
+    import maestra.validation as validation_mod
+
+    monkeypatch.setattr(validation_mod, "adversarial_validation", lambda *a, **k: 0.97)
+    df = _forecast_df()
+    df["store_id"] = np.arange(len(df)) % 5
+    result = series_leak_null(df, "sales", "date", "store_id", n_perm=10, time_limit=1)
+    assert result["observed"] == pytest.approx(0.97)
+    assert result["null_mean"] == pytest.approx(0.97)
+    assert result["verdict"] == "not leaking"
+
+
+def test_series_leak_null_requires_a_margin_over_the_95th_percentile(monkeypatch):
+    """A tiny, noise-level excess over the null band must not flip the verdict to leaking."""
+    import maestra.validation as validation_mod
+
+    def fake(*a, model_dir, **k):
+        return 0.91 if "observed" in model_dir else 0.90  # +0.01 excess, below the 0.02 margin
+
+    monkeypatch.setattr(validation_mod, "adversarial_validation", fake)
+    df = _forecast_df()
+    df["store_id"] = np.arange(len(df)) % 5
+    result = series_leak_null(df, "sales", "date", "store_id", n_perm=10, time_limit=1)
+    assert result["verdict"] == "not leaking"
+
+
+def test_series_leak_null_none_for_too_little_data(monkeypatch):
+    import maestra.validation as validation_mod
+    monkeypatch.setattr(validation_mod, "adversarial_validation", lambda *a, **k: 0.93)
+    df = _forecast_df(n=10)
+    df["store_id"] = 0
+    assert series_leak_null(df, "sales", "date", "store_id", time_limit=1) is None
+
+
 # --- audit_backtest end-to-end (all three lies + a clean control) --------------------------
 
 def _patch_clean(monkeypatch):
@@ -181,6 +236,7 @@ def test_audit_backtest_clean_dataset_is_low_risk_false_alarm_control(monkeypatc
     assert report.future_leaks == []
     assert report.split_design["direction"] == "undecided"
     assert report.series_leak_auc == pytest.approx(0.50)
+    assert report.series_leak["verdict"] == "not leaking"
     assert report.risk_level == "low"
 
 
@@ -206,6 +262,16 @@ def test_audit_backtest_finds_a_missing_gap(monkeypatch):
     assert report.risk_level == "high"
 
 
+def test_audit_backtest_threads_n_origins_into_split_design_check(monkeypatch):
+    """F2: --origins is a real parameter, not just a CLI no-op -- it must reach the actual fits."""
+    _patch_clean(monkeypatch)
+    import maestra.engine as engine_mod
+    monkeypatch.setattr(engine_mod, "train_and_evaluate", _mock_train_and_evaluate(True))
+    df = _forecast_df(n=400)
+    report = audit_backtest(df, "sales", "date", model="m", n_origins=5)
+    assert report.split_design["n_origins"] == 5
+
+
 def test_audit_backtest_records_series_auc_but_does_not_escalate_risk(monkeypatch):
     """A high series-boundary AUC is RECORDED as diagnostic but must NOT drive risk_level: without
     a time-trend control it is ~1.0 for any trending series, so it carries no verdict meaning yet
@@ -218,17 +284,43 @@ def test_audit_backtest_records_series_auc_but_does_not_escalate_risk(monkeypatc
     df["store_id"] = np.arange(len(df)) % 5
     report = audit_backtest(df, "sales", "date", model="m", series_column="store_id")
     assert report.series_leak_auc == pytest.approx(0.999)  # still computed and surfaced
+    # a constant mock makes observed == every permutation -> the null-tested check agrees: no leak
+    assert report.series_leak["verdict"] == "not leaking"
     assert report.risk_level == "low"                       # but NOT a verdict driver anymore
 
 
+def test_audit_backtest_finds_a_genuine_series_leak(monkeypatch):
+    """F2: the null-tested series_leak check CAN drive risk_level, unlike series_leak_auc."""
+    _patch_clean(monkeypatch)
+    import maestra.validation as validation_mod
+
+    def fake(*a, model_dir, **k):
+        return 0.95 if "observed" in model_dir else 0.55
+
+    monkeypatch.setattr(validation_mod, "adversarial_validation", fake)
+    df = _forecast_df()
+    df["store_id"] = np.arange(len(df)) % 5
+    report = audit_backtest(df, "sales", "date", model="m", series_column="store_id")
+    assert report.series_leak["verdict"] == "leaking"
+    assert report.risk_level == "high"
+
+
 def test_risk_level_ignores_series_auc_across_the_whole_range():
-    """The series AUC never changes the verdict, at any value -- a pure trending series with a
-    near-perfect boundary AUC and no real leak/optimism stays 'low'."""
+    """series_leak_auc never changes the verdict, at any value -- a pure trending series with a
+    near-perfect boundary AUC and no real leak/optimism stays 'low'. A high series_leak_auc
+    WITHOUT the null-tested check also deciding 'leaking' must likewise not escalate (F2)."""
     for auc in (0.5, 0.65, 0.8, 0.999, 1.0):
         report = BacktestAuditReport(csv="x", n_rows=500, target="y", time_column="t",
                                      series_column="s", future_leaks=[], split_design=None,
                                      series_leak_auc=auc)
         assert report.risk_level == "low", f"series AUC {auc} must not escalate risk_level"
+        # same high raw AUC, now WITH a series_leak dict attached but verdict 'not leaking'
+        report_with_null = BacktestAuditReport(
+            csv="x", n_rows=500, target="y", time_column="t", series_column="s",
+            future_leaks=[], split_design=None, series_leak_auc=auc,
+            series_leak={"observed": auc, "null_mean": auc, "null_p95": auc, "n_perm": 20,
+                        "verdict": "not leaking"})
+        assert report_with_null.risk_level == "low"
 
 
 def test_audit_backtest_flags_target_framing_candidate(monkeypatch):
