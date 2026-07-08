@@ -1103,22 +1103,37 @@ acceptance partly an artifact of validating on the wrong (more pessimistic, non-
 shape, rather than a property of the target's distribution alone? Not resolved here — flagged,
 not silently absorbed into "the new number is just different."
 
-**Submission produced, LB submission NOT completed by Cody.** `data/submission_bike-sharing.csv`
-(6493 rows, `datetime,count`) was written and is ready. The actual `kaggle competitions submit`
-call was **blocked by the auto-mode safety classifier** ("real-world action on an external
-platform, inferred from a strategy document rather than directly requested") when Cody attempted
-it — correctly so; Cody did not attempt to work around it. Per `STRATEGY_NEW.md`'s own documented
-fallback, this is Helena's step:
+**LB receipt (Helena submitted, 2026-07-08): Public = Private 0.43660 RMSLE — a real,
+stable improvement over K1's 0.48758.** `data/submission_bike-sharing.csv` (the `time_local`
+run) scored **0.43660** on the live bike-sharing-demand leaderboard, IDENTICAL public and private
+(no public-LB overfitting — a clean stability signal in itself). Against K1's original
+random-folds submission (Public LB **0.48758**, the `−0.116`-gap row in the K1 submissions table
+above), that is a **−0.051 RMSLE improvement (~10.5% relative)** on the same competition's native
+metric — a valid LB-to-LB comparison (both scored by Kaggle in RMSLE on the same test set), unlike
+the CV numbers (see below).
 
-    .venv311/bin/kaggle competitions submit -c bike-sharing-demand -f data/submission_bike-sharing.csv -m "maestra F2 cv=-73.4117 (time_local, framing rejected)"
+**Honest causal attribution — this is a whole-pipeline improvement, NOT an isolated `time_local`
+effect, and NOT a CV↔LB gap number.** Three things changed between the K1 submission and this one,
+so the −0.051 cannot be credited to `time_local` alone:
+1. **Pipeline model**: gpt-4o → `claude-opus-4-8` (different cleaning/FE/framing proposals).
+2. **Target framing**: log1p ACCEPTED (K1) → REJECTED (here) — the final K1 model trained on
+   log1p, this one on raw counts. Since the LB metric is RMSLE, log1p *usually* helps it, so a
+   raw-count model scoring BETTER is mildly counterintuitive and is itself confounded by the model
+   change — flagged, not spun.
+3. **Fold strategy**: random → `time_local`. Per this ledger's own K1 note ("this does not affect
+   the submitted predictions' quality — the final model is trained on the full data regardless of
+   which CV variant *estimates* it"), the fold change affects the submission only INDIRECTLY, via
+   which interventions the CV gate accepts (here: it flipped framing off). It is not a direct
+   driver of the final model's predictions.
 
-Once submitted, the resulting LB score is in RMSLE (the competition's native metric) and is
-**still not directly a "gap" against the −73.41 CV** (different metric space, see above) — it
-would be a fresh, standalone data point on whether `time_local`'s fold structure produces a
-submission that holds up on the real leaderboard, not a like-for-like replay of K1's original
-gap number. **F2's "CV↔LB-Gap-Verbesserung" bar for bike-sharing is therefore honestly
-PENDING**, not met and not underpowered — blocked on a step outside Cody's authorized scope, not
-on statistics.
+So the clean "CV↔LB gap shrinks toward 0" demonstration the F2 goal envisioned is **only partially
+delivered**: the mechanism ships and is confirmed reachable/proposed (the headline), and the new
+pipeline's submission demonstrably generalizes better on the real LB — but because the framing flip
+moved this run's CV into raw-count RMSE space (−73.41) while the LB is RMSLE, there is no
+like-for-like CV↔LB gap number for the `time_local` run to set against K1's −0.116. **A clean
+isolated measurement remains a well-scoped follow-up**: re-run bike-sharing with `time_local` folds
+AND framing forced ON (so the CV is RMSLE-comparable), then the `time_local` CV can be set directly
+against this 0.43660 LB. Not done tonight; documented rather than fudged.
 
 **Full run details (fold structure, feature/cleaning plans, framing rationale):** `runs.jsonl`,
 last entry, timestamp `2026-07-08T05:47:43`.
