@@ -1,8 +1,9 @@
 # Maestra as an MCP server
 
-Maestra's MCP server exposes three tools to LLM frontends (Claude Desktop, Claude Code): the
-non-DS channel. The frontend hands over a CSV path and a target column; the tools consume
-Maestra's own verdicts and never build or return a model. Every response is a structured record
+Maestra's MCP server exposes four tools to LLM frontends (Claude Desktop, Claude Code): the
+non-DS channel. The frontend hands over a CSV path and a target column (plus a time column for the
+forecasting audit); the tools consume Maestra's own verdicts and never build or return a model.
+Every response is a structured record
 (`{"verdict": "ok", ...}` or `{"verdict": "rejected", "reason": "..."}`) — never a traceback, never
 a raw DataFrame.
 
@@ -11,10 +12,11 @@ a raw DataFrame.
 | `audit_csv(path, target, model="gpt-4o")` | Is this CSV safe to model at all? (validation design, leakage, structural traps) |
 | `check_validation(path, target, model="gpt-4o")` | How must folds be built, and how optimistic is a naive random split — *measured*, not asserted |
 | `feasibility(path, target, model="gpt-4o")` | What quality is achievable, what drives it, what's risky — without training a model you keep |
+| `audit_backtest(path, target, time_column, series_column=None, model="gpt-4o")` | Does an existing *forecasting* setup leak? Future-known features, a *measured* naive-vs-embargoed backtest gap over rolling origins, and a null-controlled series-boundary shift check |
 
 Each tool needs a real LLM call (the `model` argument, an OpenAI/Anthropic model name via
-LiteLLM) and, for `check_validation`/`feasibility`, real AutoGluon training under a hard, fixed
-time budget — none of that is a knob the frontend can turn. Conservative defaults are baked in
+LiteLLM) and, for `check_validation`/`feasibility`/`audit_backtest`, real AutoGluon training under
+a hard, fixed time budget — none of that is a knob the frontend can turn. Conservative defaults are baked in
 by design (see `CLAUDE.md` — the LLM proposes, a deterministic gate decides).
 
 ## Install
@@ -106,6 +108,30 @@ shell environment when launching local MCP servers, so if `OPENAI_API_KEY` is al
 > driver is `tenure_months`, followed by [...]. The same elevated risk from the audit still
 > applies — group your folds before trusting this number."
 
+### Forecasting: `audit_backtest`
+
+For a time-series setup, the frontend also passes the ordering column (and optionally a series-id
+column):
+
+> **You:** I have `data/sales.csv`, target `units_sold`, ordered by `date`, one row per
+> `store_id` per day. Is my backtest trustworthy?
+>
+> **Claude** *(calls `audit_backtest("data/sales.csv", "units_sold", "date", series_column="store_id")`)*
+> → `{"verdict": "ok", "risk_level": "high", "future_leaks": [{"column": "customers",
+> "correlation_with_target": 0.892, "reason": "only known after the period has ended"}],
+> "split_design": {"mean_gap": 12.4, "direction": "optimistic (dangerous)", "n_origins": 5},
+> "series_leak_auc": 1.0, "html_report": "data/sales.csv.backtest_audit.html"}`
+>
+> Claude: "High risk. `customers` would not be known at real forecast time (|corr| 0.89 with the
+> target, and it is absent from a true future window), so training on it leaks. And a naive
+> no-gap backtest overstates quality by ~12.4 versus an embargoed one across 5 rolling origins.
+> The series-boundary AUC is diagnostic only (it does not yet separate real series leakage from
+> ordinary trend). Add an embargo and drop future-known columns before trusting your backtest."
+
+The tool trains no deployable model: every fit is a budget-bounded diagnostic backtest
+replication, and `series_leak_auc` is a caveated diagnostic that does **not** drive `risk_level`
+(only the future-leak finding and the measured split-design gap do).
+
 ## Guardrails (what the tools will and won't do)
 
 - **No tunable parameters beyond `path`/`target`/`model`.** CV settings, time budgets, and fold
@@ -113,8 +139,9 @@ shell environment when launching local MCP servers, so if `OPENAI_API_KEY` is al
   the best possible model.
 - **A minimum row count** (50) below which any judgment — LLM or CV — is noise, not signal;
   under it, the tools return a structured rejection instead of guessing.
-- **A wall-clock backstop per tool** (`audit_csv` 60s, `check_validation` 90s, `feasibility`
-  300s) on top of AutoGluon's own `time_limit`, which is the real, primary cost bound. The
+- **A wall-clock backstop per tool** (`audit_csv` 60s, `check_validation` 150s, `feasibility`
+  360s, `audit_backtest` 150s) on top of AutoGluon's own `time_limit`, which is the real, primary
+  cost bound. The
   backstop is best-effort (a background thread with a result timeout, not a hard process kill):
   if it fires, the tool returns a timeout rejection immediately, but the underlying AutoGluon
   call may keep running to completion in the background rather than being forcibly stopped.

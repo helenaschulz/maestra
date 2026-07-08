@@ -18,6 +18,7 @@ report.md
 mlebench_out/
 
 # Local working docs (kept out of the repo for now; RESULTS.md is committed)
+README_backlog.md
 docs/STRATEGY.md
 docs/STRATEGY_NEW.md
 docs/RELATED_WORK.md

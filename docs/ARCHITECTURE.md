@@ -62,6 +62,31 @@ This is also why `compare()` (P3) reuses `paired_delta_test` directly rather tha
 comparison logic: the arbiter is one piece of code, used everywhere a "does X measurably beat Y"
 question is asked — inside the pipeline, and as a standalone public API.
 
+## The forecasting audit reuses the same primitive
+
+The backtest audit ([`backtest_audit.py`](../src/maestra/backtest_audit.py), F1) is a separate
+diagnostic path, not a fifth plane. It answers "does an existing forecasting setup leak?" without
+building a deployable model, and it does so with the machinery already described, not a new
+decision mechanism:
+
+- **The future-leak check** is a Decision-plane proposal (the LLM flags columns that would be
+  unknown at real forecast time) that only becomes a finding after deterministic corroboration —
+  a `|correlation|`-with-target check, and, where available, absence from a true future window.
+  Same shape as every other agent: propose, then verify. The LLM never carries the verdict alone.
+- **The split-design gap** ("how much does a naive, no-gap backtest overstate quality?") is
+  measured by `quantify_backtest_lie`, which runs a naive vs. embargoed backtest across several
+  rolling origins and settles it with the **same Nadeau-Bengio-corrected paired test** the
+  intervention gate uses. A gap below its own MDE returns `undecided`, the same first-class
+  "underpowered" verdict `compare()` and the pipeline gates report.
+- **The series-boundary check** (`series_leak_check`) is a caveated diagnostic that does *not*
+  drive `risk_level`; its null-band control (`series_leak_null`, F2) separates real series-identity
+  leakage from ordinary trend by permuting series labels, again a measured band, not an assertion.
+
+The rolling-origin machinery this needs, `time_local` folds (a repeating within-period split) and
+the standalone `RollingOriginSplit` in [`validation.py`](../src/maestra/validation.py), is the
+same fold layer the Validation Strategist chooses from, so forecasting validation lands in the
+existing Validation plane rather than a parallel one.
+
 ## Why no agent framework
 
 The alternative — LangGraph, CrewAI, an actor/message-passing runtime — buys flexibility Maestra
@@ -91,10 +116,12 @@ would be a real signal to revisit this choice — not a default to reach for ear
   the function every accept/reject decision in the codebase eventually calls.
 - [`validation.py`](../src/maestra/validation.py) — the honest measurement every gate reads;
   `cross_validate()`'s `engine` parameter (P3) makes the fitting step itself pluggable without
-  touching the gate or the loop above it.
+  touching the gate or the loop above it. Also home to the fold strategies the Strategist selects
+  (random / group / time / `time_local`) and `RollingOriginSplit`, the standalone rolling-origin
+  splitter the backtest audit reuses.
 - [`engine.py`](../src/maestra/engine.py) — the `Engine` protocol: `AutoGluonEngine` (the
   pipeline's own path, unchanged), `SklearnEngine`/`LightGBMEngine` (for `compare()` and future
   lightweight gates). Adding an engine never changes what "measurably better" means.
-- [`mcp_server.py`](../src/maestra/mcp_server.py) — the same three planes, exposed as tools
-  instead of CLI flags: `audit_csv`/`check_validation`/`feasibility` each call straight into the
-  Validation/Arbitration planes and return a verdict record, never a model.
+- [`mcp_server.py`](../src/maestra/mcp_server.py) — the same planes, exposed as tools
+  instead of CLI flags: `audit_csv`/`check_validation`/`feasibility`/`audit_backtest` each call
+  straight into the Validation/Arbitration planes and return a verdict record, never a model.
