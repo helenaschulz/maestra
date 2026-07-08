@@ -1123,6 +1123,34 @@ on statistics.
 **Full run details (fold structure, feature/cleaning plans, framing rationale):** `runs.jsonl`,
 last entry, timestamp `2026-07-08T05:47:43`.
 
+**Opus vs. gpt-4o, directly tested (not just inferred from M9): Opus brought a real proposal
+gpt-4o did not, on the exact mechanism F2 built.** Given the IDENTICAL new (`period_candidates`-
+carrying) profile for bike-sharing, one cheap `propose_fold_strategy` call per model:
+
+| Model | strategy | period_column | rationale (start) |
+|---|---|---|---|
+| gpt-4o | `time` | — | "predicting 'count' over time... a time-based split is appropriate..." |
+| claude-opus-4-8 | `time_local` | `month_of:datetime` | "the real deployment splits each month into a training part (early days) and a test part (later days), repeated across every month rather than one global cutoff..." |
+
+gpt-4o sees the same `period_candidates` token in its profile input but does not reach for it —
+it defaults to the coarser, more pessimistic global `time` cut. Opus reads the token AND infers
+the repeating-deployment structure from the task's own semantics. So the `time_local` proposal in
+the full run above is attributable to the STRONGER MODEL, not merely to the Bau-1 code change —
+both were necessary, neither alone would have produced it (the code change is what makes
+`time_local` reachable at all; gpt-4o, offered the same opening, still doesn't take it). This
+directly answers F2's "did Opus suggest something gpt-4o wouldn't" requirement with a real,
+cheap (2 LLM calls, no AutoGluon) side-by-side, rather than inferring it from M9's unrelated
+17/17 tie.
+
+**Messung 3 (positive-rate dataset), skipped honestly.** No additional local dataset with a
+KNOWN genuine series/group leak (distinct from the three F1 tasks already re-run above, all of
+which are ordinary trending series with no such leak) was available without a new download —
+per `STRATEGY_NEW.md`'s own explicit allowance ("Fehlt Data lokal: überspringen + Ledger-Notiz,
+nicht neu herunterladen"), skipped rather than downloading new competition data. The positive
+side of `series_leak_null`'s detection claim rests on the offline synthetic fixture
+(`test_series_leak_null_detects_a_genuine_leak`); the negative side (no false alarms) now has
+three real-data confirmations (above), not just the synthetic control.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
