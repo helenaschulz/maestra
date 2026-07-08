@@ -1017,7 +1017,24 @@ control that would let a high AUC actually mean something remains F2 scope, not 
 mean/median close) — the framing check is not indiscriminately proposing log1p on every
 regression target.
 
-## Recurring pattern
+## F2 — rolling-origin CV, local/repeating time splits, series-leak null control (2026-07-08)
+
+**Pipeline-LLM smoke test (2026-07-08, before the paid battery, per STRATEGY_NEW.md's op
+requirement):** one cheap `propose_fold_strategy` call with `--model claude-opus-4-8` on a
+synthetic 60-row group+time df resolved cleanly (model string, `ANTHROPIC_API_KEY`, forced
+tool-call all worked) and returned a sensible, well-reasoned proposal (`group` by `store_id`,
+correctly explaining why `datetime`'s presence didn't override the dominant repeated-entity
+structure). No fallback to gpt-4o needed.
+
+**M9 regression, re-measured under claude-opus-4-8 (2026-07-08):** the same 17-dataset detection
+catalog (`scripts/strategist_detection_benchmark.py`, profile-only, no AutoGluon) re-run after
+Bau-1's `period_candidates` profiling change (new field on every column, visible to every
+Strategist call) — **17/17 (100%), 6/6 group, 5/5 time, 0/6 false alarms on iid data**, identical
+to M9's original claude-opus-4-8 row (`docs/RESULTS.md`'s M9 section) and to this run's own
+pre-Bau-1 baseline. The new profile field does not introduce false alarms or regress detection.
+Logged: `detection_benchmark.jsonl` (new `claude-opus-4-8` row, 2026-07-08T03:18:37).
+
+
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
 AutoGluon; on tps it helped slightly. The baseline comparison is the point — it keeps us honest.
