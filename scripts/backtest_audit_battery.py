@@ -55,8 +55,8 @@ def run_task(spec: dict, *, model: str, sample: int, seed: int, time_limit: int)
     return {
         "name": spec["name"], "n_rows_sampled": len(df), "risk_level": report.risk_level,
         "future_leaks": report.future_leaks, "split_design": report.split_design,
-        "series_leak_auc": report.series_leak_auc, "target_framing": report.target_framing,
-        "html_report": html_path,
+        "series_leak_auc": report.series_leak_auc, "series_leak": report.series_leak,
+        "target_framing": report.target_framing, "html_report": html_path,
     }
 
 

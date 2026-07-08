@@ -332,11 +332,12 @@ def render_audit(r, *, verdict_sentence: str | None = None) -> str:
 
 
 def _backtest_verdict(r) -> str:
-    """A deterministic stakeholder sentence for the F1 backtest audit, from its worst finding —
-    same framing convention as :func:`_audit_verdict`. The series-boundary AUC is deliberately
-    NOT a verdict driver here (see :attr:`~maestra.backtest_audit.BacktestAuditReport.risk_level`
-    / :func:`~maestra.backtest_audit.series_leak_check`): it is shown as caveated diagnostic,
-    never as the top-line verdict."""
+    """A deterministic stakeholder sentence for the F1/F2 backtest audit, from its worst finding
+    — same framing convention as :func:`_audit_verdict`. ``series_leak_auc``
+    (:func:`~maestra.backtest_audit.series_leak_check`) is deliberately NOT a verdict driver
+    here (see :attr:`~maestra.backtest_audit.BacktestAuditReport.risk_level`): it is shown as
+    caveated diagnostic, never as the top-line verdict. ``series_leak``
+    (:func:`~maestra.backtest_audit.series_leak_null`, F2) IS null-tested and can drive it."""
     if r.future_leaks:
         col = r.future_leaks[0]["column"]
         return (f"A column (<code>{_esc(col)}</code>) may not actually be known at forecast "
@@ -347,6 +348,12 @@ def _backtest_verdict(r) -> str:
                 f"test window) reports a better score than an embargoed one by "
                 f"{sd['mean_gap']:.4g} on average across {sd['n_origins']} origins — add a gap "
                 "before your test window to match real deployment.")
+    sl = r.series_leak
+    if sl and sl["verdict"] == "leaking":
+        return (f"The raw series identity (<code>{_esc(r.series_column)}</code>) itself predicts "
+                f"which side of your time split a row falls on — observed AUC {sl['observed']:.3f} "
+                f"clears the null band (95th percentile {sl['null_p95']:.3f} across "
+                f"{sl['n_perm']} permutations) — a genuine series-level leak, not just trend.")
     return ("No future leak and no measurable naive-backtest optimism — this backtest looks "
             "trustworthy on the checks that currently carry a verdict.")
 
@@ -390,12 +397,34 @@ def render_backtest_audit(r, *, verdict_sentence: str | None = None) -> str:
         series_body = (
             f"<p>Adversarial AUC across the time boundary (series column excluded): "
             f"<b>{auc:.3f}</b>.</p>"
-            "<p class='note'>Diagnostic only — this does <b>not</b> yet control for ordinary "
+            "<p class='note'>Diagnostic only — this does <b>not</b> control for ordinary "
             "time trend, so it does not affect the verdict above. A split exactly on time order "
             "makes any trending or seasonal series look highly separable (AUC near 1.0) from "
             "plain temporal signal alone, so a high value here is expected and is NOT evidence "
-            "of series-level leakage. Telling true series-identity leakage apart from expected "
-            "trend needs a shuffled-series control — planned for F2.</p>")
+            "of series-level leakage on its own. See the null-tested check below for that.</p>")
+
+    sl = r.series_leak
+    if sl is None:
+        series_leak_body = "<p class='muted'>Not checked (no series column, or too little data).</p>"
+    else:
+        series_leak_body = _kv_table([
+            ("Observed AUC (true series labels as a feature)", f"<b>{sl['observed']:.3f}</b>"),
+            ("Null band mean", _esc(f"{sl['null_mean']:.3f}")),
+            ("Null band 95th percentile", _esc(f"{sl['null_p95']:.3f}")),
+            ("Permutations", _esc(sl["n_perm"])),
+            ("Verdict", f"<b>{_esc(sl['verdict'])}</b>"),
+        ])
+        if sl["verdict"] == "leaking":
+            series_leak_body += (
+                "<p class='note'>The TRUE series labels predict which side of the time "
+                "boundary a row is on far better than random relabellings of the same labels "
+                "do — evidence the raw series identity itself (not just ordinary trend) leaks "
+                "across the split.</p>")
+        else:
+            series_leak_body += (
+                "<p class='note'>The true series labels predict the boundary about as well as "
+                "random relabellings — whatever separability exists is explained by ordinary "
+                "trend, not by series identity.</p>")
 
     tf = r.target_framing
     framing_body = ("<p class='muted'>Not applicable (target is not a non-negative numeric "
@@ -408,6 +437,7 @@ def render_backtest_audit(r, *, verdict_sentence: str | None = None) -> str:
         _section("Setup", _kv_table(setup), open_=True),
         _section("Future-leaking features", _findings_list(leaks), open_=True),
         _section("Split design: naive vs. embargoed backtest", split_body, open_=True),
+        _section("Series-identity leak (tested against a null band)", series_leak_body, open_=True),
         _section("Series-boundary shift (diagnostic, not a verdict)", series_body),
         _section("Target framing candidate", framing_body),
     ]
