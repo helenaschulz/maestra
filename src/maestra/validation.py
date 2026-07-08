@@ -18,6 +18,7 @@ CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -207,6 +208,33 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
     return list(splitter.split(df))
 
 
+# A period_candidates token from profiling.py (e.g. "month_of:datetime") — profile-only until
+# a time_local proposal actually needs it materialised for fold-building (F2).
+_PERIOD_TOKEN_RE = re.compile(r"^(month|week|dayofweek)_of:(.+)$")
+
+
+def _materialize_period(df: pd.DataFrame, token: str) -> pd.Series:
+    """Derive the period Series a ``period_candidates`` token (see ``profiling.py``) names,
+    e.g. ``"month_of:datetime"`` -> the month number of ``df["datetime"]``.
+
+    Row-independent and transient: called only from :func:`_time_local_folds` to build fold
+    membership, on a value never written back to ``df`` and never exposed to the engine as a
+    feature — materialising a period is not the same as engineering one.
+    """
+    match = _PERIOD_TOKEN_RE.match(token)
+    if not match:
+        raise ValueError(f"not a period token: {token!r}")
+    kind, col = match.group(1), match.group(2)
+    values = df[col]
+    if values.dtype.kind != "M":
+        values = pd.to_datetime(values, errors="coerce", format="mixed")
+    if kind == "month":
+        return values.dt.month
+    if kind == "week":
+        return values.dt.isocalendar().week.astype(int)
+    return values.dt.dayofweek  # kind == "dayofweek"
+
+
 def _time_local_folds(df: pd.DataFrame, time_column: str, period_column: str, n_folds: int):
     """Blocked expanding folds WITHIN each period, pooled across periods.
 
@@ -222,14 +250,22 @@ def _time_local_folds(df: pd.DataFrame, time_column: str, period_column: str, n_
     fold is exposed to every period (curing the global split's bias) while validation within
     each period still comes strictly after that period's training rows (matching a local,
     repeating deployment split). Positional indices, like every branch of :func:`_make_folds`.
+
+    ``period_column`` is normally a real column name; it may also be a ``period_candidates``
+    token (e.g. ``"month_of:datetime"``, F2) naming a period not yet materialised onto ``df`` —
+    handled here by deriving it transiently via :func:`_materialize_period`, never written back.
     """
     values = df[time_column]
     if values.dtype.kind not in "iufM":
         values = pd.to_datetime(values, errors="coerce", format="mixed")
     values = values.to_numpy()
+    if _PERIOD_TOKEN_RE.match(period_column):
+        period_values = _materialize_period(df, period_column)
+    else:
+        period_values = df[period_column]
     train_parts: list[list] = [[] for _ in range(n_folds)]
     val_parts: list[list] = [[] for _ in range(n_folds)]
-    for _, idx in df.groupby(period_column, sort=False).indices.items():
+    for _, idx in period_values.groupby(period_values, sort=False).indices.items():
         idx = idx[np.argsort(values[idx], kind="stable")]  # time-sorted, within this period only
         blocks = np.array_split(idx, n_folds + 1)
         for i in range(n_folds):

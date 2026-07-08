@@ -68,6 +68,35 @@ def test_time_local_folds_pool_every_period_and_validate_strictly_later_within_i
                 assert p_train["ts"].max() < p_val["ts"].min()  # local past -> future, per period
 
 
+def test_materialize_period_derives_month_week_dayofweek_tokens():
+    from maestra.validation import _materialize_period
+
+    df = pd.DataFrame({"ts": pd.date_range("2024-01-01", periods=10, freq="D")})
+    assert _materialize_period(df, "month_of:ts").tolist() == [1] * 10
+    assert _materialize_period(df, "dayofweek_of:ts").tolist() == \
+        df["ts"].dt.dayofweek.tolist()
+    assert _materialize_period(df, "week_of:ts").tolist() == \
+        df["ts"].dt.isocalendar().week.astype(int).tolist()
+
+
+def test_time_local_folds_accept_a_period_token_without_a_materialised_column():
+    """F2: _time_local_folds works from a period_candidates token alone (e.g. bike-sharing's
+    raw 'datetime'), the same shape validate_fold_strategy now verifies."""
+    df = _repeating_period_df()
+    df = df.rename(columns={"ts": "datetime"}).drop(columns=["month"])
+    folds = validation._make_folds(df, "y", 3, seed=0, stratified=False,
+                                   time_column="datetime", period_column="month_of:datetime")
+    assert len(folds) == 3
+    months = df["datetime"].dt.month
+    for train_idx, val_idx in folds:
+        assert set(months.iloc[train_idx]) == set(months.iloc[val_idx]) == set(months)
+        for m in months.unique():
+            p_train = df[(df.index.isin(train_idx)) & (months == m)]
+            p_val = df[(df.index.isin(val_idx)) & (months == m)]
+            if len(p_train) and len(p_val):
+                assert p_train["datetime"].max() < p_val["datetime"].min()
+
+
 def test_time_local_folds_are_deterministic():
     df = _repeating_period_df()
     a = validation._make_folds(df, "y", 3, seed=0, stratified=False, time_column="ts", period_column="month")
@@ -134,6 +163,50 @@ def test_time_local_too_few_periods_falls_back():
                        "y": range(10)})
     proposal = {"strategy": "time_local", "time_column": "ts", "period_column": "month",
                 "rationale": "r"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "random"
+    assert any("fewer than 2 periods" in line for line in log)
+
+
+def _bike_sharing_shape_df(n_months=4, rows_per_month=12):
+    """The N2 integration-gap shape: only a RAW datetime column, no separate period column —
+    period_candidates tokens (F2) are the only way to name a period here."""
+    rng = np.random.default_rng(3)
+    rows = []
+    for m in range(1, n_months + 1):
+        ts = pd.date_range(f"2024-{m:02d}-01", periods=rows_per_month, freq="D")
+        order = rng.permutation(rows_per_month)
+        rows.append(pd.DataFrame({"datetime": ts[order], "y": range(rows_per_month)}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_time_local_proposal_verified_with_a_period_token():
+    """F2: period_column may be a period_candidates token naming a period not yet materialised
+    onto df (closes the N2 gap — the Strategist sees this BEFORE any FE datetime split)."""
+    df = _bike_sharing_shape_df()
+    proposal = {"strategy": "time_local", "time_column": "datetime",
+                "period_column": "month_of:datetime", "rationale": "repeats monthly"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "time_local"
+    assert verified["time_column"] == "datetime"
+    assert verified["period_column"] == "month_of:datetime"
+    assert any("FOLDS time-local within 'month_of:datetime'" in line for line in log)
+    assert "month_of:datetime" not in df.columns  # verification never materialises onto df
+
+
+def test_time_local_period_token_referencing_nonexistent_column_falls_back():
+    df = _bike_sharing_shape_df()
+    proposal = {"strategy": "time_local", "time_column": "datetime",
+                "period_column": "month_of:no_such_column", "rationale": "r"}
+    verified, log = validate_fold_strategy(proposal, df, "y")
+    assert verified["strategy"] == "random"
+    assert any("nonexistent column" in line for line in log)
+
+
+def test_time_local_period_token_too_few_periods_falls_back():
+    df = _bike_sharing_shape_df(n_months=1)  # a single month -> only 1 period, not >= 2
+    proposal = {"strategy": "time_local", "time_column": "datetime",
+                "period_column": "month_of:datetime", "rationale": "r"}
     verified, log = validate_fold_strategy(proposal, df, "y")
     assert verified["strategy"] == "random"
     assert any("fewer than 2 periods" in line for line in log)

@@ -55,6 +55,62 @@ def test_examples_exclude_nan_and_truncate():
     assert len(x["examples"][0]) == 40 and x["examples"][0].endswith("...")
 
 
+def test_period_candidates_on_a_real_datetime64_column():
+    df = pd.DataFrame({
+        "ts": pd.date_range("2024-01-01", periods=10, freq="D"),
+        "target": range(10),
+    })
+    prof = profile_dataframe(df, "target")
+    ts = next(c for c in prof["columns"] if c["name"] == "ts")
+    assert ts["period_candidates"] == ["month_of:ts", "week_of:ts", "dayofweek_of:ts"]
+
+
+def test_period_candidates_on_a_parseable_date_string_column():
+    df = pd.DataFrame({
+        "datetime": [f"2024-01-{d:02d} 00:00:00" for d in range(1, 11)],
+        "target": range(10),
+    })
+    prof = profile_dataframe(df, "target")
+    dt = next(c for c in prof["columns"] if c["name"] == "datetime")
+    assert dt["period_candidates"] == [
+        "month_of:datetime", "week_of:datetime", "dayofweek_of:datetime"]
+    assert list(df.columns) == ["datetime", "target"]  # profiling never mutates df
+
+
+def test_period_candidates_empty_for_non_datetime_columns():
+    df = pd.DataFrame({
+        "amount": [1.0, 2.0, 3.0],
+        "year": [2020, 2021, 2022],  # numeric time axis -> 'time' strategy, not period slicing
+        "city": ["Berlin", "Hamburg", "Munich"],
+        "target": [0, 1, 0],
+    })
+    prof = profile_dataframe(df, "target")
+    by_name = {c["name"]: c for c in prof["columns"]}
+    assert by_name["amount"]["period_candidates"] == []
+    assert by_name["year"]["period_candidates"] == []
+    assert by_name["city"]["period_candidates"] == []
+
+
+def test_period_candidates_empty_for_mostly_unparseable_text():
+    df = pd.DataFrame({"notes": ["hello", "world", "??", "x"], "target": [0, 1, 0, 1]})
+    prof = profile_dataframe(df, "target")
+    notes = next(c for c in prof["columns"] if c["name"] == "notes")
+    assert notes["period_candidates"] == []
+
+
+def test_period_candidates_samples_large_free_text_columns_without_erroring():
+    """A long free-text column (bigger than the parse-probe sample) must not be flagged
+    datetime-like, and profiling it must stay cheap (bounded sample, not the whole column)."""
+    n = 500
+    df = pd.DataFrame({
+        "description": [f"lorem ipsum dolor sit amet number {i} et cetera" for i in range(n)],
+        "target": list(range(n)),
+    })
+    prof = profile_dataframe(df, "target")
+    desc = next(c for c in prof["columns"] if c["name"] == "description")
+    assert desc["period_candidates"] == []
+
+
 def test_description_context_wraps_and_truncates():
     from maestra.profiling import description_context
 
