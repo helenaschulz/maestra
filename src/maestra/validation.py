@@ -56,6 +56,50 @@ class CVResult:
     # one column per class), for probability metrics (roc_auc / log_loss)
 
 
+class RollingOriginSplit:
+    """A standalone, sklearn-compatible rolling-origin backtest splitter (F2).
+
+    ``n_origins`` expanding-window folds tiling the BACK of an already time-ordered sequence:
+    fold ``i``'s test block is ``horizon`` rows wide, ``gap`` rows are embargoed between a
+    fold's training prefix and its test block, and every fold trains on everything before its
+    own (embargoed) test block — the same rolling-origin backtest shape
+    ``backtest_audit.py``'s ``rolling_origins`` uses for the F1 audit, formalised here as a
+    reusable ``get_n_splits``/``split`` object usable anywhere a sklearn splitter is accepted
+    (:func:`cross_validate`'s ``splitter`` kwarg, hence :func:`~maestra.compare.compare`).
+
+    Like sklearn's own ``TimeSeriesSplit``, this assumes the row order it is given already IS
+    the time order — sort your data (or pass a ``time_column`` through :func:`_make_folds`,
+    which sorts before handing rows to any splitter) before use.
+
+    Unlike ``TimeSeriesSplit``, an infeasible request (too few rows for the requested origins/
+    horizon/gap) raises rather than silently yielding fewer folds — a caller asking for
+    ``n_origins`` splits gets exactly that many, or an explicit error explaining why not.
+    """
+
+    def __init__(self, n_origins: int, horizon: int, gap: int = 0):
+        self.n_origins = n_origins
+        self.horizon = horizon
+        self.gap = gap
+
+    def get_n_splits(self, X=None, y=None, groups=None) -> int:
+        return self.n_origins
+
+    def split(self, X, y=None, groups=None):
+        n = len(X)
+        min_required = self.n_origins * self.horizon + self.gap + 1
+        if n < min_required:
+            raise ValueError(
+                f"RollingOriginSplit needs at least {min_required} rows for "
+                f"{self.n_origins} origin(s) x {self.horizon}-row horizon (gap={self.gap}); "
+                f"got {n}"
+            )
+        for i in range(self.n_origins):
+            test_end = n - (self.n_origins - 1 - i) * self.horizon
+            test_start = test_end - self.horizon
+            train_end = test_start - self.gap
+            yield np.arange(train_end), np.arange(test_start, test_end)
+
+
 def paired_delta_test(deltas: list[float], *, sigma_mult: float = 2.0,
                       min_abs: float = 1e-4, test_train_ratio: float = 0.0) -> bool:
     """The arbiter's core accept rule on PAIRED differences (fold-wise or seed-wise).
@@ -172,7 +216,7 @@ def _is_classification(y: pd.Series) -> bool:
 
 def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratified: bool,
                 group_column: str | None = None, time_column: str | None = None,
-                period_column: str | None = None):
+                period_column: str | None = None, splitter=None):
     """Yield ``(train_idx, val_idx)`` pairs (positional). The single place fold strategy is
     chosen. ``group_column`` keeps every entity's rows in ONE fold (GroupKFold);
     ``time_column`` yields expanding-window splits where validation is strictly later than
@@ -180,15 +224,31 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
     together yield LOCAL within-period blocked folds (:func:`_time_local_folds`) for a
     deployment split that repeats every period rather than cutting the whole timeline once.
     All three override stratification — they exist precisely because a random/stratified
-    split would lie."""
+    split would lie.
+
+    ``splitter`` (F2) — an arbitrary sklearn-compatible splitter (e.g. :class:`RollingOriginSplit`)
+    — takes priority over every other argument when given. Rows are handed to it in
+    ``time_column``'s time-sorted order when a ``time_column`` is ALSO given (matching the
+    plain ``time_column`` branch's own convention); otherwise in ``df``'s own row order, same as
+    sklearn's ``TimeSeriesSplit`` assumes the caller pre-sorted it.
+    """
+    if splitter is not None:
+        if time_column is not None:
+            values = df[time_column]
+            if values.dtype.kind not in "iufM":
+                values = pd.to_datetime(values, errors="coerce", format="mixed")
+            order = np.argsort(values.to_numpy(), kind="stable")
+        else:
+            order = np.arange(len(df))
+        return [(order[tr], order[te]) for tr, te in splitter.split(order)]
     if group_column is not None:
         # Keep stratification when the target is a class label: StratifiedGroupKFold balances the
         # class mix across folds while still never splitting an entity.
         if stratified:
-            splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            gkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
         else:
-            splitter = GroupKFold(n_splits=n_folds)
-        return list(splitter.split(df, df[target], groups=df[group_column]))
+            gkf = GroupKFold(n_splits=n_folds)
+        return list(gkf.split(df, df[target], groups=df[group_column]))
     if time_column is not None and period_column is not None:
         return _time_local_folds(df, time_column, period_column, n_folds)
     if time_column is not None:
@@ -199,13 +259,13 @@ def _make_folds(df: pd.DataFrame, target: str, n_folds: int, seed: int, stratifi
         # Note: expanding windows train on growing prefixes, so the fold scores are not
         # identically distributed and their mean is a biased (typically pessimistic) estimate.
         # That is inherent to honest temporal validation, not a defect to fix here.
-        splitter = TimeSeriesSplit(n_splits=n_folds)
-        return [(order[tr], order[va]) for tr, va in splitter.split(order)]
+        tss = TimeSeriesSplit(n_splits=n_folds)
+        return [(order[tr], order[va]) for tr, va in tss.split(order)]
     if stratified:
-        splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-        return list(splitter.split(df, df[target]))
-    splitter = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    return list(splitter.split(df))
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        return list(skf.split(df, df[target]))
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    return list(kf.split(df))
 
 
 # A period_candidates token from profiling.py (e.g. "month_of:datetime") — profile-only until
@@ -294,7 +354,7 @@ def _process_fold(fold_train, fold_val, target, cleaning_plan, feature_plan, gen
     return train, val
 
 
-def _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds, n_folds,
+def _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds,
                                 stratified, engine: Engine, generated_features, classification):
     """The P3 engine-agnostic CV path (see :func:`cross_validate`'s ``engine`` doc): one
     ``engine.fit``/``.score`` per fold, reusing the same fold-independent cleaning/FE fitting
@@ -315,7 +375,7 @@ def _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds, 
         fold_scores=fold_scores,
         mean=float(np.mean(fold_scores)),
         std=float(np.std(fold_scores)),
-        n_folds=n_folds,
+        n_folds=len(folds),  # the ACTUAL fold count -- a splitter (F2) may not match n_folds
         stratified=stratified,
         greater_is_better=True,
     )
@@ -341,6 +401,7 @@ def cross_validate(
     sample_weight: str | None = None,
     target_transform=None,
     engine: "Engine | None" = None,
+    splitter=None,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -350,7 +411,8 @@ def cross_validate(
         cleaning_plan / feature_plan: Plans whose *parameters* are re-fitted per fold.
         model_dir: Base dir for AutoGluon artefacts (one sub-dir per fold).
         time_limit: Training budget per fold.
-        n_folds: Number of folds (>= 2).
+        n_folds: Number of folds (>= 2). Advisory when ``splitter`` is given — the returned
+            :class:`CVResult`'s ``n_folds`` reflects the splitter's ACTUAL fold count.
         seed: Seed for the (deterministic) fold split.
         stratified: Force stratification on/off; default = on for classification targets.
         target_transform: Optional :class:`~maestra.target_framing.TargetTransform`
@@ -366,6 +428,10 @@ def cross_validate(
             concepts with no equivalent here), ``eval_metric`` unused, OOF predictions/probs
             not collected. Used by ``compare()`` to run the arbiter over arbitrary
             sklearn-compatible estimators.
+        splitter: ``None`` (default) or an arbitrary sklearn-compatible splitter (F2, e.g.
+            :class:`RollingOriginSplit`) — takes priority over ``group_column``/``time_column``/
+            ``period_column``/stratification when given (see :func:`_make_folds`). Reusable
+            standalone via :func:`~maestra.compare.compare`.
 
     Returns:
         A :class:`CVResult` with the per-fold scores and their mean/std.
@@ -374,11 +440,11 @@ def cross_validate(
     use_stratified = classification if stratified is None else (stratified and classification)
     folds = _make_folds(df, target, n_folds, seed, use_stratified,
                         group_column=group_column, time_column=time_column,
-                        period_column=period_column)
+                        period_column=period_column, splitter=splitter)
 
     if engine is not None and not isinstance(engine, AutoGluonEngine):
         return _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds,
-                                           n_folds, use_stratified, engine, generated_features,
+                                           use_stratified, engine, generated_features,
                                            classification)
 
     fold_scores: list[float] = []
@@ -454,7 +520,7 @@ def cross_validate(
         fold_scores=fold_scores,
         mean=float(np.mean(fold_scores)),
         std=float(np.std(fold_scores)),
-        n_folds=n_folds,
+        n_folds=len(folds),  # the ACTUAL fold count -- a splitter (F2) may not match n_folds
         stratified=use_stratified,
         greater_is_better=bool(greater_is_better),
         oof_pred=oof_pred,
