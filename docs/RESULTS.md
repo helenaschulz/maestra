@@ -1126,14 +1126,16 @@ so the −0.051 cannot be credited to `time_local` alone:
    which interventions the CV gate accepts (here: it flipped framing off). It is not a direct
    driver of the final model's predictions.
 
-So the clean "CV↔LB gap shrinks toward 0" demonstration the F2 goal envisioned is **only partially
-delivered**: the mechanism ships and is confirmed reachable/proposed (the headline), and the new
-pipeline's submission demonstrably generalizes better on the real LB — but because the framing flip
-moved this run's CV into raw-count RMSE space (−73.41) while the LB is RMSLE, there is no
-like-for-like CV↔LB gap number for the `time_local` run to set against K1's −0.116. **A clean
-isolated measurement remains a well-scoped follow-up**: re-run bike-sharing with `time_local` folds
-AND framing forced ON (so the CV is RMSLE-comparable), then the `time_local` CV can be set directly
-against this 0.43660 LB. Not done tonight; documented rather than fudged.
+So the clean "CV↔LB gap shrinks toward 0" demonstration the F2 goal envisioned is not delivered by
+THIS run in isolation: the mechanism ships and is confirmed reachable/proposed (the headline), and
+the new pipeline's submission demonstrably generalizes better on the real LB — but because the
+framing flip moved this run's CV into raw-count RMSE space (−73.41) while the LB is RMSLE, there is
+no like-for-like CV↔LB gap number for the `time_local` run to set against K1's −0.116. **The clean
+isolated measurement is Messung 4 below** (2026-07-09) — and it does NOT force framing on (which
+would have mismatched the raw-count LB): it computes RMSLE directly from the out-of-fold
+predictions, holding the model constant by reusing this exact logged plan, and it decisively
+delivers the CV↔LB-honesty claim (`time_local` gap −0.006 vs random −0.126) while refining the
+K1 log1p story.
 
 **Full run details (fold structure, feature/cleaning plans, framing rationale):** `runs.jsonl`,
 last entry, timestamp `2026-07-08T05:47:43`.
@@ -1165,6 +1167,75 @@ nicht neu herunterladen"), skipped rather than downloading new competition data.
 side of `series_leak_null`'s detection claim rests on the offline synthetic fixture
 (`test_series_leak_null_detects_a_genuine_leak`); the negative side (no false alarms) now has
 three real-data confirmations (above), not just the synthetic control.
+
+### Messung 4 — bike-sharing fold×metric ablation, MODEL HELD CONSTANT (2026-07-09)
+
+The isolation the Messung-1 receipt left as a follow-up, done right (advisor-designed). Instead of
+a fresh, non-deterministic Opus run, it **reuses the exact logged cleaning+feature plan of the
+0.43660 run** (`runs.jsonl`, `2026-07-08T05:47:43`) across a 2×2 matrix — {random KFold,
+`time_local`} × {raw, log1p} — everything else identical (`seed=42`, `n_folds=3`,
+`presets=best_quality`, `time_limit=1200`). **Zero LLM calls** (plan reused → model held constant,
+so fold structure is the isolated variable; a fresh Opus run would have reintroduced the plan
+confound). RMSLE is computed from each cell's out-of-fold predictions (always count-space), so it
+is directly LB-comparable — unlike the pipeline's raw-count-RMSE CV number.
+Script: `scripts/bike_sharing_fold_metric_ablation.py`; per-cell raw output `bike_metric_ablation.jsonl`.
+
+**Sanity anchor passed.** The `(time_local, raw)` cell reproduced the deployed fold_scores
+`[-36.43, -128.07, -55.69]` (mean −73.398 vs the logged −73.412) — the plan/config reconstruction
+is faithful, so the RMSLE numbers are trustworthy.
+
+**Finding 1 — CV↔LB honesty is a clean, decisive fold-structure effect (the headline).** OOF-RMSLE
+vs the live LB 0.43660, model constant:
+
+| fold structure (raw target) | OOF-RMSLE (native) | gap vs LB | OOF-RMSLE (common-support n=8161) | gap vs LB |
+|---|---|---|---|---|
+| **time_local** | 0.43067 | **−0.006** | 0.43067 | **−0.006** |
+| **random** | 0.31083 | −0.126 | 0.30038 | **−0.136** |
+
+`time_local` reads the truth almost exactly (−0.006); random folds are optimistic by ~0.13. The
+**common-support column** (both scored on the identical 8161 rows `time_local` covers) rules out
+the coverage confound — on the same rows, random still reads 0.300 vs `time_local`'s 0.431, truth
+0.437. This is the F2/README thesis isolated: **the fold structure alone moves the CV↔LB gap from
+−0.13 to −0.006, with the model held fixed.** It also independently REPLICATES K1's random-folds
+optimism (−0.126 here ≈ K1's −0.116) — now under Opus, so that finding is not a gpt-4o artifact.
+(Caveat kept honest: `time_local`'s OOF omits each month's earliest block — the rows least like the
+LB's day-20+ test window — which biases its OOF slightly TOWARD the LB distribution, i.e. mildly
+favourable to the honesty claim; the common-support contrast against random is the coverage-clean
+part and does not depend on it.)
+
+**Finding 2 — the target-framing arbiter scores the WRONG metric for an RMSLE competition (the
+sharp mechanistic finding).** The product arbiter compares log1p vs raw in raw-count RMSE
+(`_ag_score`), not RMSLE. Running the same NB-corrected arbiter (`improves_beyond_noise`) in both
+spaces, per fold structure (base=raw, trial=log1p):
+
+| fold structure | raw-count RMSE space (arbiter's actual space) | RMSLE space (competition metric) |
+|---|---|---|
+| random | log1p **rejected** (Δ −1.22, MDE 1.39) | log1p **ACCEPTED, decisive** (Δ +0.043, MDE 0.025) |
+| time_local | log1p rejected (Δ −5.35, MDE 15.04) | log1p better but undecided (Δ +0.020, MDE 0.092) |
+
+The crisp cell: **random folds, log1p — rejected in raw-count RMSE but decisively accepted in
+RMSLE** (same data, same folds, same model; only the scoring metric differs, and the verdict
+flips). So the arbiter's raw-count-RMSE scoring rejects exactly the transform that helps the
+deployment metric. In the correct metric, log1p's point estimate helps in ALL four cells (RMSLE:
+random 0.311→0.268, time_local 0.431→0.420). **Actionable follow-up (future note, not this run):
+score the target-framing arbiter in the run's real eval metric for metric-transform competitions.**
+
+**Finding 3 — the K1 "fold-structure artifact" question: answered, and it's a NO (against the
+original hypothesis).** The hypothesis was that K1 accepted log1p (gpt-4o, random) only because
+random folds flattered it. But with the **model held constant** (Opus plan), log1p is rejected
+under BOTH fold structures in the arbiter's own raw-count-RMSE space — random folds do NOT
+reproduce K1's acceptance. So the K1→F2 accept→reject flip is **not** attributable to the fold
+structure; it is driven by the model/plan change (gpt-4o→Opus). Fold structure only modulates the
+DECISIVENESS of the RMSLE-space verdict (decisive accept under random → underpowered under
+`time_local`, whose honest higher variance widens the MDE), not its direction. Reported straight,
+even though it refutes the tidier "it was a fold artifact" guess the Messung-1 note floated.
+
+**Power/scope caveats.** 3 folds → wide MDEs; three of the four framing verdicts are underpowered
+(|Δ| < MDE) and reported as such, not as "no effect". The findings hold for this ONE logged plan
+(deliberately — it is the plan that produced 0.43660). **Optional Helena confirmation:** log1p
+helps in RMSLE across all cells, so a log1p full-train submission would plausibly score ~0.42 vs the
+deployed raw model's 0.437 — a single optional LB submit would lift Finding 2 from CV-level to
+LB-confirmed. Not required for the core claims, and (like every submit) Helena's step.
 
 ## Recurring pattern
 
