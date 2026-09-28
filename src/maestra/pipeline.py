@@ -35,7 +35,7 @@ from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
 from maestra.target_framing import propose_target_framing, validate_target_framing
 from maestra.intervention import CVBudget, run_counterfactual
-from maestra.validation import CVResult, adversarial_validation, cross_validate
+from maestra.validation import CVResult, adversarial_validation, cross_validate, rescore_cv
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -200,8 +200,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  hybrid=False, hybrid_max_candidates=5, hybrid_threshold=2.0,
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False,
-                 target_framing=False, text_features=False, cv_budget=None,
-                 presets=None, sample_weight=None) -> PipelineResult:
+                 target_framing=False, framing_metric=None, text_features=False,
+                 cv_budget=None, presets=None, sample_weight=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -313,13 +313,18 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         tf_proposal = propose_target_framing(
             model, profile_dataframe(df, target), df, target, research_context)
         transform, tf_log = validate_target_framing(
-            tf_proposal, df, target, cv.problem_type, cv.eval_metric)
+            tf_proposal, df, target, cv.problem_type, cv.eval_metric, framing_metric)
         accepted, tf_delta = None, None
         if transform is not None:
-            outcome, cv = run_counterfactual(
-                f"target:{transform.name}", "target_framing", "target_framing",
-                base=cv, budget=budget,
-                trial_fn=lambda: cross_validate(
+            # With ``framing_metric`` both arms are rescored from their OOF predictions in the
+            # deployment metric (same folds, no retraining) and the accept rule runs there; the
+            # reported CV stays in the engine metric, so it remains comparable to a --no-llm arm.
+            def _arbiter_view(c):
+                return rescore_cv(c, df[target], framing_metric) if framing_metric else c
+            trial_cv: dict = {}
+
+            def _trial():
+                trial_cv["raw"] = cross_validate(
                     df, target, cleaning_plan=cleaning_plan, feature_plan=feature_plan,
                     model_dir=f"{model_dir}/framing", time_limit=cv_time_limit, n_folds=n_folds,
                     seed=seed, eval_metric=eval_metric, presets=presets,
@@ -327,7 +332,13 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                     generated_features=generated_features or None,
                     group_column=group_column, time_column=time_column,
                     period_column=period_column,
-                    target_transform=transform))
+                    target_transform=transform)
+                return _arbiter_view(trial_cv["raw"])
+            outcome, _ = run_counterfactual(
+                f"target:{transform.name}", "target_framing", "target_framing",
+                base=_arbiter_view(cv), budget=budget, trial_fn=_trial)
+            if outcome.accepted:
+                cv = trial_cv["raw"]
             if outcome.reason == "budget_exhausted":
                 tf_log.append(f"SKIP {transform.name} trial: cv budget exhausted "
                               f"({budget.spent}/{budget.limit} trials spent) — not measured")
@@ -336,12 +347,14 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                 verdict = "ACCEPT" if accepted else "REJECT"
                 tf_log.append(f"{verdict} {transform.name}: cv {outcome.base_mean:.4f} -> "
                               f"{outcome.trial_mean:.4f} "
-                              f"(delta {tf_delta:+.4f}, paired {n_folds}-fold test)")
+                              f"(delta {tf_delta:+.4f}, paired {n_folds}-fold test, "
+                              f"arbiter metric {framing_metric or cv.eval_metric})")
                 if accepted:
                     adopted_transform = transform
         framing_summary = {
             "proposal": tf_proposal, "transform": transform.name if transform else "none",
             "accepted": accepted, "cv_delta": tf_delta, "log": tf_log,
+            "arbiter_metric": framing_metric or cv.eval_metric,
         }
 
     # Final model on all data, plus kept generated features (fitted on the full cleaned+FE data).
@@ -419,6 +432,7 @@ def run_pipeline(
     ordinal: bool = False,
     skeptic: bool = False,
     target_framing: bool = False,
+    framing_metric: str | None = None,
     text_features: bool = False,
     cv_budget: int | None = None,
     run_memory: bool = False,
@@ -495,6 +509,8 @@ def run_pipeline(
     if target_framing and not (cv_folds and cv_folds >= 2):
         raise ValueError(
             "--target-framing requires --cv (the CV is the arbiter that accepts the transform).")
+    if framing_metric and not target_framing:
+        raise ValueError("--framing-metric only applies with --target-framing.")
     if text_features and not (cv_folds and cv_folds >= 2):
         raise ValueError(
             "--text-features requires --cv (the CV is the gate that keeps/drops extractors).")
@@ -524,7 +540,8 @@ def run_pipeline(
             hybrid=hybrid, hybrid_max_candidates=hybrid_max_candidates, hybrid_threshold=hybrid_threshold,
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
-            target_framing=target_framing, text_features=text_features, cv_budget=cv_budget,
+            target_framing=target_framing, framing_metric=framing_metric,
+            text_features=text_features, cv_budget=cv_budget,
             presets=presets, sample_weight=sample_weight,
         )
 

@@ -160,7 +160,7 @@ Full write-up (gate design, why no agent framework, the layer separation): [`doc
 **Extend**, all measurement-gated.
 
 - **Skeptic** (`--skeptic`): a second LLM attacks the cleaning plan's drops; a drop is vetoed only if keeping the column measurably helps.
-- **Target framing** (`--target-framing`): proposes `log1p` for skewed regression targets, adopted only if a paired CV in original units beats the base.
+- **Target framing** (`--target-framing`): proposes `log1p` for skewed regression targets, adopted only if a paired CV in original units beats the base; with `--framing-metric` (e.g. `root_mean_squared_log_error`) that comparison runs in the deployment metric instead of the engine's.
 - **Hybrid features** (`--hybrid`) and **free-text featurization** (`--text-features`): LLM-written *deterministic* extraction code in a resource-bounded sandbox (network blocked, secrets stripped, target stripped), kept only if it beats a paired per-fold CV. Full provenance (kept/rejected/why) in the run log.
 - **Strategy research** (`--research`): web-grounded, rules-aware hypotheses that inform planning but never bypass validation.
 - **Benchmark harnesses:** `maestra-bench` (seeded replications, paired verdict with *undecided-within-noise* as a first-class outcome) and `maestra-mlebench` (real MLE-bench grading, medals, CV↔LB gap).
