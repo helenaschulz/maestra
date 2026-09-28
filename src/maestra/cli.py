@@ -18,6 +18,7 @@ from maestra.llm import LLMError
 from maestra.pipeline import PipelineError, run_pipeline
 from maestra.report import generate_report
 from maestra.runlog import append_run, compare_runs
+from maestra.target_framing import FRAMING_METRICS
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -85,6 +86,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Target framing: the LLM proposes log1p for a skewed regression target; adopted "
              "only if a paired CV in ORIGINAL units beats the base beyond noise (needs --cv).",
+    )
+    p.add_argument(
+        "--framing-metric",
+        default=None,
+        choices=sorted(FRAMING_METRICS),
+        help="Metric the target-framing arbiter decides in, when the deployment is judged in a "
+             "different metric than the engine trains on (e.g. root_mean_squared_log_error for "
+             "an RMSLE competition). Both arms are rescored from out-of-fold predictions on the "
+             "same folds, no extra training. Default: the engine's eval metric.",
     )
     p.add_argument(
         "--hybrid",
@@ -328,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             ordinal=args.ordinal,
             skeptic=args.skeptic,
             target_framing=args.target_framing,
+            framing_metric=args.framing_metric,
             text_features=args.text_features,
             cv_budget=args.cv_budget,
             hybrid=args.hybrid,

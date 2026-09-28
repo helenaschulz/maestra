@@ -50,3 +50,8 @@ packages = ["src/maestra"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Pin the rule set explicitly (ruff's long-standing defaults). CI installs the latest ruff, and a
+# release that widens the implicit default set would otherwise turn CI red on untouched code.
+select = ["E4", "E7", "E9", "F"]

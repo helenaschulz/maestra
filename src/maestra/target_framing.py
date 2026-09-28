@@ -15,6 +15,13 @@ Same contract as every judgment node:
 * **arbiter** — the transform is adopted ONLY if a paired CV run beats the untransformed base
   beyond noise (``improves_beyond_noise``, scored in ORIGINAL target space — a log-space score
   would not be comparable). The LLM proposes; the measurement decides.
+* **arbiter metric**: by default both arms are compared in the engine's ``eval_metric``. When
+  the deployment is judged in a DIFFERENT metric than the engine trains on (an RMSLE competition
+  trained under RMSE), pass ``framing_metric``: both arms are then rescored from their
+  out-of-fold predictions in that metric on the identical folds (``validation.rescore_cv``), no
+  extra training. Without it the arbiter can reject exactly the transform that helps the real
+  metric (F2 Messung 4, Finding 2: bike-sharing log1p rejected in raw-count RMSE, decisively
+  accepted in RMSLE, same data/folds/model).
 
 Cost: one extra CV run, and only when the LLM proposes a transform that survives verification —
 targeting, not blanket search.
@@ -34,6 +41,9 @@ from maestra.llm import call_structured
 # AutoGluon reports metrics in "higher is better" form (errors negated); _ag_score in
 # validation.py mirrors that convention for the trial CV.
 SUPPORTED_METRICS = {"root_mean_squared_error", "mean_absolute_error", "r2"}
+# Metrics the arbiter can decide in via ``framing_metric`` (rescored from OOF predictions, so they
+# need not be AutoGluon metrics). RMSLE is the reason this exists.
+FRAMING_METRICS = SUPPORTED_METRICS | {"root_mean_squared_log_error"}
 
 TARGET_FRAMING_SCHEMA = {
     "type": "object",
@@ -138,12 +148,14 @@ def propose_target_framing(model: str, profile: dict, df: pd.DataFrame, target: 
 
 def validate_target_framing(proposal: dict, df: pd.DataFrame, target: str,
                             problem_type: str | None, eval_metric: str | None,
+                            framing_metric: str | None = None,
                             ) -> tuple[TargetTransform | None, list[str]]:
     """Deterministically verify the proposal; any defect falls back to no transform.
 
     Safety checks only — whether the transform actually HELPS is not judged here but by the CV
     arbiter. ``problem_type``/``eval_metric`` come from the base CV, so the check runs against
-    what AutoGluon actually inferred, not a re-derivation.
+    what AutoGluon actually inferred, not a re-derivation. ``framing_metric`` (optional) is the
+    metric the arbiter decides in; it must be one of :data:`FRAMING_METRICS`.
 
     Returns ``(TargetTransform | None, log_lines)``.
     """
@@ -164,6 +176,10 @@ def validate_target_framing(proposal: dict, df: pd.DataFrame, target: str,
         return fallback(
             f"metric {eval_metric!r} cannot be rescored in original space "
             f"(supported: {sorted(SUPPORTED_METRICS)})")
+    if framing_metric is not None and framing_metric not in FRAMING_METRICS:
+        return fallback(
+            f"framing metric {framing_metric!r} is not supported "
+            f"(supported: {sorted(FRAMING_METRICS)})")
     s = df[target].dropna()
     if s.dtype.kind not in "iuf":
         return fallback(f"target dtype {s.dtype} is not numeric")

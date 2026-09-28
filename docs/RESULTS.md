@@ -1237,6 +1237,26 @@ helps in RMSLE across all cells, so a log1p full-train submission would plausibl
 deployed raw model's 0.437 — a single optional LB submit would lift Finding 2 from CV-level to
 LB-confirmed. Not required for the core claims, and (like every submit) Helena's step.
 
+### Finding 2 follow-up: the framing arbiter can decide in the deployment metric (2026-09-28, code only)
+
+Implemented, not yet re-measured. `run_pipeline(..., target_framing=True,
+framing_metric="root_mean_squared_log_error")` (CLI `--framing-metric`) rescores BOTH arms from
+their out-of-fold predictions in the given metric on the identical folds
+(`validation.rescore_cv`, using the new `CVResult.fold_val_index`) and runs the unchanged
+NB-corrected accept rule there. No extra training. The reported CV stays in the engine metric, so
+the `--no-llm` comparison is untouched. Default (`framing_metric=None`) is bit-for-bit the old
+behavior. `scripts/kaggle_battery.py` now sets it for the three RMSLE competitions (house-prices,
+bike-sharing, store-sales) in the submission run.
+
+Evidence so far is offline only: `tests/test_target_framing.py` reproduces the Finding-2
+mechanism in miniature (same folds and predictions, verdict rejected in RMSE and accepted in
+RMSLE) and pins the pipeline wiring. **What to expect on real data, read straight off Messung 4's
+table above:** under random folds this flips log1p to a decisive accept; under the deployed
+`time_local` folds the RMSLE verdict is better-but-undecided (Δ +0.020, MDE 0.092), so the arbiter
+would STILL not adopt log1p for bike-sharing with 3 folds. The fix removes the wrong-metric bias;
+it does not by itself manufacture power. The open optional log1p LB submit stays the way to test
+the ~0.42 expectation.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain

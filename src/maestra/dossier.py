@@ -65,7 +65,9 @@ def collect_interventions(result) -> list[dict]:
     if tf and tf.get("transform") and tf.get("transform") != "none":
         rows.append({"name": f"target:{tf.get('transform')}", "kind": "target_framing",
                      "proposed_by": "target_framing", "delta": tf.get("cv_delta"),
-                     "reason": "improved" if tf.get("accepted") else "no_improvement",
+                     # the delta's unit is the arbiter's metric (may differ from the CV's)
+                     "reason": ("improved" if tf.get("accepted") else "no_improvement")
+                     + (f" (in {tf['arbiter_metric']})" if tf.get("arbiter_metric") else ""),
                      "accepted": bool(tf.get("accepted"))})
     return rows
 

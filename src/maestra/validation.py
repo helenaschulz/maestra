@@ -19,7 +19,7 @@ CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,8 @@ class CVResult:
     oof_pred: "pd.Series | None" = None  # out-of-fold predictions (df-indexed), for custom metrics
     oof_proba: "pd.DataFrame | None" = None  # out-of-fold class probabilities (df-indexed,
     # one column per class), for probability metrics (roc_auc / log_loss)
+    fold_val_index: "list[pd.Index] | None" = None  # each fold's validation rows (df labels),
+    # so per-fold scores can be recomputed from ``oof_pred`` in another metric (rescore_cv)
 
 
 class RollingOriginSplit:
@@ -190,7 +192,32 @@ def _ag_score(y_true: pd.Series, y_pred: pd.Series, metric: str) -> float:
         ss_res = float(np.sum((t - p) ** 2))
         ss_tot = float(np.sum((t - np.mean(t)) ** 2))
         return 1.0 - ss_res / ss_tot if ss_tot else 0.0
+    if metric == "root_mean_squared_log_error":
+        # Maestra-side only (never handed to AutoGluon). Predictions are clipped at 0 first,
+        # as a non-negative-target submission would be (Kaggle's RMSLE rejects values < -1).
+        p = np.clip(p, 0.0, None)
+        return -float(np.sqrt(np.mean((np.log1p(t) - np.log1p(p)) ** 2)))
     raise ValueError(f"metric {metric!r} not supported for target-transformed scoring")
+
+
+def rescore_cv(cv: CVResult, y_true: pd.Series, metric: str) -> CVResult:
+    """Recompute a CV's per-fold scores from its out-of-fold predictions in ``metric``.
+
+    No retraining: each fold is rescored on exactly the rows it validated (``fold_val_index``),
+    so two CVs built on identical folds stay paired and the NB-corrected accept rule still
+    applies. This is how an arbiter compares arms in the DEPLOYMENT metric when the engine was
+    trained and reported in a different one (F2 Messung 4, Finding 2: raw-count RMSE rejected a log1p that
+    helps the competition's RMSLE). ``y_true`` is the original-space target (df-indexed);
+    ``oof_pred`` is already original-space, even for a target-transformed CV.
+    """
+    if cv.oof_pred is None or cv.fold_val_index is None:
+        raise ValueError("rescore_cv needs a CV with out-of-fold predictions and fold indices")
+    scores = []
+    for idx in cv.fold_val_index:
+        pred = cv.oof_pred.loc[idx].astype(float)
+        scores.append(_ag_score(y_true.loc[idx].astype(float), pred, metric))
+    return replace(cv, eval_metric=metric, fold_scores=scores, mean=float(np.mean(scores)),
+                   std=float(np.std(scores)), greater_is_better=True)
 
 
 def _is_classification(y: pd.Series) -> bool:
@@ -466,10 +493,12 @@ def cross_validate(
     # later rows with NaNs and silently blew up any probability metric (log_loss / roc_auc).
     oof_classes = sorted(df[target].dropna().unique().tolist()) if classification else []
     oof_proba = pd.DataFrame(index=df.index, columns=oof_classes, dtype=float) if classification else None
+    fold_val_index: list[pd.Index] = []
     for i, (train_idx, val_idx) in enumerate(folds):
         proc_train, proc_val = _process_fold(
             df.iloc[train_idx], df.iloc[val_idx], target, cleaning_plan, feature_plan, generated_features
         )
+        fold_val_index.append(proc_val.index)
         val_true = None
         if target_transform is not None:
             # Train (and let AutoGluon internally validate) in transformed space; keep the
@@ -525,6 +554,7 @@ def cross_validate(
         greater_is_better=bool(greater_is_better),
         oof_pred=oof_pred,
         oof_proba=oof_proba,
+        fold_val_index=fold_val_index,
     )
 
 
