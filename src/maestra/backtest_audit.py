@@ -19,6 +19,10 @@ Same three-part contract as every judgment node in this project:
   from permuting series labels, not the LLM, decides whether a high series-boundary AUC is a
   genuine leak or just ordinary trend (see :func:`series_leak_check`'s docstring for the confound
   it left open).
+
+N6: the diagnostic fits in :func:`split_design_check` pass ``time_on=<time_column>`` (forward
+only) as AutoGluon's ``validation_structure``, so the fits' internal model selection doesn't
+split randomly across time. The adversarial fits (series checks) stay unchanged.
 """
 from __future__ import annotations
 
@@ -150,13 +154,19 @@ def rolling_origins(n_rows: int, *, n_origins: int = 3, test_frac: float = 0.1,
 
 
 def _fit_and_score(train: pd.DataFrame, test: pd.DataFrame, target: str, time_limit: int,
-                   model_dir: str, eval_metric: str | None):
+                   model_dir: str, eval_metric: str | None, time_column: str | None = None):
     """One holdout fit+score — the same primitive `engine.py::train_and_evaluate` provides,
     called directly here (no cleaning/FE layer: a backtest audit measures the SPLIT, not the
     feature pipeline)."""
-    from maestra.engine import train_and_evaluate
+    from maestra.engine import resolve_inner_validation, train_and_evaluate
 
-    result = train_and_evaluate(train, test, target, time_limit, model_dir, eval_metric=eval_metric)
+    # N6: AutoGluon's internal validation runs forward in time on the same column the
+    # backtest is ordered by, not on a random row split.
+    structure, _ = resolve_inner_validation(train.columns, time_column=time_column)
+    # (structure values read from ``train`` itself: no cleaning layer here)
+    extra = {} if structure is None else {"validation_structure": structure}
+    result = train_and_evaluate(train, test, target, time_limit, model_dir, eval_metric=eval_metric,
+                                **extra)
     metric = eval_metric or result.eval_metric
     score = result.metrics.get(metric)
     if score is None:
@@ -215,10 +225,10 @@ def split_design_check(df: pd.DataFrame, target: str, time_column: str, *,
         test_rows = df.iloc[order[test_sl]]
         naive_score, metric_name, greater_is_better = _fit_and_score(
             df.iloc[order[naive_train_sl]], test_rows, target, time_limit,
-            f"{model_dir}/naive_{i}", eval_metric)
+            f"{model_dir}/naive_{i}", eval_metric, time_column=time_column)
         corrected_score, _, _ = _fit_and_score(
             df.iloc[order[embargo_train_sl]], test_rows, target, time_limit,
-            f"{model_dir}/embargo_{i}", eval_metric or metric_name)
+            f"{model_dir}/embargo_{i}", eval_metric or metric_name, time_column=time_column)
         naive_scores.append(naive_score)
         corrected_scores.append(corrected_score)
     lie = quantify_backtest_lie(naive_scores, corrected_scores, greater_is_better=greater_is_better)

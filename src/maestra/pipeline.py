@@ -7,6 +7,11 @@ diagnoses the (truncated) traceback and picks a bounded recovery action — revi
 plan, raise the time budget, or give up — and we retry. The loop is deliberately
 side-effect-free (no printing, no arg parsing) so the whole thing, including the
 recovery path, is unit-testable with a mocked LLM/engine.
+
+N6: on the CV path AutoGluon's INTERNAL validation (early stopping, ensemble weights,
+``score_val``) follows the outer fold strategy via ``validation_structure`` — in every CV fold
+and in the final fit; recorded in ``PipelineResult.inner_validation``. The holdout path's own
+split (``engine.split``) stays random and group-unaware — a documented open point.
 """
 from __future__ import annotations
 
@@ -19,9 +24,11 @@ from maestra.cleaning import fit_cleaning_plan, propose_cleaning_plan
 from maestra.diagnosis import diagnose_failure
 from maestra.engine import (
     TrainingResult,
+    autogluon_version,
     fit_predictor,
     predict,
     predict_proba,
+    resolve_inner_validation,
     split,
     train_and_evaluate,
 )
@@ -75,6 +82,9 @@ class PipelineResult:
     text_features: dict | None = None  # free-text lane summary ({columns, n_candidates}); the
     # per-candidate verdicts share the hybrid provenance list (source="text")
     cv_budget: dict | None = None  # intervention cost ({limit, trials_spent}), CV path only
+    inner_validation: dict | None = None  # N6: AutoGluon-internal validation of the CV folds
+    # and the final fit ({"cv": record, "final": record}); None on the holdout path (unchanged)
+    autogluon_version: str | None = None  # N6: engine version this run trained with
 
 
 def _do_research(model, df, target, rules_mode):
@@ -352,8 +362,20 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         full_for_fit = full_for_fit.assign(
             **{target: adopted_transform.forward(full_for_fit[target])})
     _validate_trainable(full_for_fit, target)
+    # N6: the final model's internal validation follows the same outer strategy as the CV folds.
+    # Structure values come from the raw rows (`df`), like in cross_validate.
+    final_structure, final_inner = resolve_inner_validation(
+        df.columns, group_column=group_column, time_column=time_column,
+        period_column=period_column, presets=presets)
+    extra = {}
+    if final_structure is not None:
+        if df.index.is_unique and full_for_fit.index.isin(df.index).all():
+            extra = {"validation_structure": final_structure, "structure_source": df}
+        else:
+            final_inner = {**final_inner, "structure": None,
+                           "note": "random (final-fit rows don't align with df's index)"}
     training = fit_predictor(full_for_fit, target, time_limit, f"{model_dir}/final", eval_metric,
-                             presets=presets, sample_weight=sample_weight)
+                             presets=presets, sample_weight=sample_weight, **extra)
 
     adversarial_auc = None
     submission = None
@@ -376,6 +398,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         fold_strategy=fold_strategy, ordinal=ordinal_summary, skeptic=skeptic_records,
         target_framing=framing_summary, text_features=text_summary,
         cv_budget=budget.as_record(),
+        inner_validation={"cv": getattr(cv, "inner_validation", None), "final": final_inner},
+        autogluon_version=autogluon_version(),
     )
 
 
@@ -629,6 +653,7 @@ def run_pipeline(
                 feature_log=feature_log,
                 research=research_summary,
                 ordinal=ordinal_summary,
+                autogluon_version=autogluon_version(),
             )
         except Exception as exc:
             if attempt == max_attempts:

@@ -43,15 +43,195 @@ class TrainingResult:
     val_score: float | None = None   # AutoGluon's best internal validation score (NOT the holdout)
 
 
+def autogluon_version() -> str | None:
+    """Installed ``autogluon.tabular`` version (for run records, N6), or ``None`` if absent.
+    Read from package metadata, so it never imports AutoGluon itself."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover
+        return None
+    try:
+        return version("autogluon.tabular")
+    except PackageNotFoundError:
+        return None
+
+
+# Fallback when AutoGluon isn't importable: preset names whose config turns on bagging +
+# stacking (auto_stack / dynamic_stacking). ``temporal_forward_only`` raises with stacking in
+# AutoGluon 1.6, so this must err on the side of "stacks".
+_STACKING_PRESETS = ("best", "best_quality", "bq", "high", "high_quality", "hq", "good",
+                     "good_quality", "gq", "extreme", "extreme_quality", "eq", "tabarena")
+
+
+def presets_stack(presets) -> bool:
+    """True if ``presets`` (a name, a list of names, or ``None``) may enable stacking.
+
+    Read from AutoGluon's own preset table when installed (``auto_stack``, a truthy
+    ``dynamic_stacking`` incl. ``"auto"``, or ``num_stack_levels > 0`` all count — conservative),
+    else from :data:`_STACKING_PRESETS`. ``None`` = AutoGluon's default ``medium_quality``: no.
+    """
+    if presets is None:
+        return False
+    names = [presets] if isinstance(presets, str) else list(presets)
+    try:
+        from autogluon.tabular.configs.presets_configs import (
+            tabular_presets_alias,
+            tabular_presets_dict,
+        )
+    except ImportError:
+        return any(str(n) in _STACKING_PRESETS for n in names)
+    for name in names:
+        cfg = tabular_presets_dict.get(tabular_presets_alias.get(name, name), {})
+        if (cfg.get("auto_stack") or cfg.get("dynamic_stacking")
+                or (cfg.get("num_stack_levels") or 0) > 0):
+            return True
+    return False
+
+
+def inner_validation_structure(strategy: str | None, *, group_column: str | None = None,
+                               time_column: str | None = None, stacking: bool = False
+                               ) -> tuple[dict | None, str]:
+    """Map the OUTER fold strategy onto AutoGluon 1.6's ``validation_structure`` (N6).
+
+    Deterministic, no own inference: the caller passes the strategy its outer folds actually
+    use. ``group`` -> ``{"group_on": col}``; ``time``/``time_local``/rolling-origin ->
+    ``{"time_on": col, "temporal_forward_only": True}`` (without ``temporal_forward_only`` when
+    stacking is active — AutoGluon then uses leave-one-block-out, noted, never silent);
+    ``random``/``None`` -> ``None`` (AutoGluon is called exactly as before N6).
+
+    Returns ``(structure_or_None, note)``; the note is the human-readable record line.
+    """
+    if strategy == "group":
+        if not group_column:
+            raise ValueError("strategy 'group' needs a group_column")
+        return {"group_on": group_column}, f"group-disjoint on {group_column}"
+    if strategy in ("time", "time_local", "rolling_origin"):
+        if not time_column:
+            raise ValueError(f"strategy {strategy!r} needs a time_column")
+        if stacking:
+            return ({"time_on": time_column},
+                    f"time-ordered on {time_column} (stacking active: temporal_forward_only "
+                    f"dropped, AutoGluon uses leave-one-block-out)")
+        return ({"time_on": time_column, "temporal_forward_only": True},
+                f"forward in time on {time_column}")
+    return None, "random"
+
+
+def outer_strategy(*, group_column: str | None = None, time_column: str | None = None,
+                   period_column: str | None = None, splitter=None) -> str:
+    """The outer fold strategy ``validation.py::_make_folds`` actually builds from these
+    arguments — same precedence (splitter > group > time_local > time > random), so the inner
+    structure can never disagree with the outer folds."""
+    if splitter is not None:
+        return "rolling_origin" if time_column is not None else "custom_splitter"
+    if group_column is not None:
+        return "group"
+    if time_column is not None and period_column is not None:
+        return "time_local"
+    if period_column is not None:
+        raise ValueError("period_column without time_column: inner validation structure "
+                         "undefined (N6 stop condition)")
+    if time_column is not None:
+        return "time"
+    return "random"
+
+
+def resolve_inner_validation(columns, *, group_column: str | None = None,
+                             time_column: str | None = None, period_column: str | None = None,
+                             splitter=None, presets=None, enabled: bool = True
+                             ) -> tuple[dict | None, dict]:
+    """One call for every AutoGluon caller (N6): outer strategy -> ``validation_structure``
+    (real column names), checked against ``columns`` -- the columns of the frame the structure
+    values will be read from (the caller's ``structure_source``, normally the raw rows).
+
+    Returns ``(structure_or_None, record)``; ``record`` = ``{"strategy", "structure", "note"}``
+    is what goes into run records and the dossier. A missing structure column drops the
+    structure and the note says so (never a silent fallback). ``enabled=False`` is the
+    explicit pre-N6 arm for A/B measurement.
+    """
+    strategy = outer_strategy(group_column=group_column, time_column=time_column,
+                              period_column=period_column, splitter=splitter)
+    if not enabled:
+        return None, {"strategy": strategy, "structure": None,
+                      "note": "random (inner structure disabled)"}
+    structure, note = inner_validation_structure(
+        strategy, group_column=group_column, time_column=time_column,
+        stacking=presets_stack(presets))
+    if strategy == "custom_splitter":
+        note = "random (custom splitter without time_column: no column to declare)"
+    if structure is not None:
+        missing = [c for k, c in structure.items()
+                   if k in ("group_on", "time_on") and c not in set(columns)]
+        if missing:
+            structure = None
+            note = f"random (structure column {missing[0]} not available to the fit)"
+    return structure, {"strategy": strategy, "structure": structure, "note": note}
+
+
+def inner_validation_label(record: dict | None) -> str:
+    """Dossier wording for a ``resolve_inner_validation`` record (German, like the spec)."""
+    struct = (record or {}).get("structure") or {}
+    if "group_on" in struct:
+        return f"gruppen-disjunkt auf {struct['group_on']}"
+    if "time_on" in struct:
+        if struct.get("temporal_forward_only"):
+            return f"zeitlich vorwärts auf {struct['time_on']}"
+        return f"zeitlich geblockt auf {struct['time_on']} (leave-one-block-out, Stacking aktiv)"
+    return "zufällig"
+
+
 def split(df: pd.DataFrame, test_size: float, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Split ``df`` into ``(train, holdout)`` by random row sampling.
 
     A simple random split is enough for this project; AutoGluon does its own internal
-    validation split on the training portion for model selection.
+    validation split on the training portion for model selection. N6 open point: this
+    outer holdout split knows no groups/time — deliberately unchanged (see docs/RESULTS.md).
     """
     holdout = df.sample(frac=test_size, random_state=seed)
     train = df.drop(index=holdout.index)
     return train, holdout
+
+
+# Hidden carrier columns for the structure (N6). AutoGluon resolves ``validation_structure`` on
+# the raw frame, so the structure is declared on these copies -- listed in the learner's
+# ``ignored_columns`` -- instead of on the real columns. Effects: (1) the feature set is exactly
+# what it was before N6 (the real column stays whatever feature it was; the carrier is never a
+# feature); (2) a string date column works (AutoGluon's ``time_on`` needs numeric/datetime, and
+# converting the REAL column would turn it into datetime features); (3) a structure column that
+# cleaning/FE removed can still be carried in from the raw rows (``structure_source``).
+_CARRIER = {"group_on": "__maestra_group_on__", "time_on": "__maestra_time_on__"}
+
+
+def _time_as_int(values: pd.Series, name: str) -> pd.Series:
+    if values.dtype.kind in "iuf":
+        return values
+    if values.dtype.kind != "M":
+        values = pd.to_datetime(values, errors="coerce", format="mixed")
+    if values.isna().any():
+        raise ValueError(f"time column {name!r} has values that don't parse as time; "
+                         f"cannot declare it as AutoGluon's time_on")
+    return values.astype("int64")
+
+
+def _fit_kwargs_with_structure(train: pd.DataFrame, validation_structure: dict | None,
+                               structure_source: pd.DataFrame | None):
+    """``(train, fit_kwargs, init_kwargs)``. ``None`` -> ``(train, {}, {})``: AutoGluon is
+    constructed and fitted exactly as before N6 (no new keyword, no new column)."""
+    if validation_structure is None:
+        return train, {}, {}
+    source = train if structure_source is None else structure_source
+    ag_structure, carriers = {}, {}
+    for key, value in validation_structure.items():
+        if key in _CARRIER:
+            col = source.loc[train.index, value]
+            carriers[_CARRIER[key]] = (_time_as_int(col, value) if key == "time_on"
+                                       else col).to_numpy()
+            ag_structure[key] = _CARRIER[key]
+        else:
+            ag_structure[key] = value
+    train = train.assign(**carriers)
+    return (train, {"validation_structure": ag_structure},
+            {"learner_kwargs": {"ignored_columns": list(carriers)}})
 
 
 def train_and_evaluate(
@@ -63,6 +243,8 @@ def train_and_evaluate(
     eval_metric: str | None = None,
     presets: str | None = None,
     sample_weight: str | None = None,
+    validation_structure: dict | None = None,
+    structure_source: pd.DataFrame | None = None,
 ) -> TrainingResult:
     """Fit an AutoGluon predictor and evaluate it on the holdout set.
 
@@ -79,6 +261,14 @@ def train_and_evaluate(
         sample_weight: Name of a per-row weight column (excluded from features by AutoGluon)
             used in BOTH training and metric evaluation — e.g. Walmart's holiday-week ×5
             weighting. Must be present in ``train``/``holdout``. ``None`` = unweighted.
+        validation_structure: N6. ``{"group_on": col}`` / ``{"time_on": col, ...}`` in REAL column
+            names (from :func:`resolve_inner_validation`), so AutoGluon 1.6's INTERNAL splits
+            (early stopping, ensemble weights, ``score_val``) respect the outer group/time
+            structure. Declared on ignored carrier copies of the columns (see ``_CARRIER``), so
+            the feature set never changes. ``None`` = AutoGluon is called exactly as pre-N6.
+        structure_source: Frame indexed like ``train`` holding the structure column(s) when
+            ``train`` itself no longer has them (e.g. cleaning dropped an id column). Default:
+            ``train``.
 
     Returns:
         A :class:`TrainingResult`. The problem type and evaluation metric are inferred
@@ -86,9 +276,11 @@ def train_and_evaluate(
     """
     from autogluon.tabular import TabularPredictor
 
+    train, fit_kw, init_kw = _fit_kwargs_with_structure(train, validation_structure,
+                                                        structure_source)
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
-                                 sample_weight=sample_weight).fit(
-        train, time_limit=time_limit, presets=presets)
+                                 sample_weight=sample_weight, **init_kw).fit(
+        train, time_limit=time_limit, presets=presets, **fit_kw)
     leaderboard = predictor.leaderboard(holdout, silent=True)
     # Best internal validation score (AutoGluon's own train/val split) — used by the
     # quality gate so the holdout is never consulted for that decision.
@@ -121,19 +313,24 @@ def predict_proba(predictor, X: pd.DataFrame) -> pd.DataFrame:
 
 def fit_predictor(train: pd.DataFrame, target: str, time_limit: int, model_dir: str,
                   eval_metric: str | None = None, presets: str | None = None,
-                  sample_weight: str | None = None) -> TrainingResult:
+                  sample_weight: str | None = None,
+                  validation_structure: dict | None = None,
+                  structure_source: pd.DataFrame | None = None) -> TrainingResult:
     """Fit a predictor on ALL labeled rows, with no holdout evaluation.
 
     Used by the cross-validation path, where the honest estimate is the CV score and this
     final model exists only for prediction (submission/report). ``metrics`` is therefore
     empty; ``val_score`` is AutoGluon's internal validation score. ``presets`` /
-    ``sample_weight`` — see :func:`train_and_evaluate` (must match what the CV folds used).
+    ``sample_weight`` / ``validation_structure`` / ``structure_source`` — see
+    :func:`train_and_evaluate` (must match what the CV folds used).
     """
     from autogluon.tabular import TabularPredictor
 
+    train, fit_kw, init_kw = _fit_kwargs_with_structure(train, validation_structure,
+                                                        structure_source)
     predictor = TabularPredictor(label=target, path=model_dir, eval_metric=eval_metric,
-                                 sample_weight=sample_weight).fit(
-        train, time_limit=time_limit, presets=presets)
+                                 sample_weight=sample_weight, **init_kw).fit(
+        train, time_limit=time_limit, presets=presets, **fit_kw)
     leaderboard = predictor.leaderboard(silent=True)
     val_score = float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None
     return TrainingResult(

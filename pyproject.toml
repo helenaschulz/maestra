@@ -7,7 +7,7 @@ name = "maestra"
 version = "0.1.0"
 description = "An LLM conductor over AutoGluon for tabular AutoML on CSV data."
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 license = "MIT"
 authors = [{ name = "Helena Schulz" }]
 keywords = ["automl", "autogluon", "llm", "litellm", "agentic", "tabular"]
@@ -15,7 +15,7 @@ keywords = ["automl", "autogluon", "llm", "litellm", "agentic", "tabular"]
 # versions the code is known to work with. A fresh install stays reproducible without freezing
 # users onto a lockfile.
 dependencies = [
-    "autogluon.tabular[all]>=1.0",
+    "autogluon.tabular[all]>=1.6",
     "pandas>=2.0",
     "litellm>=1.40",
     # LiteLLM lazily imports tenacity only on its retry path (we set num_retries),
@@ -50,3 +50,9 @@ packages = ["src/maestra"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# The rule set this project has always been linted with (ruff's pre-0.17 default). ruff 0.17
+# widened its default selection; pinning the selection here keeps `ruff check .` stable
+# without pinning the ruff version itself (lower bounds only, see dependencies above).
+select = ["E4", "E7", "E9", "F"]

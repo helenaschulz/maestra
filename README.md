@@ -6,7 +6,7 @@
 
 LLM agents propose, measurement decides, and every number ships with the evidence that earned it.
 
-![Python](https://img.shields.io/badge/python-3.9–3.12-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/python-3.10–3.12-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Engine](https://img.shields.io/badge/engine-AutoGluon-FF6F00)
 ![LLM](https://img.shields.io/badge/LLM-LiteLLM%20·%20model--agnostic-7E57C2)
@@ -168,7 +168,7 @@ Full write-up (gate design, why no agent framework, the layer separation): [`doc
 
 ## Install
 
-Requires Python 3.9–3.12. AutoGluon's install is large (pulls in PyTorch).
+Requires Python 3.10–3.12 and AutoGluon >= 1.6. AutoGluon's install is large (pulls in PyTorch).
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate

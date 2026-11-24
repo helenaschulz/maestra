@@ -22,6 +22,7 @@ def _cv_record(cv) -> dict | None:
         "folds": cv.n_folds,
         "stratified": cv.stratified,
         "fold_scores": cv.fold_scores,
+        "val_scores": getattr(cv, "val_scores", None),
     }
 
 
@@ -60,6 +61,9 @@ def append_run(
         "target_framing": result.target_framing,
         "text_features": result.text_features,
         "cv_budget": result.cv_budget,
+        # N6: engine version + what AutoGluon's internal validation was told (None = random).
+        "autogluon_version": getattr(result, "autogluon_version", None),
+        "inner_validation": getattr(result, "inner_validation", None),
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

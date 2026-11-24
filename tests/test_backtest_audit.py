@@ -99,7 +99,7 @@ def _mock_train_and_evaluate(gap_when_naive_higher=True):
     """naive_* model_dirs score BETTER than embargo_* ones -- the lie split_design_check exists
     to catch. Consistent across every origin so the paired test has real power."""
     def fake(train, holdout, target, time_limit, model_dir, eval_metric=None, presets=None,
-            sample_weight=None):
+            sample_weight=None, validation_structure=None):
         is_naive = "naive" in model_dir
         base = 0.90 if is_naive else 0.70
         # tiny, deterministic per-call jitter so folds aren't bit-identical (still decisive)
@@ -120,6 +120,23 @@ def test_split_design_check_detects_a_naive_optimistic_gap(monkeypatch):
     assert result is not None
     assert result["direction"] == "optimistic (dangerous)"
     assert result["n_origins"] == 3
+
+
+def test_split_design_check_passes_time_on_forward_into_every_fit(monkeypatch):
+    """N6 (f): every diagnostic fit's AutoGluon-internal validation runs forward in time on the
+    backtest's own time column."""
+    import maestra.engine as engine_mod
+    inner = _mock_train_and_evaluate(True)
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("validation_structure"))
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "train_and_evaluate", spy)
+    split_design_check(_forecast_df(), "sales", "date", n_origins=3, time_limit=1)
+    assert len(seen) == 6
+    assert all(s == {"time_on": "date", "temporal_forward_only": True} for s in seen)
 
 
 def test_split_design_check_no_gap_is_undecided(monkeypatch):

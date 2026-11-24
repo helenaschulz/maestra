@@ -6,6 +6,10 @@
 > that is the point. Lower-is-better metrics are marked; otherwise higher is better. Raw machine
 > logs: `runs.jsonl` / `benchmark.jsonl` (local, not committed).
 
+> **Engine note (N6, 2026-11-24):** every row above the "N6" section ran on AutoGluon ≤ 1.5 (the
+> version wasn't logged then). From N6 on, run records carry `autogluon_version`, and the engine is
+> AutoGluon ≥ 1.6. The 1.5 → 1.6 drift receipt is in the N6 section.
+
 ## MLE-bench tasks
 
 | Date | Competition | Metric (mode) | Baseline | Maestra | Winner | Medal | CV↔LB gap | Note |
@@ -1236,6 +1240,25 @@ even though it refutes the tidier "it was a fold artifact" guess the Messung-1 n
 helps in RMSLE across all cells, so a log1p full-train submission would plausibly score ~0.42 vs the
 deployed raw model's 0.437 — a single optional LB submit would lift Finding 2 from CV-level to
 LB-confirmed. Not required for the core claims, and (like every submit) Helena's step.
+
+## N6 — AutoGluon 1.6 + the outer fold structure inside AutoGluon (2026-11-24)
+
+**Pre-registered before the measurement run** (hypotheses fixed here first, results appended below):
+
+- **H1:** with `validation_structure` on, the optimism of AutoGluon's own `score_val` (internal best
+  minus the outer fold score, both higher-is-better) shrinks on grouped/temporal data.
+- **H2:** the outer CV score does not get worse (paired, `paired_delta_test`, Nadeau-Bengio ratio
+  1/(k−1)).
+- Design: `scripts/n6_inner_validation_experiment.py`. One variable (`cross_validate(...,
+  inner_structure=False|True)`); identical outer folds, data, AutoGluon default preset,
+  `time_limit=30`, 3 folds, seeds 42/7/1; fold strategy set explicitly (no LLM). Datasets:
+  M1-synthetic grouped (150×8, `group` on `customer_id`), Grunfeld (`group` on `firm`),
+  MathAchieve (`group` on `School`), economics (`time` on `date`), bike-sharing (`time_local` on
+  `datetime` × `month_of:datetime`, the K1/F2 task). Where the seed does not change the outer folds
+  (GroupKFold on a regression target, every time split), seed replicates are averaged per fold
+  before the paired test (k=3 pairs); only the synthetic classification task (StratifiedGroupKFold
+  reshuffles per seed) uses all 9 seed×fold pairs.
+- A null result on either hypothesis is reported as such.
 
 ## Recurring pattern
 

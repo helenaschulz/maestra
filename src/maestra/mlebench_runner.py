@@ -34,6 +34,7 @@ import pandas as pd
 
 from maestra import benchmark, calibration
 from maestra.config import load_dotenv
+from maestra.engine import autogluon_version
 from maestra.pipeline import run_pipeline
 
 # Competition metric -> AutoGluon eval_metric. When a metric is here, the CV optimises it.
@@ -303,6 +304,8 @@ def run_mlebench_task(
         "cv_lb_gap": gap,
         "metric_mode": metric_mode,
         "submission": submission_path,
+        "autogluon_version": autogluon_version(),  # N6: engine-drift traceability
+        "inner_validation": getattr(result, "inner_validation", None),
     }
     if temperature is not None:  # probability metric: record the calibration effect on the CV score
         record["temperature"] = temperature
