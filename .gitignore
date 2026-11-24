@@ -31,6 +31,5 @@ CLAUDE.md
 # Second venv (Python 3.11, mlebench runs) + tool caches
 .venv311/
 .venv16/
-.venv16tfm/
 cache/
 x/
