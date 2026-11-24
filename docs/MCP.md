@@ -12,7 +12,7 @@ a raw DataFrame.
 | `audit_csv(path, target, model="gpt-4o")` | Is this CSV safe to model at all? (validation design, leakage, structural traps) |
 | `check_validation(path, target, model="gpt-4o")` | How must folds be built, and how optimistic is a naive random split — *measured*, not asserted |
 | `feasibility(path, target, model="gpt-4o")` | What quality is achievable, what drives it, what's risky — without training a model you keep |
-| `audit_backtest(path, target, time_column, series_column=None, model="gpt-4o")` | Does an existing *forecasting* setup leak? Future-known features, a *measured* naive-vs-embargoed backtest gap over rolling origins, and a null-controlled series-boundary shift check |
+| `audit_backtest(path, target, time_column, series_column=None, model="gpt-4o", future_path=None)` | Does an existing *forecasting* setup leak? Future-known features, a *measured* naive-vs-embargoed backtest gap over rolling origins, a null-controlled series-boundary shift check, and a per-covariate availability verdict (`known_future` / `past_only` / `leaking`, decided by evidence such as presence in the real future window `future_path`) |
 
 Each tool needs a real LLM call (the `model` argument, an OpenAI/Anthropic model name via
 LiteLLM) and, for `check_validation`/`feasibility`/`audit_backtest`, real AutoGluon training under
