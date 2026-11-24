@@ -54,6 +54,18 @@ beneath. These are real, generated outputs, not mockups.</p>
   (<code>Customers</code>, |corr| 0.892 with the target, absent from the competition test set).</div>
 </a>
 
+<a class="card" href="reports/n6_mathachieve_dossier.html">
+  <span class="title">MathAchieve evidence dossier (grouped CV)</span><span class="pill green">GREEN</span>
+  <div class="desc">Students nested in schools: folds are school-disjoint, and since AutoGluon 1.6
+  so is AutoGluon's own internal model selection ("Interne Modellauswahl").</div>
+</a>
+
+<a class="card" href="reports/rossmann-covariate-availability.html">
+  <span class="title">Rossmann covariate availability</span><span class="pill red">RED</span>
+  <div class="desc">Which inputs are really known at forecast time? Promo, holidays and the open
+  schedule are; <code>Customers</code> is not (absent from the real test window).</div>
+</a>
+
 <h2>Other artifacts</h2>
 <p>The demo dataset and screencast script (<a href="demo/">docs/examples/demo/</a>) and the
 <code>compare()</code> Colab quickstart notebook live in the

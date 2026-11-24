@@ -1363,6 +1363,38 @@ it flips to accept, as Finding 2 predicted. On the configuration that was actual
 still rejects. The fix does **not** change the deployed bike-sharing decision at 3 folds. Fixed in
 the gate, not "LB-confirmed": the optional log1p submit remains open.
 
+## F3-1 — covariate availability as a verdict (2026-11-24)
+
+`audit_backtest` now classifies every feature column as `known_future` / `past_only` / `leaking`:
+the LLM proposes (gpt-4o, same forced tool call as the F1 future-leak scan), evidence decides
+(presence in the real future window, calendar derivability, |corr| with the target), and the
+evidence wins on contradiction. Run: `scripts/covariate_availability_battery.py`, the three F1
+tasks (15k-row samples, seed 42) with each competition's `test.csv` as the future window and
+Rossmann's `Customers` deliberately kept. Raw: `covariate_availability.jsonl`.
+
+| Task | Columns classified | Matches the known answer | Not known in advance |
+|---|---|---|---|
+| Rossmann | Store, DayOfWeek, Customers, Open, Promo, StateHoliday, SchoolHoliday | 7/7 | `Customers` → **leaking** (absent from test.csv) |
+| Walmart | Store, Dept, IsHoliday | 3/3 | none |
+| store-sales | store_nbr, family, onpromotion | 3/3 | none |
+
+**What getting it wrong costs (Rossmann):** a rolling-origin backtest (5 origins, AutoGluon 1.6,
+`time_limit=10`) with vs. without `Customers` on identical origins: rmse **≈1275 with vs. ≈2402
+without**, paired gap **+1127, decided optimistic** (MDE 145). A forecaster who treated
+`Customers` as known in advance would report a backtest about twice as good as anything
+deployable.
+
+**Caveats, stated plainly:**
+- LLM and evidence agreed on all 13 columns, so the "evidence overrides the LLM" branch is
+  exercised only in the offline tests, not on real data.
+- None of these competitions ships a genuinely *past-only* covariate (observed, not leaking, not
+  in the test window), so the past-only class has no real-data positive here. The cost measurement
+  uses the one not-known-in-advance column available, which is a leak, not a lagged signal.
+- Artefact: `docs/examples/reports/rossmann-covariate-availability.html` (`maestra-audit
+  --backtest --test data/kaggle_rossmann/test.csv`, Customers kept). Its own 3-origin
+  naive-vs-embargo split check comes out undecided on this sample (gap +109, MDE 182); the
+  verdict is RED because of the leaking covariate.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
