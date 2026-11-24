@@ -33,6 +33,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 
 from maestra.config import load_dotenv
+from maestra.engine import autogluon_version
 from maestra.pipeline import run_pipeline
 from maestra.validation import _is_classification
 
@@ -272,7 +273,8 @@ def run_multi_seed(csv: str, target: str, *, metric: str, seeds: list[int], **kw
 
 def append_result(path: str, result: BenchResult, *, timestamp: str) -> None:
     with open(path, "a") as fh:
-        fh.write(json.dumps({"timestamp": timestamp, **asdict(result)}, default=float) + "\n")
+        fh.write(json.dumps({"timestamp": timestamp, **asdict(result),
+                             "autogluon_version": autogluon_version()}, default=float) + "\n")
 
 
 def append_multi_seed(path: str, result: MultiSeedResult, *, timestamp: str) -> None:
@@ -287,6 +289,7 @@ def append_multi_seed(path: str, result: MultiSeedResult, *, timestamp: str) -> 
         "fold_strategy": result.fold_strategy,
         "n_train": result.per_seed[0].n_train, "n_grade": result.per_seed[0].n_grade,
         "failed_seeds": result.failed_seeds,
+        "autogluon_version": autogluon_version(),  # N6: engine-drift traceability
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

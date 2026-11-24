@@ -15,6 +15,11 @@ by training a classifier to tell them apart; an AUC near 0.5 means no detectable
 sklearn-compatible estimators. ``TabularPredictor`` is imported LAZILY (inside
 ``adversarial_validation``, its only user here) so this module — hence the engine-agnostic
 CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.py``'s docstring).
+
+N6: on the AutoGluon path every fold fit also gets the outer strategy as AutoGluon's internal
+``validation_structure`` (group-disjoint / forward in time), recorded in
+``CVResult.inner_validation`` with the per-fold internal ``val_scores``; adversarial validation
+is deliberately unchanged (a different purpose).
 """
 from __future__ import annotations
 
@@ -33,7 +38,14 @@ from sklearn.model_selection import (
 from sklearn.utils.multiclass import type_of_target
 
 from maestra.cleaning import fit_cleaning_plan
-from maestra.engine import AutoGluonEngine, Engine, predict, predict_proba, train_and_evaluate
+from maestra.engine import (
+    AutoGluonEngine,
+    Engine,
+    predict,
+    predict_proba,
+    resolve_inner_validation,
+    train_and_evaluate,
+)
 from maestra.feature_engineering import fit_feature_plan
 
 _ADV_LABEL = "__is_test__"
@@ -54,6 +66,9 @@ class CVResult:
     oof_pred: "pd.Series | None" = None  # out-of-fold predictions (df-indexed), for custom metrics
     oof_proba: "pd.DataFrame | None" = None  # out-of-fold class probabilities (df-indexed,
     # one column per class), for probability metrics (roc_auc / log_loss)
+    inner_validation: dict | None = None  # N6: what went to AutoGluon's validation_structure
+    # per fold ({"strategy", "structure", "note"}), AutoGluon path only
+    val_scores: list | None = None  # N6: AutoGluon's internal best score_val per fold
 
 
 class RollingOriginSplit:
@@ -402,6 +417,7 @@ def cross_validate(
     target_transform=None,
     engine: "Engine | None" = None,
     splitter=None,
+    inner_structure: bool = True,
 ) -> CVResult:
     """Leakage-free k-fold cross-validation of the (cleaning, FE) plans on ``df``.
 
@@ -432,6 +448,10 @@ def cross_validate(
             :class:`RollingOriginSplit`) — takes priority over ``group_column``/``time_column``/
             ``period_column``/stratification when given (see :func:`_make_folds`). Reusable
             standalone via :func:`~maestra.compare.compare`.
+        inner_structure: N6. ``True`` (default): AutoGluon's internal validation follows the
+            outer strategy (``group_on`` / ``time_on``, see
+            :func:`~maestra.engine.inner_validation_structure`); recorded in
+            ``CVResult.inner_validation``. ``False``: pre-N6 call (only for A/B measurement).
 
     Returns:
         A :class:`CVResult` with the per-fold scores and their mean/std.
@@ -446,6 +466,15 @@ def cross_validate(
         return _cross_validate_with_engine(df, target, cleaning_plan, feature_plan, folds,
                                            use_stratified, engine, generated_features,
                                            classification)
+
+    # N6: AutoGluon's INTERNAL validation follows the outer strategy these folds were built with.
+    # The structure values are read from the RAW rows (``df``), so a structure column that
+    # cleaning/FE drops still reaches AutoGluon (as an ignored carrier, never as a feature).
+    structure, inner_record = resolve_inner_validation(
+        df.columns, group_column=group_column, time_column=time_column,
+        period_column=period_column, splitter=splitter, presets=presets,
+        enabled=inner_structure)
+    val_scores: list = []
 
     fold_scores: list[float] = []
     # ``eval_metric`` (a metric string OR a custom AutoGluon Scorer object) is passed UNCHANGED
@@ -477,9 +506,18 @@ def cross_validate(
             val_true = proc_val[target]
             proc_train = proc_train.assign(**{target: target_transform.forward(proc_train[target])})
             proc_val = proc_val.assign(**{target: target_transform.forward(proc_val[target])})
+        extra = {}
+        if structure is not None:
+            if df.index.is_unique and proc_train.index.isin(df.index).all():
+                extra = {"validation_structure": structure, "structure_source": df}
+            else:  # can't map fold rows back to the raw rows: random inside, and say so
+                inner_record = {**inner_record, "structure": None,
+                                "note": "random (fold rows don't align with df's index; "
+                                        "structure could not be carried)"}
         result = train_and_evaluate(proc_train, proc_val, target, time_limit,
                                     f"{model_dir}/fold_{i}", metric_arg, presets=presets,
-                                    sample_weight=sample_weight)
+                                    sample_weight=sample_weight, **extra)
+        val_scores.append(getattr(result, "val_score", None))
         metric_name, problem_type = result.eval_metric, result.problem_type
         preds_orig = None
         if result.predictor is not None:
@@ -525,6 +563,8 @@ def cross_validate(
         greater_is_better=bool(greater_is_better),
         oof_pred=oof_pred,
         oof_proba=oof_proba,
+        inner_validation=inner_record,
+        val_scores=val_scores,
     )
 
 

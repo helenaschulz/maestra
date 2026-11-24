@@ -194,6 +194,21 @@ def render_dossier(result, *, run_record: dict | None = None,
     ]
     if fs.get("rationale"):
         setup_rows.append(("Advisor reasoning", f"<span class='note'>{_esc(fs['rationale'])}</span>"))
+    # N6: what AutoGluon's INTERNAL model selection was told (the CV folds' record wins; a fold
+    # that fell back to random makes the record say random, it never overclaims).
+    iv = getattr(result, "inner_validation", None)
+    if iv is not None:
+        from maestra.engine import inner_validation_label
+
+        rec = iv.get("cv") or iv.get("final")
+        label = inner_validation_label(rec)
+        note = (rec or {}).get("note", "")
+        setup_rows.append(("Interne Modellauswahl", _esc(label)
+                           + (f" <span class='note'>({_esc(note)})</span>"
+                              if note and label == "zufällig" and note != "random" else "")))
+    agv = getattr(result, "autogluon_version", None)
+    if agv:
+        setup_rows.append(("Engine", _esc(f"AutoGluon {agv}")))
     sections.append(_section("Setup", _kv_table(setup_rows), open_=True))
 
     # (3) Interventions — accepted and rejected, equally visible

@@ -383,3 +383,30 @@ def test_text_lane_skips_gate_when_no_text_columns(df, fake_training, monkeypatc
 
     assert result.text_features == {"columns": [], "n_candidates": 0}
     assert result.hybrid is None
+
+
+def test_cv_path_final_fit_gets_the_outer_group_structure(df, fake_training, monkeypatch):
+    """N6: with the Validation Strategist choosing `group`, the FINAL fit's AutoGluon-internal
+    validation is group-disjoint on the same column, and the run records it."""
+    from maestra.validation import CVResult
+
+    cv = CVResult("accuracy", "binary", [0.8, 0.8], 0.8, 0.0, 2, True, True,
+                  inner_validation={"strategy": "group", "structure": {"group_on": "id"},
+                                    "note": "group-disjoint on id"})
+    seen = {}
+
+    def fake_fit(*a, **k):
+        seen.update(k)
+        return fake_training
+
+    monkeypatch.setattr(pipeline, "propose_fold_strategy", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "validate_fold_strategy", lambda p, d, t: (
+        {"strategy": "group", "group_column": "id", "time_column": None, "period_column": None},
+        []))
+    monkeypatch.setattr(pipeline, "cross_validate", lambda *a, **k: cv)
+    monkeypatch.setattr(pipeline, "fit_predictor", fake_fit)
+    result = run_pipeline(df, "y", model="m", test_size=0.25, time_limit=1, seed=0, model_dir="x",
+                          cv_folds=2, use_llm=False, fold_advisor=True)
+    assert seen["validation_structure"] == {"group_on": "id"}
+    assert result.inner_validation["final"]["structure"] == {"group_on": "id"}
+    assert result.inner_validation["cv"]["structure"] == {"group_on": "id"}

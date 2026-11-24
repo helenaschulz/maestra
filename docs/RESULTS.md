@@ -6,6 +6,10 @@
 > that is the point. Lower-is-better metrics are marked; otherwise higher is better. Raw machine
 > logs: `runs.jsonl` / `benchmark.jsonl` (local, not committed).
 
+> **Engine note (N6, 2026-11-24):** every row above the "N6" section ran on AutoGluon ≤ 1.5 (the
+> version wasn't logged then). From N6 on, run records carry `autogluon_version`, and the engine is
+> AutoGluon ≥ 1.6. The 1.5 → 1.6 drift receipt is in the N6 section.
+
 ## MLE-bench tasks
 
 | Date | Competition | Metric (mode) | Baseline | Maestra | Winner | Medal | CV↔LB gap | Note |
@@ -1236,6 +1240,103 @@ even though it refutes the tidier "it was a fold artifact" guess the Messung-1 n
 helps in RMSLE across all cells, so a log1p full-train submission would plausibly score ~0.42 vs the
 deployed raw model's 0.437 — a single optional LB submit would lift Finding 2 from CV-level to
 LB-confirmed. Not required for the core claims, and (like every submit) Helena's step.
+
+## N6 — AutoGluon 1.6 + the outer fold structure inside AutoGluon (2026-11-24)
+
+**Pre-registered before the measurement run** (hypotheses fixed here first, results appended below):
+
+- **H1:** with `validation_structure` on, the optimism of AutoGluon's own `score_val` (internal best
+  minus the outer fold score, both higher-is-better) shrinks on grouped/temporal data.
+- **H2:** the outer CV score does not get worse (paired, `paired_delta_test`, Nadeau-Bengio ratio
+  1/(k−1)).
+- Design: `scripts/n6_inner_validation_experiment.py`. One variable (`cross_validate(...,
+  inner_structure=False|True)`); identical outer folds, data, AutoGluon default preset,
+  `time_limit=30`, 3 folds, seeds 42/7/1; fold strategy set explicitly (no LLM). Datasets:
+  M1-synthetic grouped (150×8, `group` on `customer_id`), Grunfeld (`group` on `firm`),
+  MathAchieve (`group` on `School`), economics (`time` on `date`), bike-sharing (`time_local` on
+  `datetime` × `month_of:datetime`, the K1/F2 task). Where the seed does not change the outer folds
+  (GroupKFold on a regression target, every time split), seed replicates are averaged per fold
+  before the paired test (k=3 pairs); only the synthetic classification task (StratifiedGroupKFold
+  reshuffles per seed) uses all 9 seed×fold pairs.
+- A null result on either hypothesis is reported as such.
+
+### Engine drift 1.5 → 1.6 (Teil A receipt)
+
+`scripts/engine_drift.py`: the E2 battery's `--no-llm` baseline arm exactly as `maestra-bench` runs
+it (answer key carved at seed 42, `--cv 3` random folds, `time_limit=60`, graded on the held-out
+key), once under AutoGluon 1.5.0 (`.venv`) and once under 1.6.3 (`.venv16`), same machine, same
+code, zero LLM. Raw: `engine_drift.jsonl`.
+
+| Task | Metric | AG 1.5.0 | AG 1.6.3 | Δ |
+|---|---|---|---|---|
+| insurance | rmse ↓ | 4500.93 | 4500.68 | −0.01% |
+| loan-grade | bal-acc ↑ | 0.2199 | 0.2178 | −0.0021 |
+| diamonds | rmse ↓ | 598.18 | 597.86 | −0.05% |
+| wage | rmse ↓ | 33.391 | 33.391 | 0 |
+| credit | rmse ↓ | 67.018 | 67.018 | 0 |
+| heart | bal-acc ↑ | 0.8066 | 0.8066 | 0 |
+| abalone | rmse ↓ | 2.4111 | 2.4111 | 0 |
+| wine-quality | rmse ↓ | 0.6745 | **0.6557** | **−2.8%** |
+| wine-quality-anon | rmse ↓ | 0.6745 | **0.6557** | **−2.8%** |
+| friedman-synth | rmse ↓ | 1.1738 | 1.1738 | 0 |
+
+- **Noise floor is zero here:** every 1.5.0 value reproduces the seed-42 baseline row logged for E2
+  in July (`benchmark.jsonl`) to the 4th decimal, so the deltas above are engine, not run-to-run noise.
+- **Drift is small and one-sided where it exists:** 5/10 bit-identical, 3/10 within ±1%, and the
+  wine twins improve 2.8% under 1.6 (identically, as the anonymized-twin design predicts).
+- **Preset/portfolio unchanged:** both versions default to `medium_quality`, and the final model's
+  leaderboard holds the same model set on all 10 tasks (`final_models` field). New in 1.6 but not
+  in the default: `extreme` now uses the TFM portfolio (TabICLv2, TabDPT-Turbo, Nori).
+- **Consequence for the ledger:** pre-N6 rows stay valid as stated; where a later comparison crosses
+  the engine boundary, wine-quality-type tasks need re-baselining, the rest do not.
+
+### Results: inner validation structure off vs. on (Teil C)
+
+Raw: `n6_inner_validation.jsonl`. Structure verified in the AutoGluon log for all 45 "on" fits
+("Structure-aware holdout"). Scores in AutoGluon's convention (higher is better, errors negated).
+Optimism = AutoGluon's internal best `score_val` − the outer fold score. Verdicts: paired,
+NB-corrected, three-way; "on better" for H1 means the optimism shrank.
+
+| Dataset (structure) | Outer CV off → on | H2 (outer) | Optimism off → on | H1 (optimism) | Top model per fold off → on |
+|---|---|---|---|---|---|
+| M1-synthetic (group `customer_id`) | 0.530 → 0.554 acc | undecided (+0.024, MDE 0.074) | **+0.470 → +0.143** | **on better** (+0.327, MDE 0.129) | RF/ExtraTrees/CatBoost memorisers (val = 1.000 every fold) → boosting/ensembles (val 0.65–0.74) |
+| Grunfeld (group `firm`) | −164.5 → −156.1 rmse | undecided (+8.4, MDE 94.5) | +136.0 → +141.3 | undecided (−5.3, MDE 82.0) | WeightedEnsemble both |
+| MathAchieve (group `School`) | −6.434 → −6.308 rmse | **on better** (+0.126, MDE 0.019) | +0.280 → +0.225 | undecided (+0.054, MDE 0.99) | WeightedEnsemble both |
+| economics (time `date`) | −2304.8 → −2088.2 rmse | undecided (+216.6, MDE 2085.6) | +2070 → +1635 | undecided (+435, MDE 2302) | WeightedEnsemble → CatBoost / NeuralNetFastAI / WE |
+| bike-sharing (time_local, inner `time_on datetime`) | −163.4 → −161.0 rmse | undecided (+2.4, MDE 10.6) | +67.5 → +30.3 | undecided (+37.2, MDE 67.5) | WE/WE/LightGBMXT → WE ×3 |
+
+- **H2 (outer CV not worse): holds everywhere.** No dataset is "on worse"; all five point
+  estimates favour "on", and MathAchieve is decided better (all 3 folds, rmse −0.126). Caveat for
+  that decided row: 3 fold pairs (the seed replicates re-ran identical GroupKFold folds and are
+  averaged), so it is a small-n decision, honestly reported, not a broad claim.
+- **H1 (optimism shrinks): decided on the adversarial synthetic case only.** On M1-synthetic the
+  random inner holdout let AutoGluon pick memorisers with a perfect internal score (1.000) on data
+  where nothing generalises; group-disjoint inner validation cuts that optimism by 70% and changes
+  the selected models. On the real datasets the direction agrees on 3 of 4 (MathAchieve,
+  economics, bike-sharing) but none clears its MDE at k=3, and Grunfeld points the other way:
+  with 10 firms, the group-disjoint inner holdout holds out 2 firms whose scale dominates RMSE,
+  so its internal score is noise, not a measurement. **H1 is not supported on real data at this
+  power** — a null result, not a refutation.
+- **Reading:** the change is safe (never measured worse) and fixes the selection pathology where it
+  is severe (entity memorisation), but on these real datasets its effect on the reported numbers is
+  within noise. Its main value is that `score_val`, which the holdout-retry path gates on, stops
+  being a known-inflated number on grouped data.
+- **Open point, unchanged in N6:** the holdout path's OUTER split (`engine.split`) is random and
+  group-unaware, so on grouped data a holdout-path run still evaluates on known entities. Only the
+  CV path (`--cv`, where the Strategist runs) carries group/time structure end to end.
+- Artefact: `docs/examples/reports/n6_mathachieve_dossier.html`, a grouped `--cv 3` run (the
+  Strategist chose `group` on `School`). Setup shows "Interne Modellauswahl: gruppen-disjunkt auf
+  School" and the engine version; its CV (−6.3081) equals the "on" arm above exactly.
+
+### TFM feasibility under AutoGluon 1.6 (Teil D, continues the aborted P3 TabPFN spike)
+
+`pip install "autogluon.tabular[all,tabarena]>=1.6"` into a throwaway venv: **non-interactive, 76 s**
+(tabicl 2.1.1, tabdpt 1.2.0, synthefy-nori 0.14.0; weights pulled from Hugging Face without any
+license prompt). CPU fit on heart (227 train rows, binary): **TabICL ok** (fit 10.9 s, test acc
+0.895), **TabDPT ok** (fit 11.3 s, test acc 0.882), **Nori: not trainable on CPU** (the model
+declares `minimum_num_gpus = 0.5` and is skipped; no GPU here). The license blocker that ended
+the TabPFN spike does not exist for these. Not integrated: no preset, engine, flag or dependency
+was added.
 
 ## Recurring pattern
 
