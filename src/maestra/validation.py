@@ -15,6 +15,11 @@ by training a classifier to tell them apart; an AUC near 0.5 means no detectable
 sklearn-compatible estimators. ``TabularPredictor`` is imported LAZILY (inside
 ``adversarial_validation``, its only user here) so this module — hence the engine-agnostic
 CV path and ``compare()`` — imports without AutoGluon installed (see ``engine.py``'s docstring).
+
+N6: on the AutoGluon path every fold fit also gets the outer strategy as AutoGluon's internal
+``validation_structure`` (group-disjoint / forward in time), recorded in
+``CVResult.inner_validation`` with the per-fold internal ``val_scores``; adversarial validation
+is deliberately unchanged (a different purpose).
 """
 from __future__ import annotations
 

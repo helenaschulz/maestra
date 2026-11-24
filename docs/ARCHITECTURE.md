@@ -87,6 +87,15 @@ the standalone `RollingOriginSplit` in [`validation.py`](../src/maestra/validati
 same fold layer the Validation Strategist chooses from, so forecasting validation lands in the
 existing Validation plane rather than a parallel one.
 
+**The fold structure reaches inside AutoGluon (N6).** Outer folds that are group-disjoint or
+forward in time only keep the *reported* score honest; AutoGluon's own model selection (early
+stopping, ensemble weights, `score_val`) used to split at random inside each fit. Since AutoGluon
+1.6, `engine.resolve_inner_validation()` maps the strategy the outer folds actually use onto
+AutoGluon's `validation_structure` (`group_on`, or `time_on` + forward-only), in every CV fold,
+the CV path's final fit and the backtest audit's fits. It is declared on ignored carrier columns,
+so the feature set never changes; random folds pass nothing and the call is the pre-N6 one. Run
+records carry `inner_validation` and `autogluon_version`; the dossier shows the line.
+
 ## Why no agent framework
 
 The alternative — LangGraph, CrewAI, an actor/message-passing runtime — buys flexibility Maestra
@@ -121,7 +130,9 @@ would be a real signal to revisit this choice — not a default to reach for ear
   splitter the backtest audit reuses.
 - [`engine.py`](../src/maestra/engine.py) — the `Engine` protocol: `AutoGluonEngine` (the
   pipeline's own path, unchanged), `SklearnEngine`/`LightGBMEngine` (for `compare()` and future
-  lightweight gates). Adding an engine never changes what "measurably better" means.
+  lightweight gates). Adding an engine never changes what "measurably better" means. Also the
+  one place the outer fold strategy is translated into AutoGluon's internal
+  `validation_structure` (N6).
 - [`mcp_server.py`](../src/maestra/mcp_server.py) — the same planes, exposed as tools
   instead of CLI flags: `audit_csv`/`check_validation`/`feasibility`/`audit_backtest` each call
   straight into the Validation/Arbitration planes and return a verdict record, never a model.

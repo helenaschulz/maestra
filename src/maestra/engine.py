@@ -22,6 +22,11 @@ even where AutoGluon isn't installed (P3's Colab notebook uses a ``--no-deps`` i
 exactly this). ``autogluon.tabular[all]`` stays a required ``pyproject.toml`` dependency —
 this is an import-time nicety, not a packaging change (see P3's docs/RESULTS.md note on why
 making the *dependency* itself optional was investigated and NOT done).
+
+N6 (AutoGluon >= 1.6): :func:`resolve_inner_validation` translates the OUTER fold strategy into
+AutoGluon's ``validation_structure`` so its INTERNAL model selection respects groups/time too;
+``train_and_evaluate``/``fit_predictor`` declare it on ignored carrier columns (feature set
+unchanged). ``None`` keeps every AutoGluon call byte-identical to pre-N6.
 """
 from __future__ import annotations
 
