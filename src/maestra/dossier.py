@@ -448,9 +448,36 @@ def render_backtest_audit(r, *, verdict_sentence: str | None = None) -> str:
                     + (" — verified applicable." if tf["verified"] else " — not applicable.")
                     + f" <span class='note'>{_esc(tf['rationale'])}</span></p>")
 
+    cov = getattr(r, "covariate_availability", None) or []
+    if not cov:
+        cov_body = "<p class='muted'>No feature columns classified.</p>"
+    else:
+        head = ("<tr><th>Column</th><th>Verdict</th><th>LLM said</th><th>Evidence</th>"
+                "<th>Action</th></tr>")
+        body = ""
+        for c in cov:
+            ev = c["evidence"]
+            bits = []
+            if ev.get("in_future_window") is not None:
+                bits.append("in future window" if ev["in_future_window"]
+                            else "absent from future window")
+            if ev.get("calendar_derivable"):
+                bits.append("calendar-derivable")
+            if ev.get("correlation_with_target") is not None:
+                bits.append(f"|corr| {ev['correlation_with_target']:.2f}")
+            llm = c.get("llm") or "—"
+            flag = "" if c["corroborated"] or c.get("llm") is None else " <span class='note'>(overridden by evidence)</span>"
+            body += (f"<tr><td><code>{_esc(c['column'])}</code></td>"
+                     f"<td><b>{_esc(c['availability'])}</b>{flag}</td><td>{_esc(llm)}</td>"
+                     f"<td>{_esc(', '.join(bits) or 'none')}</td><td>{_esc(c['action'])}</td></tr>")
+        cov_body = (f"<table>{head}{body}</table><p class='note'>Proposed by the LLM, decided by "
+                    "the evidence: presence in the real future window, calendar derivability, "
+                    "correlation with the target. Where they disagree, the evidence wins.</p>")
+
     sections = [
         _section("Setup", _kv_table(setup), open_=True),
         _section("Future-leaking features", _findings_list(leaks), open_=True),
+        _section("Covariate availability at forecast time", cov_body, open_=True),
         _section("Split design: naive vs. embargoed backtest", split_body, open_=True),
         _section("Series-identity leak (tested against a null band)", series_leak_body, open_=True),
         _section("Series-boundary shift (diagnostic, not a verdict)", series_body),

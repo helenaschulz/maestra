@@ -9,7 +9,10 @@ Same three-part contract as every judgment node in this project:
 * **propose** — the LLM reads column semantics and flags candidates (future-leaking columns);
   one structured call, temperature 0.
 * **verify** — deterministic code corroborates each candidate (a correlation-with-target check,
-  the same evidence `audit.py::_target_leak_scan` uses).
+  the same evidence `audit.py::_target_leak_scan` uses). F3-1 widens this from "flag leaks" to
+  "classify every covariate" (known_future / past_only / leaking,
+  :func:`check_covariate_availability`): presence in the real future window, calendar
+  derivability and correlation decide; where they disagree with the LLM, the evidence wins.
 * **measure** — the split-design question ("how much does a naive backtest overstate quality?")
   is answered by :func:`quantify_backtest_lie`, comparing a naive backtest against an embargoed
   one over several rolling origins, with the SAME Nadeau-Bengio-corrected paired test
@@ -49,8 +52,27 @@ FUTURE_FEATURE_SCHEMA = {
                 "required": ["column", "reason"],
             },
         },
+        "covariate_availability": {
+            "type": "array",
+            "description": "F3-1: for EVERY feature column (not the target, not the time column): "
+                           "is its value legitimately known at the moment a forecast is made? "
+                           "known_future = known in advance for the forecast horizon (calendar, "
+                           "holidays, PLANNED promotions/prices, store open schedule); past_only = "
+                           "only observed up to the forecast origin (usable lagged, not as a "
+                           "future input); leaking = embeds or is recorded after the outcome.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string"},
+                    "availability": {"type": "string",
+                                     "enum": ["known_future", "past_only", "leaking"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["column", "availability", "reason"],
+            },
+        },
     },
-    "required": ["future_leaking_columns"],
+    "required": ["future_leaking_columns", "covariate_availability"],
 }
 
 _SYSTEM_PROMPT = (
@@ -62,7 +84,12 @@ _SYSTEM_PROMPT = (
     "promotions known in advance) even if they correlate with the target -- correlation is not "
     "the test, AVAILABILITY AT FORECAST TIME is. Only name columns that exist in the profile. "
     "If nothing looks like a future leak, return an empty list -- most forecasting setups have "
-    "none, and a false alarm here is as costly as a miss."
+    "none, and a false alarm here is as costly as a miss. Separately, classify EVERY feature "
+    "column's availability (known_future / past_only / leaking): calendar features, holidays and "
+    "promotions or prices that are PLANNED in advance are known_future; signals that are only "
+    "observed as time passes (weather actuals, footfall, competitor activity) are past_only; "
+    "anything computed from or recorded after the outcome is leaking. Deterministic checks will "
+    "verify each classification against the data and override you where they disagree."
 )
 
 
@@ -119,6 +146,105 @@ def check_future_features(df: pd.DataFrame, target: str, proposal: dict) -> list
             "correlation_with_target": _correlation_with_target(df, target, col),
         })
     return findings
+
+
+# F3-1 actions per final availability class.
+_AVAILABILITY_ACTION = {
+    "known_future": "usable as a known future covariate",
+    "past_only": "use only as of the forecast origin (lagged), never as a future input",
+    "leaking": "drop: not available at forecast time and carries the outcome",
+}
+
+
+def _calendar_derivable(df: pd.DataFrame, column: str, time_column: str) -> bool:
+    """True if ``column`` is a function of ONE recurring calendar component of the timestamp --
+    day of week, month, quarter, hour, or (month, day) for fixed-date holidays -- so its value
+    can be written down for any future date. "Constant per timestamp" alone is not enough: in a
+    single series every column is trivially a function of its unique timestamp."""
+    values = df[time_column]
+    if values.dtype.kind != "M":
+        if values.dtype.kind in "iuf":
+            return False  # an ordinal time index carries no calendar
+        values = pd.to_datetime(values, errors="coerce", format="mixed")
+    sub = pd.DataFrame({"t": values, "c": df[column]}).dropna()
+    if len(sub) < 10 or sub["c"].nunique() < 2:
+        return False
+    t = sub["t"].dt
+    keys = [t.dayofweek, t.month, t.quarter, [t.month, t.day]]
+    if (t.hour != 0).any():
+        keys.append(t.hour)
+    for key in keys:
+        if sub.groupby(key)["c"].nunique().max() <= 1:
+            return True
+    return False
+
+
+def _in_future_window(future_df: pd.DataFrame | None, column: str) -> bool | None:
+    """Present (mostly non-null) in the real future window (e.g. ``test.csv``)? ``None`` when no
+    future window was given -- absence of evidence, not evidence of absence."""
+    if future_df is None:
+        return None
+    return bool(column in future_df.columns and future_df[column].notna().mean() >= 0.5)
+
+
+def check_covariate_availability(df: pd.DataFrame, target: str, time_column: str,
+                                 proposal: dict, future_df: pd.DataFrame | None = None,
+                                 *, leak_correlation: float = 0.9) -> list[dict]:
+    """F3-1: corroborate the LLM's per-column availability claims deterministically. No LLM
+    claim stands alone, and where the data disagrees the data wins:
+
+    * ``known_future`` needs evidence: the column is in the real future window
+      (``future_df``) or is calendar-derivable from the timestamp. Without either it is
+      downgraded to ``past_only`` (the safe class).
+    * ``leaking`` needs evidence: absent from the future window, or |corr with target| above
+      ``leak_correlation`` (the F1 / ``audit.py`` standard). Without either -> ``past_only``.
+    * Evidence overrides the LLM in the other direction too: a column the real future window
+      supplies (or the calendar determines) IS known at forecast time -> ``known_future``,
+      whatever the LLM said; a column absent from the future window can never be
+      ``known_future`` -> ``past_only`` (``leaking`` if its correlation is leak-level).
+
+    ``past_only`` from the LLM is accepted as is: it is the conservative default and enables
+    nothing. Columns the LLM skipped are classified from evidence alone (``llm`` = None).
+    Returns one dict per feature column: ``column``, ``llm``, ``availability`` (final),
+    ``corroborated`` (evidence agrees with the LLM), ``evidence``, ``action``, ``reason``.
+    """
+    claims = {}
+    for item in proposal.get("covariate_availability", []) or []:
+        col = item.get("column")
+        if col in df.columns and col not in (target, time_column):
+            claims[col] = item
+    out = []
+    for col in df.columns:
+        if col in (target, time_column):
+            continue
+        item = claims.get(col, {})
+        llm = item.get("availability")
+        corr = _correlation_with_target(df, target, col)
+        calendar = _calendar_derivable(df, col, time_column)
+        in_future = _in_future_window(future_df, col)
+        leak_corr = corr is not None and corr > leak_correlation
+        if in_future is True or (calendar and in_future is not False):
+            final, why = "known_future", ("present in the future window" if in_future
+                                         else "calendar-derivable from the timestamp")
+        elif in_future is False:
+            final = "leaking" if (leak_corr or llm == "leaking") else "past_only"
+            why = "absent from the future window" + (
+                f", |corr| {corr:.2f} with the target" if leak_corr else "")
+        elif llm == "leaking" and leak_corr:
+            final, why = "leaking", f"|corr| {corr:.2f} with the target"
+        else:
+            final = "past_only"
+            why = ("no deterministic evidence that it is known in advance"
+                   if llm in ("known_future", "leaking") else "conservative default")
+        out.append({
+            "column": col, "llm": llm, "availability": final,
+            "corroborated": llm == final,
+            "evidence": {"in_future_window": in_future, "calendar_derivable": calendar,
+                         "correlation_with_target": corr},
+            "action": _AVAILABILITY_ACTION[final],
+            "reason": (item.get("reason") or "") + f" [evidence: {why}]",
+        })
+    return out
 
 
 def _time_sorted_order(df: pd.DataFrame, time_column: str) -> np.ndarray:
@@ -368,6 +494,7 @@ class BacktestAuditReport:
     series_leak_auc: float | None = None
     series_leak: dict | None = None
     target_framing: dict | None = None
+    covariate_availability: list[dict] = field(default_factory=list)  # F3-1, one per feature
 
     @property
     def risk_level(self) -> str:
@@ -385,6 +512,10 @@ class BacktestAuditReport:
         escalate risk; see that function's docstring for why the two are separate measurements."""
         if self.future_leaks:
             return "high"
+        # F3-1: a covariate whose final, evidence-backed class is "leaking"
+        # (every final "leaking" is evidence-backed, see check_covariate_availability)
+        if any(c["availability"] == "leaking" for c in self.covariate_availability):
+            return "high"
         if self.split_design and self.split_design["direction"] == "optimistic (dangerous)":
             return "high"
         if self.series_leak and self.series_leak["verdict"] == "leaking":
@@ -394,7 +525,8 @@ class BacktestAuditReport:
 
 def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: str,
                    series_column: str | None = None, description: str | None = None,
-                   time_limit: int = 15, n_origins: int = 3, csv: str = "data") -> BacktestAuditReport:
+                   time_limit: int = 15, n_origins: int = 3, csv: str = "data",
+                   future_df: pd.DataFrame | None = None) -> BacktestAuditReport:
     """Produce a :class:`BacktestAuditReport` for an existing forecasting setup. One LLM call
     (future-feature semantics); the split-design measurement and the optional series-leak checks
     are real, budget-bounded fits — see :func:`split_design_check`/:func:`series_leak_check`/
@@ -403,6 +535,10 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
     ``n_origins`` (F2): rolling origins for :func:`split_design_check`'s naive-vs-embargoed
     comparison — more origins means more paired observations (statistical power) at the cost of
     that many more fits; default 3 matches F1's original battery.
+
+    ``future_df`` (F3-1): the real future window (e.g. the competition's ``test.csv``), the
+    strongest evidence for which covariates are actually known at forecast time; without it the
+    availability verdict rests on calendar derivability and correlation only.
     """
     from maestra.profiling import description_context, profile_dataframe
 
@@ -415,6 +551,7 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
     context = description_context(description)
     proposal = propose_future_features(model, profile, target, time_column, context)
     future_leaks = check_future_features(df, target, proposal)
+    covariates = check_covariate_availability(df, target, time_column, proposal, future_df)
 
     split_design = split_design_check(df, target, time_column, time_limit=time_limit,
                                       n_origins=n_origins)
@@ -435,6 +572,7 @@ def audit_backtest(df: pd.DataFrame, target: str, time_column: str, *, model: st
         csv=csv, n_rows=len(df), target=target, time_column=time_column,
         series_column=series_column, future_leaks=future_leaks, split_design=split_design,
         series_leak_auc=series_leak_auc, series_leak=series_leak, target_framing=framing,
+        covariate_availability=covariates,
     )
 
 
