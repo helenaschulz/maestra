@@ -42,7 +42,13 @@ from maestra.skeptic import apply_skeptic_gate, review_cleaning_plan
 from maestra.research import brief_context, research_strategy
 from maestra.target_framing import propose_target_framing, validate_target_framing
 from maestra.intervention import CVBudget, run_counterfactual
-from maestra.validation import CVResult, adversarial_validation, cross_validate
+from maestra.validation import (
+    LOG_SCALE_METRICS,
+    CVResult,
+    adversarial_validation,
+    cross_validate,
+    rescore_cv,
+)
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
 
 # How much of the traceback to hand the LLM (keep the tail — the actual error is there).
@@ -211,7 +217,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                  eval_metric=None, proba=False, proba_columns=None,
                  fold_advisor=False, ordinal=False, skeptic=False,
                  target_framing=False, text_features=False, cv_budget=None,
-                 presets=None, sample_weight=None) -> PipelineResult:
+                 presets=None, sample_weight=None, framing_metric=None) -> PipelineResult:
     """Cross-validation path (opt-in via --cv). No holdout, no retry/quality loop.
 
     The cleaning/FE plan structure is proposed once on the full data; cross_validate re-fits
@@ -325,6 +331,15 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
         transform, tf_log = validate_target_framing(
             tf_proposal, df, target, cv.problem_type, cv.eval_metric)
         accepted, tf_delta = None, None
+        # F3-0: when the run's deployment metric is log-scale (RMSLE: AutoGluon has no native
+        # scorer, so the run optimises RMSE), the framing arbiter compares base vs trial in THAT
+        # metric, recomputed per fold from the out-of-fold predictions. Otherwise rescore=None
+        # and the arbiter is bit-identical to before.
+        rescore = None
+        if transform is not None and framing_metric in LOG_SCALE_METRICS:
+            rescore = lambda c: rescore_cv(c, df[target], framing_metric)  # noqa: E731
+            tf_log.append(f"framing arbiter scored in the deployment metric {framing_metric} "
+                          f"(recomputed from out-of-fold predictions)")
         if transform is not None:
             outcome, cv = run_counterfactual(
                 f"target:{transform.name}", "target_framing", "target_framing",
@@ -337,7 +352,8 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                     generated_features=generated_features or None,
                     group_column=group_column, time_column=time_column,
                     period_column=period_column,
-                    target_transform=transform))
+                    target_transform=transform),
+                rescore=rescore)
             if outcome.reason == "budget_exhausted":
                 tf_log.append(f"SKIP {transform.name} trial: cv budget exhausted "
                               f"({budget.spent}/{budget.limit} trials spent) — not measured")
@@ -350,6 +366,7 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
                 if accepted:
                     adopted_transform = transform
         framing_summary = {
+            "arbiter_metric": framing_metric if rescore is not None else cv.eval_metric,
             "proposal": tf_proposal, "transform": transform.name if transform else "none",
             "accepted": accepted, "cv_delta": tf_delta, "log": tf_log,
         }
@@ -443,6 +460,7 @@ def run_pipeline(
     ordinal: bool = False,
     skeptic: bool = False,
     target_framing: bool = False,
+    framing_metric: str | None = None,
     text_features: bool = False,
     cv_budget: int | None = None,
     run_memory: bool = False,
@@ -549,7 +567,7 @@ def run_pipeline(
             eval_metric=eval_metric, proba=proba, proba_columns=proba_columns,
             fold_advisor=fold_advisor, ordinal=ordinal, skeptic=skeptic,
             target_framing=target_framing, text_features=text_features, cv_budget=cv_budget,
-            presets=presets, sample_weight=sample_weight,
+            presets=presets, sample_weight=sample_weight, framing_metric=framing_metric,
         )
 
     # Split first, then fit cleaning on train only — otherwise imputation statistics

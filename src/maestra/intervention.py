@@ -15,6 +15,11 @@ once, with two properties the copies lacked:
   trials a run may spend, across ALL gates; an intervention that finds the budget
   exhausted is recorded as such — visibly skipped, never silently dropped. Base CVs
   are not counted: every gate runs at most one, and the reported CV would run anyway.
+
+``run_counterfactual``'s optional ``rescore`` (F3-0) is the seam for "the gate measures the
+RIGHT metric": a projection applied to BOTH base and trial before the accept rule (e.g. RMSLE
+recomputed from the out-of-fold predictions when the run's deployment metric is one AutoGluon
+can't optimise natively). ``None`` keeps every gate bit-identical to before.
 """
 from __future__ import annotations
 
@@ -75,6 +80,7 @@ def run_counterfactual(
     budget: CVBudget | None = None,
     sigma_mult: float = 2.0,
     min_abs: float = _MIN_ABS_DELTA,
+    rescore: Callable[[CVResult], CVResult] | None = None,
 ) -> tuple[InterventionOutcome, CVResult]:
     """Measure one intervention against the current base; the measurement decides.
 
@@ -83,13 +89,22 @@ def run_counterfactual(
     Returns ``(outcome, new_base)`` where ``new_base`` is the trial CV if accepted —
     greedy loops raise the bar by threading it into the next call — and ``base``
     otherwise. Never trains anything when the budget refuses: the skip is free.
+
+    ``rescore`` (F3-0): if given, the accept rule (and the recorded fold scores/means) use
+    ``rescore(base)`` vs ``rescore(trial)`` — the deployment metric — while the returned
+    ``new_base`` stays the UNprojected CV, so the run's reported metric never changes.
     """
     if budget is not None and not budget.try_spend():
         return (
             InterventionOutcome(name, kind, proposed_by, False, None, "budget_exhausted"),
             base,
         )
-    trial = trial_fn()
+    trial_raw = trial_fn()
+    base_raw = base
+    if rescore is not None:
+        base, trial = rescore(base_raw), rescore(trial_raw)
+    else:
+        trial = trial_raw
     accepted, delta = improves_beyond_noise(base=base, trial=trial,
                                             sigma_mult=sigma_mult, min_abs=min_abs)
     if not accepted and delta == 0.0 and trial.fold_scores == base.fold_scores:
@@ -104,4 +119,4 @@ def run_counterfactual(
         list(trial.fold_scores) if trial.fold_scores else None,
         base_mean=float(base.mean), trial_mean=float(trial.mean),
     )
-    return outcome, (trial if accepted else base)
+    return outcome, (trial_raw if accepted else base_raw)

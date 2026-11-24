@@ -113,6 +113,7 @@ CATALOG = [
          competition="house-prices-advanced-regression-techniques",
          test_path="data/house-prices/test.csv",
          eval_metric="root_mean_squared_error", framing=True,  # comp metric RMSLE: log1p aligns
+         framing_metric="root_mean_squared_log_error",  # F3-0: arbiter scores in RMSLE
          note="the M6 anchor (Maestra 5/5 seeds, mean +1285) — in the catalog for completeness; "
               "re-running burns ~30 min for a verdict that already exists in benchmark.jsonl"),
     dict(name="spaceship-titanic", semantics="rich", target="Transported", metric="accuracy",
@@ -125,6 +126,7 @@ CATALOG = [
          id_col="rowid", path="data/kaggle_bike/train.csv", competition="bike-sharing-demand",
          test_path="data/kaggle_bike/test.csv", submit_id="datetime",
          eval_metric="root_mean_squared_error", framing=True,  # comp metric RMSLE: log1p aligns
+         framing_metric="root_mean_squared_log_error",  # F3-0: arbiter scores in RMSLE
          drop=["casual", "registered"],  # sum EXACTLY to `count` and absent from comp test set
          note="10.9k rows with a datetime axis — the temporal Kaggle case; `count` is "
               "right-skewed (competition metric is RMSLE), making it the natural "
@@ -145,6 +147,7 @@ CATALOG = [
          test_path="data/kaggle_store_sales/test.csv",
          submit_sample=200000,  # full train is 3M rows -> infeasible; cap for the submission run
          eval_metric="root_mean_squared_error", framing=True,  # sales is right-skewed
+         framing_metric="root_mean_squared_log_error",  # F3-0: comp metric is RMSLE
          note="Getting-Started (open by default, no join needed). 3M rows -> subsampled to 15k. "
               "store_nbr (54 stores) + family (33 categories) repeat densely — group AND time "
               "axes both present in a single un-joined table (holidays_events.csv/oil.csv/"
@@ -414,7 +417,8 @@ def make_submission(spec: dict, *, model: str, time_limit: int, cv: int,
     result = run_pipeline(
         train, spec["target"], model=model, test_size=0.2, time_limit=time_limit,
         seed=42, model_dir=f"AutogluonModels/kaggle_{spec['name']}", cv_folds=cv,
-        eval_metric=submit_eval, target_framing=submit_framing, use_llm=submit_use_llm,
+        eval_metric=submit_eval, target_framing=submit_framing,
+        framing_metric=spec.get("framing_metric"), use_llm=submit_use_llm,
         fold_advisor=fold_advisor, test_df=test_df, id_col=submit_id,
         proba=bool(proba_columns), proba_columns=proba_columns,
         presets=presets, sample_weight=sample_weight)

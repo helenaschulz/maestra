@@ -1337,6 +1337,31 @@ license prompt). CPU fit on heart (227 train rows, binary): **TabICL ok** (fit 1
 declares `minimum_num_gpus = 0.5` and is skipped; no GPU here). The license blocker that ended
 the TabPFN spike does not exist for these. Not integrated: no preset, engine, flag or dependency
 was added.
+## F3-0 — the target-framing arbiter scores in the deployment metric (2026-11-24)
+
+Fix for F2 Messung 4 / Finding 2 (the framing arbiter compared raw vs log1p in raw-count RMSE,
+the wrong metric for an RMSLE competition). New: `--framing-metric root_mean_squared_log_error`
+(and `framing_metric=` in `run_pipeline`; set for the RMSLE comps in `scripts/kaggle_battery.py`).
+The arbiter then compares base vs trial in RMSLE recomputed per fold from the out-of-fold
+predictions (`validation.rescore_cv`, via `run_counterfactual(..., rescore=...)`), same
+NB-corrected `improves_beyond_noise`, same folds; the reported CV stays in the run's own metric.
+Without the flag every gate is bit-identical (offline test).
+
+**Gate replay on the logged Messung-4 folds** (`bike_metric_ablation.jsonl`, the deployed
+0.43660 plan, model constant, zero new fits; per-fold scores fed through the same accept rule):
+
+| Folds | Arbiter metric | Δ (log1p − raw, higher = better) | MDE | Gate |
+|---|---|---|---|---|
+| random | raw-count RMSE (old) | −1.218 | 1.393 | reject |
+| random | **RMSLE (new)** | **+0.0429** | 0.0245 | **accept** |
+| time_local | raw-count RMSE (old) | −5.347 | 15.043 | reject |
+| time_local | RMSLE (new) | +0.0204 | 0.0915 | reject (underpowered) |
+
+Reading: the fix moves the gate to the right metric, and where the test has power (random folds)
+it flips to accept, as Finding 2 predicted. On the configuration that was actually deployed
+(`time_local`, 3 folds) the RMSLE delta points the same way but stays inside the MDE, so the gate
+still rejects. The fix does **not** change the deployed bike-sharing decision at 3 folds. Fixed in
+the gate, not "LB-confirmed": the optional log1p submit remains open.
 
 ## Recurring pattern
 

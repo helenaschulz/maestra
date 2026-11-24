@@ -87,6 +87,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
              "only if a paired CV in ORIGINAL units beats the base beyond noise (needs --cv).",
     )
     p.add_argument(
+        "--framing-metric",
+        choices=["root_mean_squared_log_error"],
+        default=None,
+        help="The run's real deployment metric when AutoGluon has no native scorer for it "
+             "(RMSLE). The --target-framing arbiter then compares raw vs log1p in THIS metric, "
+             "recomputed from out-of-fold predictions, instead of the run's eval metric.",
+    )
+    p.add_argument(
         "--hybrid",
         action="store_true",
         help="Generate feature code, sandbox-run it, and keep only what improves the CV "
@@ -328,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             ordinal=args.ordinal,
             skeptic=args.skeptic,
             target_framing=args.target_framing,
+            framing_metric=args.framing_metric,
             text_features=args.text_features,
             cv_budget=args.cv_budget,
             hybrid=args.hybrid,
