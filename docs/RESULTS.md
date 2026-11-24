@@ -1337,6 +1337,63 @@ license prompt). CPU fit on heart (227 train rows, binary): **TabICL ok** (fit 1
 declares `minimum_num_gpus = 0.5` and is skipped; no GPU here). The license blocker that ended
 the TabPFN spike does not exist for these. Not integrated: no preset, engine, flag or dependency
 was added.
+## F3-0 — the target-framing arbiter scores in the deployment metric (2026-11-24)
+
+Fix for F2 Messung 4 / Finding 2 (the framing arbiter compared raw vs log1p in raw-count RMSE,
+the wrong metric for an RMSLE competition). New: `--framing-metric root_mean_squared_log_error`
+(and `framing_metric=` in `run_pipeline`; set for the RMSLE comps in `scripts/kaggle_battery.py`).
+The arbiter then compares base vs trial in RMSLE recomputed per fold from the out-of-fold
+predictions (`validation.rescore_cv`, via `run_counterfactual(..., rescore=...)`), same
+NB-corrected `improves_beyond_noise`, same folds; the reported CV stays in the run's own metric.
+Without the flag every gate is bit-identical (offline test).
+
+**Gate replay on the logged Messung-4 folds** (`bike_metric_ablation.jsonl`, the deployed
+0.43660 plan, model constant, zero new fits; per-fold scores fed through the same accept rule):
+
+| Folds | Arbiter metric | Δ (log1p − raw, higher = better) | MDE | Gate |
+|---|---|---|---|---|
+| random | raw-count RMSE (old) | −1.218 | 1.393 | reject |
+| random | **RMSLE (new)** | **+0.0429** | 0.0245 | **accept** |
+| time_local | raw-count RMSE (old) | −5.347 | 15.043 | reject |
+| time_local | RMSLE (new) | +0.0204 | 0.0915 | reject (underpowered) |
+
+Reading: the fix moves the gate to the right metric, and where the test has power (random folds)
+it flips to accept, as Finding 2 predicted. On the configuration that was actually deployed
+(`time_local`, 3 folds) the RMSLE delta points the same way but stays inside the MDE, so the gate
+still rejects. The fix does **not** change the deployed bike-sharing decision at 3 folds. Fixed in
+the gate, not "LB-confirmed": the optional log1p submit remains open.
+
+## F3-1 — covariate availability as a verdict (2026-11-24)
+
+`audit_backtest` now classifies every feature column as `known_future` / `past_only` / `leaking`:
+the LLM proposes (gpt-4o, same forced tool call as the F1 future-leak scan), evidence decides
+(presence in the real future window, calendar derivability, |corr| with the target), and the
+evidence wins on contradiction. Run: `scripts/covariate_availability_battery.py`, the three F1
+tasks (15k-row samples, seed 42) with each competition's `test.csv` as the future window and
+Rossmann's `Customers` deliberately kept. Raw: `covariate_availability.jsonl`.
+
+| Task | Columns classified | Matches the known answer | Not known in advance |
+|---|---|---|---|
+| Rossmann | Store, DayOfWeek, Customers, Open, Promo, StateHoliday, SchoolHoliday | 7/7 | `Customers` → **leaking** (absent from test.csv) |
+| Walmart | Store, Dept, IsHoliday | 3/3 | none |
+| store-sales | store_nbr, family, onpromotion | 3/3 | none |
+
+**What getting it wrong costs (Rossmann):** a rolling-origin backtest (5 origins, AutoGluon 1.6,
+`time_limit=10`) with vs. without `Customers` on identical origins: rmse **≈1275 with vs. ≈2402
+without**, paired gap **+1127, decided optimistic** (MDE 145). A forecaster who treated
+`Customers` as known in advance would report a backtest about twice as good as anything
+deployable.
+
+**Caveats, stated plainly:**
+- LLM and evidence agreed on all 13 columns, so the "evidence overrides the LLM" branch is
+  exercised only in the offline tests, not on real data.
+- None of these competitions ships a genuinely *past-only* covariate (observed, not leaking, not
+  in the test window), so the past-only class has no real-data positive here. The cost measurement
+  uses the one not-known-in-advance column available, which is a leak, not a lagged signal.
+- Artefact: `docs/examples/reports/rossmann-covariate-availability.html` (`maestra-audit
+  --backtest --test data/kaggle_rossmann/test.csv`, Customers kept). Its own 3-origin
+  naive-vs-embargo split check comes out undecided on this sample (gap +109, MDE 182); the
+  verdict is RED because of the leaking covariate.
 
 ## Recurring pattern
 

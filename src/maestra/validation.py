@@ -69,6 +69,8 @@ class CVResult:
     inner_validation: dict | None = None  # N6: what went to AutoGluon's validation_structure
     # per fold ({"strategy", "structure", "note"}), AutoGluon path only
     val_scores: list | None = None  # N6: AutoGluon's internal best score_val per fold
+    fold_val_index: list | None = None  # F3-0: df index labels of each fold's validation rows,
+    # so a CV can be rescored per fold in another metric from oof_pred (see rescore_cv)
 
 
 class RollingOriginSplit:
@@ -190,6 +192,28 @@ def improves_beyond_noise(base: "CVResult", trial: "CVResult", *, sigma_mult: fl
     return delta > max(min_abs, sigma_mult * base.std), float(delta)
 
 
+# Deployment metrics AutoGluon has no native scorer for, but which are recomputable from
+# original-space out-of-fold predictions (F3-0). Reported in AutoGluon's convention (negated).
+LOG_SCALE_METRICS = {"root_mean_squared_log_error"}
+
+
+def rescore_cv(cv: "CVResult", y_true: pd.Series, metric: str) -> "CVResult":
+    """The same CV, its per-fold scores recomputed in ``metric`` from ``cv.oof_pred`` over each
+    fold's validation rows (``cv.fold_val_index``). Nothing is refitted. Used by the
+    target-framing arbiter when the run's deployment metric is log-scale (F3-0): base and trial
+    are then compared in the metric that is actually deployed, on identical folds."""
+    if cv.oof_pred is None or cv.fold_val_index is None:
+        raise ValueError("rescore_cv needs a CV with oof_pred and fold_val_index")
+    scores = [_ag_score(y_true.loc[idx], cv.oof_pred.loc[idx].astype(float), metric)
+              for idx in cv.fold_val_index]
+    return CVResult(
+        eval_metric=metric, problem_type=cv.problem_type, fold_scores=scores,
+        mean=float(np.mean(scores)), std=float(np.std(scores)), n_folds=cv.n_folds,
+        stratified=cv.stratified, greater_is_better=True, oof_pred=cv.oof_pred,
+        fold_val_index=cv.fold_val_index,
+    )
+
+
 def _ag_score(y_true: pd.Series, y_pred: pd.Series, metric: str) -> float:
     """Score regression predictions in AutoGluon's reporting convention (higher is better,
     error metrics negated). Used when a target transform makes the predictor's own metric
@@ -201,6 +225,12 @@ def _ag_score(y_true: pd.Series, y_pred: pd.Series, metric: str) -> float:
         return -float(np.sqrt(np.mean((t - p) ** 2)))
     if metric == "mean_absolute_error":
         return -float(np.mean(np.abs(t - p)))
+    if metric in LOG_SCALE_METRICS:
+        # RMSLE. Predictions are floored at 0 first: log1p is undefined below -1, and a
+        # non-negative target's deployment (e.g. a Kaggle grader) rejects negatives anyway --
+        # the same floor the submission path applies (pipeline.py, clip_nonneg).
+        p = np.clip(p, 0.0, None)
+        return -float(np.sqrt(np.mean((np.log1p(p) - np.log1p(t)) ** 2)))
     if metric == "r2":
         ss_res = float(np.sum((t - p) ** 2))
         ss_tot = float(np.sum((t - np.mean(t)) ** 2))
@@ -475,6 +505,7 @@ def cross_validate(
         period_column=period_column, splitter=splitter, presets=presets,
         enabled=inner_structure)
     val_scores: list = []
+    fold_val_index: list = []
 
     fold_scores: list[float] = []
     # ``eval_metric`` (a metric string OR a custom AutoGluon Scorer object) is passed UNCHANGED
@@ -518,6 +549,7 @@ def cross_validate(
                                     f"{model_dir}/fold_{i}", metric_arg, presets=presets,
                                     sample_weight=sample_weight, **extra)
         val_scores.append(getattr(result, "val_score", None))
+        fold_val_index.append(list(df.index[val_idx]))
         metric_name, problem_type = result.eval_metric, result.problem_type
         preds_orig = None
         if result.predictor is not None:
@@ -565,6 +597,7 @@ def cross_validate(
         oof_proba=oof_proba,
         inner_validation=inner_record,
         val_scores=val_scores,
+        fold_val_index=fold_val_index,
     )
 
 

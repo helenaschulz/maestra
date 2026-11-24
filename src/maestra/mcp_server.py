@@ -292,14 +292,15 @@ def feasibility(path: str, target: str, model: str = "gpt-4o") -> dict:
 # --- Tool 4: audit_backtest --------------------------------------------------------------
 
 def _audit_backtest(path: str, target: str, time_column: str, series_column: str | None,
-                    model: str) -> dict:
+                    model: str, future_path: str | None = None) -> dict:
     df, err = _load_and_check(path, target, time_column)
     if err:
         return err
     from maestra.backtest_audit import audit_backtest, write_backtest_audit_html
 
+    future_df = pd.read_csv(future_path) if future_path else None
     report = audit_backtest(df, target, time_column, model=model, series_column=series_column,
-                            time_limit=_BACKTEST_TIME_LIMIT, csv=path)
+                            time_limit=_BACKTEST_TIME_LIMIT, csv=path, future_df=future_df)
     html_path = f"{path}.backtest_audit.html"
     write_backtest_audit_html(report, html_path)
     return {
@@ -309,22 +310,29 @@ def _audit_backtest(path: str, target: str, time_column: str, series_column: str
         "split_design": report.split_design,
         "series_leak_auc": report.series_leak_auc,
         "target_framing": report.target_framing,
+        "covariate_availability": [
+            {k: c[k] for k in ("column", "availability", "llm", "corroborated", "action")}
+            for c in report.covariate_availability],
         "html_report": html_path,
     }
 
 
 @mcp.tool()
 def audit_backtest(path: str, target: str, time_column: str, series_column: str | None = None,
-                   model: str = "gpt-4o") -> dict:
+                   model: str = "gpt-4o", future_path: str | None = None) -> dict:
     """Audit an EXISTING forecasting setup for backtest leakage. Checks (1) whether any column
     would actually be unknown at real forecast time (LLM-flagged, correlation-corroborated),
     (2) whether a naive (no-gap) backtest MEASURABLY overstates quality versus an embargoed one,
     across several rolling origins — quantified, not asserted, using the same statistical test
     every other Maestra gate uses, (3) with a series column, whether a single global model can
-    tell train and test apart across the time boundary (adversarial check). Trains no
-    deployable model — every fit here is a diagnostic, budget-bounded backtest replication.
+    tell train and test apart across the time boundary (adversarial check), (4) per feature
+    column, whether it is legitimately known at forecast time (known_future / past_only /
+    leaking) — LLM-proposed, decided by evidence (presence in ``future_path``, e.g. the
+    competition's test.csv, calendar derivability, correlation). Trains no deployable model —
+    every fit here is a diagnostic, budget-bounded backtest replication.
 
     Returns {"verdict": "ok", "risk_level": "low"|"elevated"|"high", "future_leaks": [...],
+    "covariate_availability": [{"column", "availability", "llm", "corroborated", "action"}],
     "split_design": {"mean_gap": ..., "direction": "optimistic (dangerous)"|"pessimistic (safe)"|
     "undecided", "n_origins": ..., ...} | None, "series_leak_auc": float | None,
     "target_framing": {...} | None, "html_report": "<path>"} — or
@@ -335,7 +343,8 @@ def audit_backtest(path: str, target: str, time_column: str, series_column: str 
     "split_design": {"direction": "optimistic (dangerous)", "mean_gap": 12.4, ...}, ...}
     """
     return _with_budget(_audit_backtest, tool="audit_backtest", path=path, target=target,
-                        time_column=time_column, series_column=series_column, model=model)
+                        time_column=time_column, series_column=series_column, model=model,
+                        future_path=future_path)
 
 
 def main() -> None:

@@ -246,6 +246,29 @@ def test_audit_backtest_happy_path(tmp_path, monkeypatch):
     assert result["risk_level"] == "high"
     assert result["future_leaks"] == [{"column": "x", "reason": "r", "correlation_with_target": 0.9}]
     assert result["html_report"] == f"{p}.backtest_audit.html"
+    assert result["covariate_availability"] == []
+
+
+def test_audit_backtest_passes_the_future_window_and_reports_covariates(tmp_path, monkeypatch):
+    p, fut = tmp_path / "data.csv", tmp_path / "test.csv"
+    _forecast_df().to_csv(p, index=False)
+    _forecast_df().drop(columns=["sales"]).to_csv(fut, index=False)
+    cov = [{"column": "price", "llm": "known_future", "availability": "known_future",
+            "corroborated": True, "evidence": {"in_future_window": True}, "action": "use",
+            "reason": "r"}]
+    seen = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        return _backtest_report(covariate_availability=cov)
+
+    monkeypatch.setattr("maestra.backtest_audit.audit_backtest", fake)
+    monkeypatch.setattr("maestra.backtest_audit.write_backtest_audit_html", lambda *a, **k: None)
+    result = srv.audit_backtest(str(p), "sales", "date", future_path=str(fut))
+    assert "x" in seen["future_df"].columns
+    assert result["covariate_availability"] == [
+        {"column": "price", "availability": "known_future", "llm": "known_future",
+         "corroborated": True, "action": "use"}]
 
 
 # --- entry point -------------------------------------------------------------------------

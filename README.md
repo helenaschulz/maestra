@@ -142,7 +142,7 @@ Full write-up (gate design, why no agent framework, the layer separation): [`doc
 **Understand** the data before touching a model.
 
 - **`maestra-audit`:** a standalone data-risk report to run *before* modeling. Executive summary with an overall risk verdict, the recommended validation strategy, LLM-flagged *and* deterministically-detected leakage, structural traps (id-like, constant, high-missing, free-text), an optional train/test shift check. Trains no model. English or German (`--lang de`), reads CSV, Parquet, Excel.
-- **Backtest audit for forecasting** (`maestra-audit --backtest --time-col COL [--series-col COL]`): the same idea for an *existing* time-series setup. Detects future-leaking features (it caught Rossmann's `Customers`, absent from the real test set, at |corr| 0.892 with the target), measures the naive-vs-embargoed backtest gap, and runs a null-controlled series-boundary shift check. Also exposed as an MCP tool.
+- **Backtest audit for forecasting** (`maestra-audit --backtest --time-col COL [--series-col COL]`): the same idea for an *existing* time-series setup. Detects future-leaking features (it caught Rossmann's `Customers`, absent from the real test set, at |corr| 0.892 with the target), measures the naive-vs-embargoed backtest gap, and runs a null-controlled series-boundary shift check. Classifies every covariate as `known_future` / `past_only` / `leaking` at forecast time: the LLM proposes, evidence decides (pass the real future window with `--test`). Also exposed as an MCP tool.
 - **Semantic context** (`--description`, `--ordinal`): feed the provider's data description to every judgment node, and let the LLM map ordinal categoricals to a worst→best rank the trees cannot infer. The map is the LLM's knowledge, applied leakage-free, never a data statistic.
 
 **Validate** so the score is honest.
@@ -160,7 +160,7 @@ Full write-up (gate design, why no agent framework, the layer separation): [`doc
 **Extend**, all measurement-gated.
 
 - **Skeptic** (`--skeptic`): a second LLM attacks the cleaning plan's drops; a drop is vetoed only if keeping the column measurably helps.
-- **Target framing** (`--target-framing`): proposes `log1p` for skewed regression targets, adopted only if a paired CV in original units beats the base.
+- **Target framing** (`--target-framing`): proposes `log1p` for skewed regression targets, adopted only if a paired CV in original units beats the base. With `--framing-metric root_mean_squared_log_error` the arbiter compares in RMSLE, for tasks scored in a metric AutoGluon can't optimise natively.
 - **Hybrid features** (`--hybrid`) and **free-text featurization** (`--text-features`): LLM-written *deterministic* extraction code in a resource-bounded sandbox (network blocked, secrets stripped, target stripped), kept only if it beats a paired per-fold CV. Full provenance (kept/rejected/why) in the run log.
 - **Strategy research** (`--research`): web-grounded, rules-aware hypotheses that inform planning but never bypass validation.
 - **Benchmark harnesses:** `maestra-bench` (seeded replications, paired verdict with *undecided-within-noise* as a first-class outcome) and `maestra-mlebench` (real MLE-bench grading, medals, CV↔LB gap).

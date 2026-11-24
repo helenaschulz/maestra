@@ -328,7 +328,9 @@ def main(argv: list[str] | None = None) -> int:
                                             "structural traps) — run before building a model.")
     p.add_argument("--csv", required=True, help="Training table to audit (.csv, .parquet or .xlsx).")
     p.add_argument("--target", required=True, help="Target column.")
-    p.add_argument("--test", help="Optional test table, for a train/test distribution-shift check.")
+    p.add_argument("--test", help="Optional test table, for a train/test distribution-shift check. "
+                                  "With --backtest: the real future window, evidence for which "
+                                  "covariates are known at forecast time (F3-1).")
     p.add_argument("--description", help="Optional dataset-description file (column semantics).")
     p.add_argument("--model", default="gpt-4o", help="LiteLLM model for the Validation Strategist.")
     p.add_argument("--lang", choices=["en", "de"], default="en", help="Report language.")
@@ -353,15 +355,19 @@ def main(argv: list[str] | None = None) -> int:
             p.error("--backtest requires --time-col")
         from maestra.backtest_audit import audit_backtest, write_backtest_audit_html
 
+        future_df = _load_table(args.test) if args.test else None  # F3-1: the future window
         bt_report = audit_backtest(train_df, args.target, args.time_col, model=args.model,
                                    series_column=args.series_col, description=description,
-                                   time_limit=args.time_limit, csv=args.csv)
+                                   time_limit=args.time_limit, csv=args.csv, future_df=future_df)
         summary = (
             f"Backtest audit: {args.csv}\nRisk level: {bt_report.risk_level}\n"
             f"Future-leaking columns: {[f['column'] for f in bt_report.future_leaks] or 'none'}\n"
             f"Split design: {bt_report.split_design}\n"
             f"Series-leak AUC: {bt_report.series_leak_auc}\n"
             f"Target-framing candidate: {bt_report.target_framing}\n"
+            "Covariate availability:\n" + "".join(
+                f"  {c['column']}: {c['availability']} (LLM: {c['llm']}) -> {c['action']}\n"
+                for c in bt_report.covariate_availability)
         )
         if args.out:
             with open(args.out, "w") as fh:
