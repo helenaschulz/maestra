@@ -31,8 +31,9 @@ research = ["httpx", "ddgs", "trafilatura"]
 # MLE-bench grading. Heavy (Docker + competition data); pulled from git. Reached only via
 # maestra.mlebench_runner.grade_submission, which raises a clear error when absent.
 mlebench = ["mle-bench @ git+https://github.com/openai/mle-bench.git"]
-# MCP server (maestra.mcp_server, maestra-mcp entry point). The official SDK's FastMCP; kept
-# optional so the core install (and its tests) never need an MCP runtime.
+# MCP server (maestra.mcp_server, maestra-mcp entry point). The official SDK's server class
+# (FastMCP in 1.x, MCPServer in 2.x; both supported). Kept optional so the core install never
+# needs an MCP runtime; CI installs it so the MCP tests run against the current release.
 mcp = ["mcp>=1.0"]
 
 [project.scripts]

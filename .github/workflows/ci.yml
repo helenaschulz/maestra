@@ -19,9 +19,10 @@ jobs:
 
       # The core install is heavy (AutoGluon pulls in PyTorch) but required: modules import
       # autogluon at the top level even though every test mocks it. The suite itself is fast
-      # and fully offline (LLM and AutoGluon are mocked).
+      # and fully offline (LLM and AutoGluon are mocked). The light `mcp` group is included so
+      # tests/test_mcp_server.py runs against the current mcp release instead of skipping.
       - name: Install
-        run: pip install -e ".[dev,research]"
+        run: pip install -e ".[dev,research,mcp]"
 
       - name: Lint
         run: python -m ruff check src/ tests/ scripts/

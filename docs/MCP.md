@@ -25,9 +25,10 @@ by design (see `CLAUDE.md` — the LLM proposes, a deterministic gate decides).
 pip install -e ".[mcp]"
 ```
 
-This pulls in the optional `mcp` dependency group (the official Python MCP SDK, `FastMCP`) on
-top of the core install. It is not part of `.[dev]`/`.[research]` and not installed by CI — the
-core test suite never needs an MCP runtime.
+This pulls in the optional `mcp` dependency group (the official Python MCP SDK) on top of the
+core install. Both SDK majors work: 1.x (`FastMCP`) and 2.x (`MCPServer`, the renamed class). It
+is not part of `.[dev]`/`.[research]`; the core install never needs an MCP runtime, but CI installs
+the group so the MCP tests run against the current SDK release.
 
 You'll also need an LLM API key, same as every other Maestra entry point:
 
