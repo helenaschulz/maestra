@@ -127,7 +127,9 @@ would be a real signal to revisit this choice — not a default to reach for ear
   `cross_validate()`'s `engine` parameter (P3) makes the fitting step itself pluggable without
   touching the gate or the loop above it. Also home to the fold strategies the Strategist selects
   (random / group / time / `time_local`) and `RollingOriginSplit`, the standalone rolling-origin
-  splitter the backtest audit reuses.
+  splitter the backtest audit reuses. `holdout_split()` applies the same strategy to the
+  holdout path's single outer split (N6b), so a run without `--cv` is no longer random by
+  construction.
 - [`engine.py`](../src/maestra/engine.py) — the `Engine` protocol: `AutoGluonEngine` (the
   pipeline's own path, unchanged), `SklearnEngine`/`LightGBMEngine` (for `compare()` and future
   lightweight gates). Adding an engine never changes what "measurably better" means. Also the

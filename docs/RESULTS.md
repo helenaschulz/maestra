@@ -1420,6 +1420,35 @@ path. CLI default: the Strategist now also runs on holdout runs that use the LLM
   `datetime` × `month_of:datetime`). Paired test over seeds (`paired_delta_test`, NB ratio
   n_holdout/n_train). A null result is reported as such.
 
+### Results: random vs. structured holdout (raw: `n6b_holdout_split.jsonl`)
+
+Gap = holdout estimate − answer-key score (higher-is-better, so positive = optimistic). Means over
+5 seeds; verdicts paired, NB-corrected.
+
+| Dataset (strategy) | Gap random | Gap structured | H1 | Truth random | Truth structured | H2 |
+|---|---|---|---|---|---|---|
+| M1-synthetic (`group`, accuracy) | +0.451 | −0.038 | **decided** (MDE 0.20) | 0.542 | 0.497 | undecided (MDE 0.14) |
+| MathAchieve (`group`, rmse) | +0.056 | −0.195 | undecided (MDE 0.23) | 6.315 | 6.146 | **structured better** (MDE 0.11) |
+| economics (`time`, rmse) | +3683 | +1173 | **decided** (MDE 201) | 3939 | 1678 | **structured better** (MDE 177) |
+| bike-sharing (`time_local`, rmse) | +60.2 | +0.5 | **decided** (MDE 6.0) | 177.3 | 178.4 | undecided (MDE 2.6) |
+
+- **H1 holds on 3 of 4.** The random holdout reports ~0.99 accuracy on M1-synthetic, where the truth is
+  chance; the group holdout reports chance. On bike-sharing the random holdout claims rmse ≈117
+  against a truth of ≈177; the per-month forward holdout is within 0.5. MathAchieve is the null:
+  both holdouts are close to the truth there (school effects are weak relative to student noise).
+- **H2 is never worse** and is better on MathAchieve and economics. The economics gain (rmse 3939 →
+  1678) is not isolated: arm B changes both the outer split and the inner forward-only model
+  selection, and the latter is the likelier cause (it selects for extrapolation). Not measured
+  separately.
+- **Caveat on the time rows:** the time and `time_local` splits do not depend on the seed and
+  AutoGluon was bit-identical across seeds there, so the structured arm is one realisation; those
+  verdicts are against the random arm's seed spread, not a replicate spread of both arms.
+- Artefact: `docs/examples/reports/n6b_mathachieve_holdout_dossier.html`, a real holdout-path run
+  (`--no-llm --fold-advisor`, no `--cv`, Strategist = the default pipeline LLM). Setup shows the
+  advisor's `group` on `School`, "Holdout split: group-disjoint on School: 32 of 160 groups held
+  out (5724 train / 1461 holdout rows)" and "Interne Modellauswahl: gruppen-disjunkt auf School";
+  AutoGluon's log confirms a structure-aware internal holdout. Holdout rmse 6.084.
+
 ## Recurring pattern
 
 On 2 of 3 graded comparisons (leaf, titanic) the LLM cleaning/FE **underperformed** plain
