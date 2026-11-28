@@ -1323,7 +1323,8 @@ NB-corrected, three-way; "on better" for H1 means the optimism shrank.
   being a known-inflated number on grouped data.
 - **Open point, unchanged in N6:** the holdout path's OUTER split (`engine.split`) is random and
   group-unaware, so on grouped data a holdout-path run still evaluates on known entities. Only the
-  CV path (`--cv`, where the Strategist runs) carries group/time structure end to end.
+  CV path (`--cv`, where the Strategist runs) carries group/time structure end to end. *Closed in
+  N6b below (2026-11-28).*
 - Artefact: `docs/examples/reports/n6_mathachieve_dossier.html`, a grouped `--cv 3` run (the
   Strategist chose `group` on `School`). Setup shows "Interne Modellauswahl: gruppen-disjunkt auf
   School" and the engine version; its CV (−6.3081) equals the "on" arm above exactly.
@@ -1394,6 +1395,30 @@ deployable.
   --backtest --test data/kaggle_rossmann/test.csv`, Customers kept). Its own 3-origin
   naive-vs-embargo split check comes out undecided on this sample (gap +109, MDE 182); the
   verdict is RED because of the leaking covariate.
+
+## N6b — the holdout path's outer split follows the fold strategy (2026-11-28)
+
+Closes the N6 open point. Without `--cv`, the Validation Strategist's verified strategy now cuts the
+holdout (`validation.holdout_split`: `group` → whole groups held out, `time` → the latest part of the
+timeline, `time_local` → the latest part of every period; `random` → `engine.split`, bit-identical),
+and the holdout fit's internal model selection gets the same `validation_structure` as on the CV
+path. CLI default: the Strategist now also runs on holdout runs that use the LLM anyway
+(`--no-llm` holdout runs stay LLM-free unless `--fold-advisor` is passed).
+
+**Pre-registered before the measurement run** (results appended below):
+
+- **H1:** on grouped/temporal data the random holdout's estimate is optimistic against the truth;
+  with the structured holdout the gap (holdout score − answer-key score, higher-is-better) shrinks.
+- **H2:** the model's real quality (answer-key score) does not get worse with the structured split.
+- Design: `scripts/n6b_holdout_split_experiment.py`. A fixed answer key is carved first with the
+  task's own structure (`holdout_split`, seed 0: unseen groups / the future / the latest part of
+  every month), never touched by either arm. On the remaining work rows, one variable: the
+  holdout split (random vs. structured), `test_size=0.2`, AutoGluon default preset,
+  `time_limit=30`, seeds 42/7/1/3/5; arm B also gets the inner structure, as the pipeline does. No
+  LLM (strategy set explicitly). Datasets: M1-synthetic grouped (`group` on `customer_id`),
+  MathAchieve (`group` on `School`), economics (`time` on `date`), bike-sharing (`time_local` on
+  `datetime` × `month_of:datetime`). Paired test over seeds (`paired_delta_test`, NB ratio
+  n_holdout/n_train). A null result is reported as such.
 
 ## Recurring pattern
 

@@ -10,8 +10,9 @@ recovery path, is unit-testable with a mocked LLM/engine.
 
 N6: on the CV path AutoGluon's INTERNAL validation (early stopping, ensemble weights,
 ``score_val``) follows the outer fold strategy via ``validation_structure`` — in every CV fold
-and in the final fit; recorded in ``PipelineResult.inner_validation``. The holdout path's own
-split (``engine.split``) stays random and group-unaware — a documented open point.
+and in the final fit; recorded in ``PipelineResult.inner_validation``. The holdout path's outer
+split follows the same strategy (``validation.holdout_split``: group-disjoint / forward in time)
+and its fit gets the same inner structure; recorded in ``PipelineResult.holdout_split``.
 """
 from __future__ import annotations
 
@@ -29,7 +30,6 @@ from maestra.engine import (
     predict,
     predict_proba,
     resolve_inner_validation,
-    split,
     train_and_evaluate,
 )
 from maestra.feature_engineering import fit_feature_plan, propose_feature_plan
@@ -47,6 +47,7 @@ from maestra.validation import (
     CVResult,
     adversarial_validation,
     cross_validate,
+    holdout_split,
     rescore_cv,
 )
 from maestra.validation_strategist import propose_fold_strategy, validate_fold_strategy
@@ -89,7 +90,9 @@ class PipelineResult:
     # per-candidate verdicts share the hybrid provenance list (source="text")
     cv_budget: dict | None = None  # intervention cost ({limit, trials_spent}), CV path only
     inner_validation: dict | None = None  # N6: AutoGluon-internal validation of the CV folds
-    # and the final fit ({"cv": record, "final": record}); None on the holdout path (unchanged)
+    # and the final fit ({"cv": record, "final": record}); holdout path: {"final": record}
+    holdout_split: dict | None = None  # holdout path only: how the outer holdout was cut
+    # (strategy/columns/note/sizes, from validation.holdout_split)
     autogluon_version: str | None = None  # N6: engine version this run trained with
 
 
@@ -210,6 +213,17 @@ def _fit_ordinal(df, model, target, context):
     return enc, {"log": enc.log, "encodings": enc.records}
 
 
+def _decide_fold_strategy(model, df, target, research_context):
+    """Validation Strategist: LLM proposal on the full-data profile, verified deterministically
+    against the data (any defect -> random). Returns ``(fold_strategy, group_column, time_column,
+    period_column)``. Shared by the CV path (how folds are built) and the holdout path (how the
+    holdout is cut) -- one decision, so both paths can never disagree."""
+    proposal = propose_fold_strategy(model, profile_dataframe(df, target), target, research_context)
+    verified, strategy_log = validate_fold_strategy(proposal, df, target)
+    return ({**verified, "log": strategy_log}, verified["group_column"],
+            verified["time_column"], verified["period_column"])
+
+
 def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_dir,
                  use_llm, use_fe, n_folds, test_df, id_col, n_before,
                  research_context=None, research_summary=None,
@@ -231,13 +245,9 @@ def _run_with_cv(df, target, *, model, time_limit, cv_time_limit, seed, model_di
     """
     # Validation Strategist (opt-in): decide the fold strategy before anything is fitted. Independent
     # of use_llm — it makes its own call and is useful even for a --no-llm baseline (smart validation).
-    fold_strategy, group_column, time_column, period_column = None, None, None, None
-    if fold_advisor:
-        proposal = propose_fold_strategy(model, profile_dataframe(df, target), target, research_context)
-        verified, strategy_log = validate_fold_strategy(proposal, df, target)
-        group_column, time_column = verified["group_column"], verified["time_column"]
-        period_column = verified["period_column"]
-        fold_strategy = {**verified, "log": strategy_log}
+    fold_strategy, group_column, time_column, period_column = (
+        _decide_fold_strategy(model, df, target, research_context) if fold_advisor
+        else (None, None, None, None))
 
     # Ordinal encoding (opt-in): data-independent, so encode the full data up front — every fold,
     # holdout and the test set then see the same ranks (the transform is prepended to `transforms`).
@@ -530,8 +540,6 @@ def run_pipeline(
         raise ValueError(f"Target column {target!r} not in CSV. Columns: {list(df.columns)}")
     if hybrid and not (cv_folds and cv_folds >= 2):
         raise ValueError("--hybrid requires --cv (the CV is the gate that keeps/drops features).")
-    if fold_advisor and not (cv_folds and cv_folds >= 2):
-        raise ValueError("--fold-advisor requires --cv (it decides how the CV folds are built).")
     if skeptic and not (cv_folds and cv_folds >= 2):
         raise ValueError("--skeptic requires --cv (the CV is the arbiter that vetoes a drop).")
     if target_framing and not (cv_folds and cv_folds >= 2):
@@ -570,9 +578,23 @@ def run_pipeline(
             presets=presets, sample_weight=sample_weight, framing_metric=framing_metric,
         )
 
+    # Holdout path. The Validation Strategist (opt-in, like on the CV path) decides how the
+    # holdout is cut: a random holdout over grouped or temporal rows lies exactly like a random
+    # fold. Without it (or on a "random" verdict) the split is the plain random row sample.
+    fold_strategy, group_column, time_column, period_column = (
+        _decide_fold_strategy(model, df, target, research_context) if fold_advisor
+        else (None, None, None, None))
+
     # Split first, then fit cleaning on train only — otherwise imputation statistics
     # would see the holdout and leak test information into the features.
-    train_raw, holdout_raw = split(df, test_size, seed)
+    train_raw, holdout_raw, holdout_record = holdout_split(
+        df, test_size, seed, group_column=group_column, time_column=time_column,
+        period_column=period_column)
+    # N6, now on the holdout path too: AutoGluon's internal model selection on the train part
+    # follows the same structure, read from the raw train rows (cleaning may drop the column).
+    inner_structure, inner_record = resolve_inner_validation(
+        train_raw.columns, group_column=group_column, time_column=time_column,
+        period_column=period_column, presets=presets)
 
     # Ordinal encoding (opt-in, data-independent) — fitted once, replayed on holdout/test.
     ordinal_transform, ordinal_summary = None, None
@@ -619,7 +641,9 @@ def run_pipeline(
 
             _validate_trainable(train, target)
             training = train_and_evaluate(train, holdout, target, current_time_limit, model_dir,
-                                          eval_metric, presets=presets, sample_weight=sample_weight)
+                                          eval_metric, presets=presets, sample_weight=sample_weight,
+                                          validation_structure=inner_structure,
+                                          structure_source=train_raw)
 
             # Quality gate (Point 3): if the run is essentially degenerate, let the LLM
             # revise the plan ONCE and retrain. The decision uses AutoGluon's internal
@@ -671,6 +695,9 @@ def run_pipeline(
                 feature_log=feature_log,
                 research=research_summary,
                 ordinal=ordinal_summary,
+                fold_strategy=fold_strategy,
+                inner_validation={"final": inner_record},
+                holdout_split=holdout_record,
                 autogluon_version=autogluon_version(),
             )
         except Exception as exc:

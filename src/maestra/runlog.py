@@ -64,6 +64,7 @@ def append_run(
         # N6: engine version + what AutoGluon's internal validation was told (None = random).
         "autogluon_version": getattr(result, "autogluon_version", None),
         "inner_validation": getattr(result, "inner_validation", None),
+        "holdout_split": getattr(result, "holdout_split", None),
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(record, default=float) + "\n")

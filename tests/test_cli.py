@@ -17,16 +17,18 @@ def test_parse_args_defaults():
 
 
 @pytest.mark.parametrize("argv, expected", [
-    ([], False),                                 # no cv, no flag -> off (never errors)
-    (["--cv", "3"], True),                       # cv active -> ON by default (the M9 promotion)
+    ([], True),                                  # holdout + LLM -> ON (it cuts the holdout)
+    (["--no-llm"], False),                       # --no-llm holdout run stays LLM-free
+    (["--no-llm", "--cv", "3"], True),           # cv active -> ON by default (the M9 promotion)
+    (["--cv", "3"], True),
     (["--cv", "3", "--no-fold-advisor"], False),  # explicit opt-out wins
     (["--cv", "3", "--fold-advisor"], True),     # explicit opt-in
-    (["--fold-advisor"], True),                  # explicit on w/o cv -> True (pipeline then errors)
+    (["--no-llm", "--fold-advisor"], True),      # explicit on w/o cv and w/o llm
     (["--no-fold-advisor"], False),              # explicit off w/o cv
 ])
-def test_fold_advisor_default_on_with_cv(argv, expected):
+def test_fold_advisor_default(argv, expected):
     args = _parse_args(["--csv", "x.csv", "--target", "y", *argv])
-    assert _resolve_fold_advisor(args.fold_advisor, args.cv) is expected
+    assert _resolve_fold_advisor(args.fold_advisor, args.cv, not args.no_llm) is expected
 
 
 def test_missing_csv_fails_fast(capsys):

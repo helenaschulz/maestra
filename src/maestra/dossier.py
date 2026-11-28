@@ -85,7 +85,9 @@ def _limitations(result) -> list[str]:
     if getattr(result, "cv", None) is None:
         out.append("No cross-validation — the estimate is a single holdout split (noisier).")
     if getattr(result, "fold_strategy", None) is None:
-        out.append("The Validation Strategist did not run — folds are random/stratified, which "
+        what = ("folds are random/stratified" if getattr(result, "cv", None) is not None
+                else "the holdout is a random row sample")
+        out.append(f"The Validation Strategist did not run — {what}, which "
                    "lies if the data is grouped or temporal.")
     if getattr(result, "target_framing", None) is None:
         out.append("Target framing was not evaluated (a skewed target may want a log transform).")
@@ -194,6 +196,11 @@ def render_dossier(result, *, run_record: dict | None = None,
     ]
     if fs.get("rationale"):
         setup_rows.append(("Advisor reasoning", f"<span class='note'>{_esc(fs['rationale'])}</span>"))
+    hs = getattr(result, "holdout_split", None)
+    if hs:
+        setup_rows.append(("Holdout split", _esc(f"{hs.get('note')} "
+                                                 f"({hs.get('n_train')} train / "
+                                                 f"{hs.get('n_holdout')} holdout rows)")))
     # N6: what AutoGluon's INTERNAL model selection was told (the CV folds' record wins; a fold
     # that fell back to random makes the record say random, it never overclaims).
     iv = getattr(result, "inner_validation", None)
