@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import (
     GroupKFold,
+    GroupShuffleSplit,
     KFold,
     StratifiedGroupKFold,
     StratifiedKFold,
@@ -41,9 +42,11 @@ from maestra.cleaning import fit_cleaning_plan
 from maestra.engine import (
     AutoGluonEngine,
     Engine,
+    outer_strategy,
     predict,
     predict_proba,
     resolve_inner_validation,
+    split,
     train_and_evaluate,
 )
 from maestra.feature_engineering import fit_feature_plan
@@ -647,3 +650,72 @@ def adversarial_validation(
     )
     leaderboard = predictor.leaderboard(silent=True)
     return float(leaderboard["score_val"].max()) if "score_val" in leaderboard.columns else None
+
+
+def holdout_split(df: pd.DataFrame, test_size: float, seed: int, *,
+                  group_column: str | None = None, time_column: str | None = None,
+                  period_column: str | None = None
+                  ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """The holdout path's outer split, following the same fold strategy as the CV folds
+    (:func:`_make_folds`, precedence via ``engine.outer_strategy``): a holdout that mixes an
+    entity's rows into train and holdout, or holds out the past, lies exactly like a random fold.
+
+    - ``random`` -> ``engine.split`` unchanged (row sample, bit-identical to before).
+    - ``group`` -> ``GroupShuffleSplit``: about ``test_size`` of the GROUPS go to the holdout, no
+      group on both sides (the row share follows the group sizes).
+    - ``time`` -> the latest ``test_size`` of the timeline is held out; the cut is on a timestamp,
+      so rows sharing one timestamp never straddle it. Unparseable times stay in train.
+    - ``time_local`` -> within EVERY period, that period's latest ``test_size`` of rows (time-sorted)
+      is held out -- the single-split analogue of :func:`_time_local_folds`'s repeating split.
+
+    Returns ``(train, holdout, record)``; ``record`` = strategy, columns, sizes and a note, for the
+    run record and the dossier. Indices are ``df``'s own (label-based, like ``engine.split``).
+    """
+    strategy = outer_strategy(group_column=group_column, time_column=time_column,
+                              period_column=period_column)
+    record = {"strategy": strategy, "group_column": group_column, "time_column": time_column,
+              "period_column": period_column}
+    if strategy == "group":
+        groups = pd.factorize(df[group_column])[0]  # NaN -> one shared "missing" group
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+        tr, ho = next(gss.split(df, groups=groups))
+        train, holdout = df.iloc[tr], df.iloc[ho]
+        note = (f"group-disjoint on {group_column}: {len(set(groups[ho]))} of "
+                f"{len(set(groups))} groups held out")
+    elif strategy == "time":
+        values = df[time_column]
+        if values.dtype.kind not in "iufM":
+            values = pd.to_datetime(values, errors="coerce", format="mixed")
+        valid = values.dropna().sort_values(kind="stable")
+        if len(valid) < 2:
+            raise ValueError(f"time holdout: {time_column!r} has fewer than 2 parseable values")
+        cut = valid.iloc[min(len(valid) - 1, int(np.floor(len(valid) * (1 - test_size))))]
+        is_ho = (values >= cut).fillna(False).to_numpy(dtype=bool)
+        if is_ho.all():  # the cut landed on the earliest timestamp: nothing would be left to train on
+            is_ho = (values > cut).fillna(False).to_numpy(dtype=bool)
+        train, holdout = df[~is_ho], df[is_ho]
+        note = f"forward in time on {time_column}: holdout from {cut} on"
+    elif strategy == "time_local":
+        values = df[time_column]
+        if values.dtype.kind not in "iufM":
+            values = pd.to_datetime(values, errors="coerce", format="mixed")
+        values = values.to_numpy()
+        periods = (_materialize_period(df, period_column) if _PERIOD_TOKEN_RE.match(period_column)
+                   else df[period_column])
+        is_ho = np.zeros(len(df), dtype=bool)
+        for _, idx in periods.groupby(periods, sort=False).indices.items():
+            order = idx[np.argsort(values[idx], kind="stable")]
+            n_ho = int(round(len(order) * test_size))
+            if 0 < n_ho < len(order):
+                is_ho[order[len(order) - n_ho:]] = True
+        train, holdout = df[~is_ho], df[is_ho]
+        note = (f"forward within each {period_column} period on {time_column}: the latest "
+                f"{test_size:.0%} of every period held out")
+    else:
+        train, holdout = split(df, test_size, seed)
+        note = "random"
+    if len(train) == 0 or len(holdout) == 0:
+        raise ValueError(f"{strategy} holdout split left an empty side "
+                         f"(train {len(train)}, holdout {len(holdout)} rows)")
+    record.update(note=note, n_train=len(train), n_holdout=len(holdout))
+    return train, holdout, record

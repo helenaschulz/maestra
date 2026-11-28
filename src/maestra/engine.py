@@ -188,9 +188,8 @@ def inner_validation_label(record: dict | None) -> str:
 def split(df: pd.DataFrame, test_size: float, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Split ``df`` into ``(train, holdout)`` by random row sampling.
 
-    A simple random split is enough for this project; AutoGluon does its own internal
-    validation split on the training portion for model selection. N6 open point: this
-    outer holdout split knows no groups/time — deliberately unchanged (see docs/RESULTS.md).
+    The ``random`` branch of ``validation.holdout_split``, which the holdout path calls: with a
+    group/time fold strategy the holdout follows that strategy instead (no groups/time here).
     """
     holdout = df.sample(frac=test_size, random_state=seed)
     train = df.drop(index=holdout.index)

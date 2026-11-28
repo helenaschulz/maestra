@@ -1323,7 +1323,8 @@ NB-corrected, three-way; "on better" for H1 means the optimism shrank.
   being a known-inflated number on grouped data.
 - **Open point, unchanged in N6:** the holdout path's OUTER split (`engine.split`) is random and
   group-unaware, so on grouped data a holdout-path run still evaluates on known entities. Only the
-  CV path (`--cv`, where the Strategist runs) carries group/time structure end to end.
+  CV path (`--cv`, where the Strategist runs) carries group/time structure end to end. *Closed in
+  N6b below (2026-11-28).*
 - Artefact: `docs/examples/reports/n6_mathachieve_dossier.html`, a grouped `--cv 3` run (the
   Strategist chose `group` on `School`). Setup shows "Interne Modellauswahl: gruppen-disjunkt auf
   School" and the engine version; its CV (−6.3081) equals the "on" arm above exactly.
@@ -1394,6 +1395,59 @@ deployable.
   --backtest --test data/kaggle_rossmann/test.csv`, Customers kept). Its own 3-origin
   naive-vs-embargo split check comes out undecided on this sample (gap +109, MDE 182); the
   verdict is RED because of the leaking covariate.
+
+## N6b — the holdout path's outer split follows the fold strategy (2026-11-28)
+
+Closes the N6 open point. Without `--cv`, the Validation Strategist's verified strategy now cuts the
+holdout (`validation.holdout_split`: `group` → whole groups held out, `time` → the latest part of the
+timeline, `time_local` → the latest part of every period; `random` → `engine.split`, bit-identical),
+and the holdout fit's internal model selection gets the same `validation_structure` as on the CV
+path. CLI default: the Strategist now also runs on holdout runs that use the LLM anyway
+(`--no-llm` holdout runs stay LLM-free unless `--fold-advisor` is passed).
+
+**Pre-registered before the measurement run** (results appended below):
+
+- **H1:** on grouped/temporal data the random holdout's estimate is optimistic against the truth;
+  with the structured holdout the gap (holdout score − answer-key score, higher-is-better) shrinks.
+- **H2:** the model's real quality (answer-key score) does not get worse with the structured split.
+- Design: `scripts/n6b_holdout_split_experiment.py`. A fixed answer key is carved first with the
+  task's own structure (`holdout_split`, seed 0: unseen groups / the future / the latest part of
+  every month), never touched by either arm. On the remaining work rows, one variable: the
+  holdout split (random vs. structured), `test_size=0.2`, AutoGluon default preset,
+  `time_limit=30`, seeds 42/7/1/3/5; arm B also gets the inner structure, as the pipeline does. No
+  LLM (strategy set explicitly). Datasets: M1-synthetic grouped (`group` on `customer_id`),
+  MathAchieve (`group` on `School`), economics (`time` on `date`), bike-sharing (`time_local` on
+  `datetime` × `month_of:datetime`). Paired test over seeds (`paired_delta_test`, NB ratio
+  n_holdout/n_train). A null result is reported as such.
+
+### Results: random vs. structured holdout (raw: `n6b_holdout_split.jsonl`)
+
+Gap = holdout estimate − answer-key score (higher-is-better, so positive = optimistic). Means over
+5 seeds; verdicts paired, NB-corrected.
+
+| Dataset (strategy) | Gap random | Gap structured | H1 | Truth random | Truth structured | H2 |
+|---|---|---|---|---|---|---|
+| M1-synthetic (`group`, accuracy) | +0.451 | −0.038 | **decided** (MDE 0.20) | 0.542 | 0.497 | undecided (MDE 0.14) |
+| MathAchieve (`group`, rmse) | +0.056 | −0.195 | undecided (MDE 0.23) | 6.315 | 6.146 | **structured better** (MDE 0.11) |
+| economics (`time`, rmse) | +3683 | +1173 | **decided** (MDE 201) | 3939 | 1678 | **structured better** (MDE 177) |
+| bike-sharing (`time_local`, rmse) | +60.2 | +0.5 | **decided** (MDE 6.0) | 177.3 | 178.4 | undecided (MDE 2.6) |
+
+- **H1 holds on 3 of 4.** The random holdout reports ~0.99 accuracy on M1-synthetic, where the truth is
+  chance; the group holdout reports chance. On bike-sharing the random holdout claims rmse ≈117
+  against a truth of ≈177; the per-month forward holdout is within 0.5. MathAchieve is the null:
+  both holdouts are close to the truth there (school effects are weak relative to student noise).
+- **H2 is never worse** and is better on MathAchieve and economics. The economics gain (rmse 3939 →
+  1678) is not isolated: arm B changes both the outer split and the inner forward-only model
+  selection, and the latter is the likelier cause (it selects for extrapolation). Not measured
+  separately.
+- **Caveat on the time rows:** the time and `time_local` splits do not depend on the seed and
+  AutoGluon was bit-identical across seeds there, so the structured arm is one realisation; those
+  verdicts are against the random arm's seed spread, not a replicate spread of both arms.
+- Artefact: `docs/examples/reports/n6b_mathachieve_holdout_dossier.html`, a real holdout-path run
+  (`--no-llm --fold-advisor`, no `--cv`, Strategist = the default pipeline LLM). Setup shows the
+  advisor's `group` on `School`, "Holdout split: group-disjoint on School: 32 of 160 groups held
+  out (5724 train / 1461 holdout rows)" and "Interne Modellauswahl: gruppen-disjunkt auf School";
+  AutoGluon's log confirms a structure-aware internal holdout. Holdout rmse 6.084.
 
 ## Recurring pattern
 

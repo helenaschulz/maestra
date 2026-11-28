@@ -318,14 +318,54 @@ def test_fold_advisor_runs_without_llm_cleaning(monkeypatch):
     assert result.fold_strategy["strategy"] == "group"
 
 
-def test_fold_advisor_requires_cv():
-    import pytest
+def test_fold_advisor_cuts_the_holdout_without_cv(monkeypatch):
+    """Without --cv the verified strategy cuts the HOLDOUT (group-disjoint here) and AutoGluon's
+    inner model selection gets the same structure -- it used to raise 'requires --cv'."""
+    from maestra import pipeline
+    from maestra.engine import TrainingResult
 
-    from maestra.pipeline import run_pipeline
     df = _grouped_df()
-    with pytest.raises(ValueError, match="requires --cv"):
-        run_pipeline(df, "y", model="m", test_size=0.2, time_limit=1, seed=0,
-                     model_dir="x", fold_advisor=True)
+    captured = {}
+    monkeypatch.setattr(pipeline, "propose_fold_strategy",
+                        lambda *a, **k: {"strategy": "group", "group_column": "customer_id",
+                                         "rationale": "entities repeat"})
+
+    def fake_train(train, holdout, target, *a, **k):
+        captured.update(train=train, holdout=holdout, **k)
+        return TrainingResult("binary", "accuracy", pd.DataFrame(), {})
+
+    monkeypatch.setattr(pipeline, "train_and_evaluate", fake_train)
+    result = pipeline.run_pipeline(df, "y", model="m", test_size=0.3, time_limit=1, seed=0,
+                                   model_dir="x", fold_advisor=True, use_llm=False)
+
+    tr_ids = set(captured["train"]["customer_id"])
+    ho_ids = set(captured["holdout"]["customer_id"])
+    assert tr_ids and ho_ids and not tr_ids & ho_ids              # no customer on both sides
+    assert captured["validation_structure"] == {"group_on": "customer_id"}
+    assert captured["structure_source"] is not None
+    assert result.holdout_split["strategy"] == "group"
+    assert result.fold_strategy["strategy"] == "group"
+    assert result.inner_validation["final"]["structure"] == {"group_on": "customer_id"}
+
+
+def test_holdout_path_without_advisor_is_the_old_random_split(monkeypatch):
+    from maestra import pipeline
+    from maestra.engine import TrainingResult, split
+
+    df = _grouped_df()
+    captured = {}
+
+    def fake_train(train, holdout, target, *a, **k):
+        captured.update(train=train, holdout=holdout, **k)
+        return TrainingResult("binary", "accuracy", pd.DataFrame(), {})
+
+    monkeypatch.setattr(pipeline, "train_and_evaluate", fake_train)
+    result = pipeline.run_pipeline(df, "y", model="m", test_size=0.2, time_limit=1, seed=3,
+                                   model_dir="x", use_llm=False)
+    exp_train, exp_holdout = split(df, 0.2, 3)
+    assert captured["holdout"].index.equals(exp_holdout.index)     # bit-identical to before
+    assert captured["validation_structure"] is None
+    assert result.holdout_split["strategy"] == "random" and result.fold_strategy is None
 
 
 def test_group_folds_stay_stratified_for_classification():

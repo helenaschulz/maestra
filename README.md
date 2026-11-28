@@ -147,7 +147,7 @@ Full write-up (gate design, why no agent framework, the layer separation): [`doc
 
 **Validate** so the score is honest.
 
-- **Validation Strategist** (`--fold-advisor`): the LLM chooses how folds are built (random / group / time / `time_local` rolling-origin) from column semantics, the one validation decision AutoML cannot make. Every proposal is verified deterministically and falls back to random on any defect. Default-on with `--cv`, 0 false alarms across frontier models. The `time_local` strategy (a repeating local split, e.g. each month's early days predicting its later days) ships as a standalone rolling-origin splitter, reachable from the raw column profile.
+- **Validation Strategist** (`--fold-advisor`): the LLM chooses how folds are built (random / group / time / `time_local` rolling-origin) from column semantics, the one validation decision AutoML cannot make. Every proposal is verified deterministically and falls back to random on any defect. Without `--cv` the same verdict cuts the holdout (whole groups held out, or the latest part of the timeline). Default-on with `--cv` and on every holdout run that uses the LLM, 0 false alarms across frontier models. The `time_local` strategy (a repeating local split, e.g. each month's early days predicting its later days) ships as a standalone rolling-origin splitter, reachable from the raw column profile.
 - **Leakage-safe by construction:** fit on train only, replayed per fold, out-of-fold predictions *and* probabilities, adversarial train/test shift check.
 - **Trust meta-signal:** the CV↔LB gap that told you which leaderboard rows above to trust.
 
