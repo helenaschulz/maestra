@@ -22,14 +22,20 @@ from concurrent.futures import TimeoutError as _FutureTimeoutError
 
 import pandas as pd
 
+# The official SDK renamed FastMCP to MCPServer in mcp 2.x (module mcp.server.mcpserver); the
+# surface used here (constructor name, @tool(), run() over stdio) is the same in both, so support
+# both majors instead of pinning users onto 1.x.
 try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError as exc:  # pragma: no cover - exercised only without the optional group
-    raise ImportError(
-        "maestra-mcp needs the optional 'mcp' dependency group: pip install 'maestra[mcp]'"
-    ) from exc
+    from mcp.server.mcpserver import MCPServer as _Server  # mcp >= 2
+except ImportError:
+    try:
+        from mcp.server.fastmcp import FastMCP as _Server  # mcp 1.x
+    except ImportError as exc:  # pragma: no cover - exercised only without the optional group
+        raise ImportError(
+            "maestra-mcp needs the optional 'mcp' dependency group: pip install 'maestra[mcp]'"
+        ) from exc
 
-mcp = FastMCP("maestra")
+mcp = _Server("maestra")
 
 _MIN_ROWS = 50  # below this, any judgment (LLM or CV) is noise, not signal -- a reasoned refusal
 
